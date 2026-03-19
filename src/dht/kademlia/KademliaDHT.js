@@ -1,0 +1,349 @@
+import { DHTNode } from '../DHTNode.js';
+import { DHT } from '../DHT.js';
+import { randomU32, roundTripLatency, buildXorRoutingTable } from '../../utils/geo.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// K-Bucket
+// ─────────────────────────────────────────────────────────────────────────────
+
+class KBucket {
+  constructor(maxSize) {
+    this.maxSize = maxSize;
+    this.nodes = [];
+  }
+
+  add(node) {
+    if (this.nodes.some(n => n.id === node.id)) return;
+    if (this.nodes.length < this.maxSize) {
+      this.nodes.push(node);
+    }
+    // In production Kademlia, we'd ping the tail and evict if unresponsive.
+    // In simulation, buckets simply ignore nodes once full.
+  }
+
+  remove(nodeId) {
+    this.nodes = this.nodes.filter(n => n.id !== nodeId);
+  }
+
+  getAll() {
+    return this.nodes.filter(n => n.alive);
+  }
+
+  get size() {
+    return this.nodes.length;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KademliaNode
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class KademliaNode extends DHTNode {
+  /**
+   * @param {object} opts
+   * @param {number} opts.id
+   * @param {number} opts.lat
+   * @param {number} opts.lng
+   * @param {number} opts.k     - Bucket size (default 20)
+   * @param {number} opts.bits  - Key-space bit width (default 32)
+   */
+  constructor({ id, lat, lng, k = 20, bits = 32 }) {
+    super({ id, lat, lng });
+    this.k = k;
+    this.bits = bits;
+    // One bucket per bit in the key space
+    this.buckets = Array.from({ length: bits }, () => new KBucket(k));
+  }
+
+  // ── XOR helpers ─────────────────────────────────────────────────────────
+
+  xorDistance(otherId) {
+    return (this.id ^ otherId) >>> 0; // Unsigned 32-bit XOR
+  }
+
+  /** 0-based bucket index for another node's ID (highest differing bit). */
+  bucketIndex(otherId) {
+    const xor = this.xorDistance(otherId);
+    if (xor === 0) return -1;
+    // clz32 counts leading zeros in a 32-bit representation
+    return Math.min(31 - Math.clz32(xor), this.bits - 1);
+  }
+
+  // ── Routing table management ─────────────────────────────────────────────
+
+  addToBucket(node) {
+    if (node.id === this.id) return;
+    const idx = this.bucketIndex(node.id);
+    if (idx >= 0 && idx < this.bits) {
+      this.buckets[idx].add(node);
+    }
+  }
+
+  removeFromBucket(nodeId) {
+    const xor = (this.id ^ nodeId) >>> 0;
+    if (xor === 0) return;
+    const idx = Math.min(31 - Math.clz32(xor), this.bits - 1);
+    this.buckets[idx].remove(nodeId);
+  }
+
+  /**
+   * Return up to `count` live nodes from the routing table, sorted by XOR
+   * distance to `targetId`.
+   */
+  findClosest(targetId, count) {
+    const xorTo = id => (id ^ targetId) >>> 0;
+    const all = this.buckets.flatMap(b => b.getAll());
+    return all
+      .sort((a, b) => xorTo(a.id) - xorTo(b.id))
+      .slice(0, count);
+  }
+
+  /**
+   * Return up to `count` live nodes from the routing table, sorted by XOR
+   * distance of their S2 geographic cell to `targetCell`.
+   *
+   * Used for regional lookups: routing by S2-cell XOR gives geographic
+   * proximity without requiring geo-encoded node IDs.
+   */
+  findClosestByGeo(targetCell, count) {
+    const all = this.buckets.flatMap(b => b.getAll());
+    return all
+      .sort((a, b) => ((a.s2Cell ^ targetCell) >>> 0) - ((b.s2Cell ^ targetCell) >>> 0))
+      .slice(0, count);
+  }
+
+  /**
+   * Return all live nodes currently in this node's routing table.
+   * Used by the globe to visualise routing-table connections on click.
+   */
+  getRoutingTableEntries() {
+    return this.buckets.flatMap(b => b.getAll());
+  }
+
+  // ── Message handler (called by SimulatedNetwork) ─────────────────────────
+
+  handleMessage({ type, from, data }) {
+    switch (type) {
+      case 'FIND_NODE': {
+        // When a geoKey is present, route by S2-cell XOR (geographic mode).
+        // Otherwise use standard Kademlia ID XOR.
+        const closest = (data.geoKey !== undefined)
+          ? this.findClosestByGeo(data.geoKey, this.k)
+          : this.findClosest(data.target, this.k);
+        return closest.filter(n => n.id !== from).map(n => n.id);
+      }
+      case 'PING':
+        return 'PONG';
+      default:
+        return null;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// KademliaDHT
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class KademliaDHT extends DHT {
+  static get protocolName() { return 'Kademlia'; }
+
+  /**
+   * @param {object} config
+   * @param {number} config.k      - Bucket size           (default 20)
+   * @param {number} config.alpha  - Lookup parallelism    (default 3)
+   * @param {number} config.bits   - Key-space bit width   (default 32)
+   */
+  constructor(config = {}) {
+    super(config);
+    this.k = config.k ?? 20;
+    this.alpha = config.alpha ?? 3;
+    this.bits = config.bits ?? 32;
+    /** @type {Map<number, KademliaNode>} */
+    this.nodeMap = new Map();
+  }
+
+  // ── Node lifecycle ───────────────────────────────────────────────────────
+
+  async addNode(lat, lng) {
+    const id = randomU32();
+    const node = new KademliaNode({
+      id, lat, lng, k: this.k, bits: this.bits,
+    });
+    this.nodeMap.set(id, node);
+    this.network.addNode(node);
+    return node;
+  }
+
+  async removeNode(nodeId) {
+    const node = this.nodeMap.get(nodeId);
+    if (!node) return;
+    node.alive = false;
+    this.network.removeNode(nodeId);
+    this.nodeMap.delete(nodeId);
+    // Routing tables update lazily (unreachable nodes are skipped in lookups)
+  }
+
+  /**
+   * Populate routing tables for all nodes at once.
+   * O(n log n) via binary search on contiguous XOR-bucket ID ranges.
+   */
+  buildRoutingTables() {
+    const k      = this.k;
+    const sorted = [...this.nodeMap.values()].sort((a, b) => a.id - b.id);
+    for (const node of sorted) {
+      for (const peer of buildXorRoutingTable(node.id, sorted, k)) {
+        node.addToBucket(peer);
+      }
+    }
+  }
+
+  // ── Iterative lookup ─────────────────────────────────────────────────────
+
+  /**
+   * Kademlia iterative FIND_NODE lookup.
+   *
+   * Time model:
+   *   - Each round queries up to α nodes in parallel from the initiating source.
+   *   - Round time = max(RTT(source → node)) for nodes queried in that round.
+   *   - Total time = Σ round times (rounds are sequential).
+   *   - Hops = number of routing rounds (each round = α parallel queries).
+   *
+   * Path (for visualisation):
+   *   - Records the greedy chain: source + the single closest-to-target node
+   *     discovered each round.  This means path.length - 1 == hops, and the
+   *     demo animation shows a clean sequential progression rather than all
+   *     α·hops individual query arcs.
+   *
+   * @returns {Promise<import('../DHT.js').LookupResult>}
+   */
+  /**
+   * Kademlia iterative FIND_NODE lookup.
+   *
+   * @param {number} sourceId
+   * @param {number} targetKey  - Key to look up (random ID or S2 cell value)
+   * @param {object} [opts]
+   * @param {number} [opts.geoKey] - When set, route by S2-cell XOR instead of
+   *   ID XOR.  Used for regional lookups so that plain Kademlia converges to
+   *   geographically nearby nodes rather than XOR-nearby random nodes.
+   */
+  async lookup(sourceId, targetKey, { geoKey } = {}) {
+    const source = this.nodeMap.get(sourceId);
+    if (!source || !source.alive) return null;
+
+    const alpha = this.alpha;
+    const k = this.k;
+
+    // In geographic mode, rank nodes by S2-cell XOR distance to geoKey.
+    // In standard mode, rank by node-ID XOR distance to targetKey.
+    const useGeo = geoKey !== undefined;
+    const xorTo = useGeo
+      ? id => { const n = this.nodeMap.get(id); return n ? (n.s2Cell ^ geoKey) >>> 0 : 0xffffffff; }
+      : id => (id ^ targetKey) >>> 0;
+
+    // Bootstrap shortlist from source's routing table
+    let shortlist = useGeo
+      ? source.findClosestByGeo(geoKey, k)
+      : source.findClosest(targetKey, k);
+    const queried = new Set([sourceId]);
+    const path = [sourceId];
+
+    let totalHops = 0;
+    // Track the closest node seen so far for termination
+    let closestDist = shortlist.length ? xorTo(shortlist[0].id) : Infinity;
+    let noProgressRounds = 0;
+
+    while (true) {
+      // Pick the α closest unqueried live nodes from the shortlist
+      const toQuery = shortlist
+        .filter(n => n.alive && !queried.has(n.id))
+        .slice(0, alpha);
+
+      if (toQuery.length === 0) break;
+
+      toQuery.forEach(n => queried.add(n.id));
+      totalHops += 1; // one hop = one routing round (α queries sent in parallel)
+
+      // For the visualisation path, record only the node closest to target
+      // queried this round (the greedy "best hop"), so path.length-1 == hops.
+      const bestThisRound = toQuery.reduce(
+        (best, n) => xorTo(n.id) < xorTo(best.id) ? n : best, toQuery[0]
+      );
+      path.push(bestThisRound.id);
+
+      // Send FIND_NODE to each in parallel – pass geoKey so intermediate nodes
+      // also respond with geo-close neighbours when in geographic mode.
+      const newNodes = [];
+
+      for (const node of toQuery) {
+        try {
+          const { response } = this.network.send(
+            source, node.id, 'FIND_NODE', { target: targetKey, geoKey }
+          );
+
+          // Map returned IDs → node objects (simulation privilege)
+          const discovered = response
+            .map(id => this.nodeMap.get(id))
+            .filter(n => n && n.alive && !queried.has(n.id));
+          newNodes.push(...discovered);
+        } catch {
+          // Node churned out mid-lookup – ignore and continue
+        }
+      }
+
+      // Merge and re-sort shortlist
+      const combined = [...shortlist, ...newNodes];
+      const seen = new Set();
+      shortlist = combined
+        .filter(n => n && n.alive && !seen.has(n.id) && seen.add(n.id))
+        .sort((a, b) => xorTo(a.id) - xorTo(b.id))
+        .slice(0, k);
+
+      // Termination: stop when no closer node is found after 2 fruitless rounds
+      const newClosest = shortlist.length ? xorTo(shortlist[0].id) : Infinity;
+      if (newClosest >= closestDist) {
+        if (++noProgressRounds >= 2) break;
+      } else {
+        noProgressRounds = 0;
+        closestDist = newClosest;
+      }
+    }
+
+    // Correct the path terminus to the overall closest node found.
+    // The greedy per-round tracking can leave path[-1] pointing at a node
+    // from a "no-progress" round that ran after the true destination was
+    // already discovered.  shortlist[0] is always the closest node seen.
+    if (shortlist.length > 0 && path.length > 1) {
+      path[path.length - 1] = shortlist[0].id;
+    }
+
+    // Compute total lookup time as the sum of RTTs along the greedy path.
+    // Each RTT is between consecutive nodes on the path (path[i] → path[i+1]),
+    // so only the successful, connected nodes on the actual route contribute.
+    let totalTimeMs = 0;
+    for (let i = 0; i < path.length - 1; i++) {
+      const fromNode = this.nodeMap.get(path[i]);
+      const toNode   = this.nodeMap.get(path[i + 1]);
+      if (fromNode && toNode) {
+        totalTimeMs += roundTripLatency(fromNode, toNode);
+      }
+    }
+
+    return {
+      path,
+      hops: totalHops,
+      time: totalTimeMs,
+      found: shortlist.length > 0,
+    };
+  }
+
+  getStats() {
+    const base = super.getStats();
+    return {
+      ...base,
+      protocol: 'Kademlia',
+      k: this.k,
+      alpha: this.alpha,
+      bits: this.bits,
+    };
+  }
+}

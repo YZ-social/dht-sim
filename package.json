@@ -1,0 +1,12 @@
+{
+  "name": "dht-simulator",
+  "version": "1.0.0",
+  "description": "DHT simulation and visualization on a 3D globe",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}

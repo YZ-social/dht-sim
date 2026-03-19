@@ -1,0 +1,756 @@
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { latLngToXYZ, EARTH_RADIUS_KM } from '../utils/geo.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────────────────────
+
+const GLOBE_RADIUS = 1;
+const NODE_RADIUS  = 0.007;
+
+const C = {
+  ocean:      '#061626',
+  land:       '#1e4060',
+  border:     '#4499ee',
+  atmosphere: 0x1a5090,
+  nodeAlive:  0x00ff88,
+  nodeDead:   0xff3333,
+  // Node-click selection colours
+  nodeSelected:    0xffff00,
+  connLine:        0xff8800,   // orange connection lines
+  connNodeHighlight: 0xffaa44, // tinted orange for connected nodes
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LandMask
+// ─────────────────────────────────────────────────────────────────────────────
+
+class LandMask {
+  constructor() {
+    this.maskW    = 1440;
+    this.maskH    = 720;
+    this.maskData = null;
+    this.texture  = null;
+  }
+
+  async build(geoJSON) {
+    // Binary mask for isLand() queries
+    const mask = document.createElement('canvas');
+    mask.width = this.maskW; mask.height = this.maskH;
+    const mCtx = mask.getContext('2d');
+    mCtx.fillStyle = '#000'; mCtx.fillRect(0, 0, this.maskW, this.maskH);
+    mCtx.fillStyle = '#fff'; this._fill(mCtx, geoJSON, this.maskW, this.maskH);
+    this.maskData = mCtx.getImageData(0, 0, this.maskW, this.maskH).data;
+
+    // Coloured canvas texture for the sphere
+    const texW = 2048, texH = 1024;
+    const tex = document.createElement('canvas');
+    tex.width = texW; tex.height = texH;
+    const tCtx = tex.getContext('2d');
+    tCtx.fillStyle = C.ocean;  tCtx.fillRect(0, 0, texW, texH);
+    tCtx.fillStyle = C.land;   this._fill(tCtx, geoJSON, texW, texH);
+    tCtx.strokeStyle = C.border; tCtx.lineWidth = 0.8;
+    this._stroke(tCtx, geoJSON, texW, texH);
+    this.texture = new THREE.CanvasTexture(tex);
+  }
+
+  _fill(ctx, geoJSON, W, H) {
+    for (const f of geoJSON.features) {
+      const g = f.geometry; if (!g) continue;
+      const polys = g.type === 'Polygon' ? [g.coordinates]
+        : g.type === 'MultiPolygon' ? g.coordinates : [];
+      for (const poly of polys) for (const ring of poly) this._fillRing(ctx, ring, W, H);
+    }
+  }
+
+  _fillRing(ctx, ring, W, H) {
+    if (ring.length < 3) return;
+
+    // Unwrap longitudes so the ring is continuous — no ±180° jumps.
+    // Each point is adjusted to be within 180° of the previous one.
+    const pts = [];
+    for (let i = 0; i < ring.length; i++) {
+      let lng = ring[i][0], lat = ring[i][1];
+      if (i > 0) {
+        const pLng = pts[i - 1][0];
+        while (lng - pLng >  180) lng -= 360;
+        while (lng - pLng < -180) lng += 360;
+      }
+      pts.push([lng, lat]);
+    }
+
+    // Find the unwrapped extent so we know if the ring spills past either edge.
+    let minLng = pts[0][0], maxLng = pts[0][0];
+    for (const [lng] of pts) {
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+    }
+
+    // Draw the ring at a given longitude shift; the canvas clips out-of-bounds pixels.
+    const drawFill = (shift) => {
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const x = ((pts[i][0] + shift + 180) / 360) * W;
+        const y = ((90 - pts[i][1]) / 180) * H;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+    };
+
+    drawFill(0);
+    if (maxLng >  180) drawFill(-360); // ring extends past the right edge → also fill shifted left
+    if (minLng < -180) drawFill( 360); // ring extends past the left edge  → also fill shifted right
+  }
+
+  _stroke(ctx, geoJSON, W, H) {
+    for (const f of geoJSON.features) {
+      const g = f.geometry; if (!g) continue;
+      const polys = g.type === 'Polygon' ? [g.coordinates]
+        : g.type === 'MultiPolygon' ? g.coordinates : [];
+      for (const poly of polys) for (const ring of poly) this._strokeRing(ctx, ring, W, H);
+    }
+  }
+
+  _strokeRing(ctx, ring, W, H) {
+    ctx.beginPath(); let started = false, pLng = null, pLat = null;
+    for (const [lng, lat] of ring) {
+      const x = ((lng + 180) / 360) * W, y = ((90 - lat) / 180) * H;
+      if (started && pLng !== null && Math.abs(lng - pLng) > 180) {
+        const adjLng = lng + (lng - pLng > 180 ? -360 : 360);
+        const bndLng = adjLng < pLng ? -180 : 180;
+        const tCross = (bndLng - pLng) / (adjLng - pLng);
+        const bndLat = pLat + tCross * (lat - pLat);
+        ctx.lineTo(((bndLng + 180) / 360) * W, ((90 - bndLat) / 180) * H);
+        ctx.stroke(); ctx.beginPath();
+        ctx.moveTo(((-bndLng + 180) / 360) * W, ((90 - bndLat) / 180) * H);
+        started = true;
+      }
+      if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+      pLng = lng; pLat = lat;
+    }
+    ctx.stroke();
+  }
+
+  isLand(lat, lng) {
+    if (!this.maskData) return true;
+    if (lat < -60) return false;          // exclude Antarctica
+    const x = Math.floor(((lng + 180) / 360) * this.maskW) % this.maskW;
+    const y = Math.floor(((90 - lat)  / 180) * this.maskH) % this.maskH;
+    return this.maskData[(y * this.maskW + x) * 4] > 128;
+  }
+
+  randomLandPoint(tries = 500) {
+    for (let i = 0; i < tries; i++) {
+      const lat = Math.random() * 140 - 60; // −60° to +80°, no Antarctica
+      const lng = Math.random() * 360 - 180;
+      if (this.isLand(lat, lng)) return { lat, lng };
+    }
+    return { lat: 51.5, lng: -0.1 };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Globe
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class Globe {
+  constructor(canvas) {
+    this.canvas   = canvas;
+    this.landMask = new LandMask();
+
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setClearColor(0x010810);
+
+    this.scene  = new THREE.Scene();
+    this.camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+    this.camera.position.set(0, 0, 2.6);
+
+    this.controls = new OrbitControls(this.camera, canvas);
+    this.controls.enableDamping   = true;
+    this.controls.dampingFactor   = 0.06;
+    this.controls.minDistance     = 1.1;
+    this.controls.maxDistance     = 8;
+    this.controls.autoRotate      = false;
+    this.controls.autoRotateSpeed = 0.4;
+
+    this.globeGroup   = new THREE.Group();
+    this.nodeGroup    = new THREE.Group();
+    this.hitGroup     = new THREE.Group(); // invisible larger spheres for raycasting
+    this.arcGroup     = new THREE.Group();
+    this.connGroup    = new THREE.Group(); // routing-table connection lines
+    this.scene.add(this.globeGroup, this.nodeGroup, this.hitGroup, this.arcGroup, this.connGroup);
+
+    this._nodeObjects  = new Map();  // nodeId → THREE.Mesh (visual)
+    this._hitObjects   = new Map();  // nodeId → THREE.Mesh (invisible hit target)
+    this._nodeDataMap  = new Map();  // nodeId → { lat, lng, alive }
+    this._globeMesh    = null;
+    this._raycaster    = new THREE.Raycaster();
+    this._selectedId   = null;
+    this._animFrame    = null;
+    this._pointerMoved = false; // distinguish click vs drag
+
+    // Smooth camera pan state
+    this._panStart    = new THREE.Vector3(0, 0, 1); // camera dir at pan start
+    this._panTarget   = null;                        // target dir (unit vec), null = idle
+    this._panDuration = 600;                         // ms
+    this._panT        = 1;                           // progress 0→1
+
+    this._buildBaseScene();
+    this._setupRaycasting();
+    window.addEventListener('resize', () => this._onResize());
+    this._onResize();
+    this._startRenderLoop();
+  }
+
+  // ── Base scene ────────────────────────────────────────────────────────────
+
+  _buildBaseScene() {
+    this.scene.add(new THREE.AmbientLight(0x4466aa, 2.5));
+    const sun = new THREE.DirectionalLight(0xffffff, 2.5);
+    sun.position.set(5, 3, 5);
+    this.scene.add(sun);
+
+    // Stars
+    const sp = new Float32Array(8000 * 3);
+    for (let i = 0; i < sp.length; i++) sp[i] = (Math.random() - 0.5) * 90;
+    const sg = new THREE.BufferGeometry();
+    sg.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+    this.scene.add(new THREE.Points(sg,
+      new THREE.PointsMaterial({ color: 0xffffff, size: 0.04, transparent: true, opacity: 0.75 })));
+
+    this._globeMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(GLOBE_RADIUS, 64, 32),
+      new THREE.MeshPhongMaterial({ color: 0x061626, specular: 0x112244, shininess: 5 })
+    );
+    this.globeGroup.add(this._globeMesh);
+
+    this.globeGroup.add(new THREE.Mesh(
+      new THREE.SphereGeometry(GLOBE_RADIUS * 1.025, 32, 16),
+      new THREE.MeshPhongMaterial({
+        color: C.atmosphere, transparent: true, opacity: 0.07, side: THREE.FrontSide,
+      })
+    ));
+  }
+
+  // ── Country texture ───────────────────────────────────────────────────────
+
+  async loadCountries(geoJSON) {
+    await this.landMask.build(geoJSON);
+    this._globeMesh.material = new THREE.MeshPhongMaterial({
+      map: this.landMask.texture, specular: 0x0a1e38, shininess: 4,
+    });
+    this._renderBorderLines(geoJSON);
+  }
+
+  _renderBorderLines(geoJSON) {
+    const R   = GLOBE_RADIUS * 1.001;
+    const mat = new THREE.LineBasicMaterial({ color: 0x4499ee, transparent: true, opacity: 0.4 });
+    for (const f of geoJSON.features) {
+      const g = f.geometry; if (!g) continue;
+      const polys = g.type === 'Polygon' ? [g.coordinates]
+        : g.type === 'MultiPolygon' ? g.coordinates : [];
+      for (const poly of polys) this._addBorderLine(poly[0], R, mat);
+    }
+  }
+
+  _addBorderLine(ring, R, mat) {
+    if (!ring || ring.length < 2) return;
+    const segs = [[]]; let pLng = null, pLat = null;
+    for (const [lng, lat] of ring) {
+      if (pLng !== null && Math.abs(lng - pLng) > 180) {
+        const adjLng = lng + (lng - pLng > 180 ? -360 : 360);
+        const dLng = adjLng - pLng;
+        if (Math.abs(dLng) > 1e-10) {
+          const bndLng = adjLng < pLng ? -180 : 180;
+          const tCross = (bndLng - pLng) / dLng;
+          if (tCross >= 0 && tCross <= 1) {
+            const bndLat = pLat + tCross * (lat - pLat);
+            const pb = latLngToXYZ(bndLat, bndLng, R);
+            segs[segs.length - 1].push(new THREE.Vector3(pb.x, pb.y, pb.z));
+            segs.push([]);
+            const pb2 = latLngToXYZ(bndLat, -bndLng, R);
+            segs[segs.length - 1].push(new THREE.Vector3(pb2.x, pb2.y, pb2.z));
+          } else {
+            segs.push([]);
+          }
+        } else {
+          segs.push([]);
+        }
+      }
+      const { x, y, z } = latLngToXYZ(lat, lng, R);
+      segs[segs.length - 1].push(new THREE.Vector3(x, y, z));
+      pLng = lng; pLat = lat;
+    }
+    for (const seg of segs) {
+      if (seg.length < 2) continue;
+      this.globeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(seg), mat));
+    }
+  }
+
+  // ── Land queries ──────────────────────────────────────────────────────────
+
+  isLand(lat, lng)  { return this.landMask.isLand(lat, lng); }
+  randomLandPoint() { return this.landMask.randomLandPoint(); }
+
+  // ── Node rendering ────────────────────────────────────────────────────────
+
+  setNodes(nodes) {
+    this._nodeObjects.forEach(m => this.nodeGroup.remove(m));
+    this._hitObjects.forEach(m => this.hitGroup.remove(m));
+    this._nodeObjects.clear();
+    this._hitObjects.clear();
+    this._nodeDataMap.clear();
+    this.clearConnections();
+
+    const visGeo = new THREE.SphereGeometry(NODE_RADIUS, 7, 7);
+    // Invisible hit sphere: 4× larger for reliable clicking even when zoomed out
+    const hitGeo = new THREE.SphereGeometry(NODE_RADIUS * 4, 5, 5);
+    const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+
+    for (const n of nodes) {
+      const col = n.alive ? C.nodeAlive : C.nodeDead;
+      const { x, y, z } = latLngToXYZ(n.lat, n.lng, GLOBE_RADIUS * 1.009);
+
+      // Visual node
+      const visMat = new THREE.MeshPhongMaterial({ color: col, emissive: col, emissiveIntensity: 0.7 });
+      const visMesh = new THREE.Mesh(visGeo, visMat);
+      visMesh.position.set(x, y, z);
+      this.nodeGroup.add(visMesh);
+      this._nodeObjects.set(n.id, visMesh);
+
+      // Invisible hit target
+      const hitMesh = new THREE.Mesh(hitGeo, hitMat);
+      hitMesh.position.set(x, y, z);
+      hitMesh.userData.nodeId = n.id;
+      this.hitGroup.add(hitMesh);
+      this._hitObjects.set(n.id, hitMesh);
+
+      this._nodeDataMap.set(n.id, { lat: n.lat, lng: n.lng, alive: n.alive });
+    }
+  }
+
+  updateNodeState(nodeId, alive) {
+    const mesh = this._nodeObjects.get(nodeId);
+    if (!mesh) return;
+    const col = alive ? C.nodeAlive : C.nodeDead;
+    mesh.material.color.setHex(col);
+    mesh.material.emissive.setHex(col);
+    const data = this._nodeDataMap.get(nodeId);
+    if (data) data.alive = alive;
+  }
+
+  // ── Routing-table connection display ──────────────────────────────────────
+
+  /**
+   * Highlight a node and draw bright connection arcs to every node in its
+   * routing table.  Called from main.js when a node is clicked.
+   *
+   * @param {number}   nodeId          – the clicked node
+   * @param {Map}      nodeMap         – id → node object (with lat/lng)
+   * @param {number[]} routingTableIds – all IDs the clicked node knows about
+   */
+  showNodeConnections(nodeId, nodeMap, routingTableIds) {
+    this.clearConnections();
+    this._selectedId = nodeId;
+
+    const src = nodeMap.get(nodeId);
+    if (!src) return;
+
+    // ── Orbit arc constants ──────────────────────────────────────────────
+    // Each connection follows the great-circle path between two nodes.
+    // The middle section travels at constant radius R_ORBIT.
+    // Each end has a quarter-circle-profile ramp connecting the node
+    // (at R_NODE) to the orbit circle (at R_ORBIT).
+    const R_NODE  = GLOBE_RADIUS * 1.009;  // node elevation
+    const R_ORBIT = GLOBE_RADIUS * 1.11;   // orbit circle radius (11 % above surface)
+    const R_TRANS = R_ORBIT - R_NODE;      // ramp height = quarter-circle radius
+
+    // ── Highlight the selected node (bright yellow) ──────────────────────
+    const selMesh = this._nodeObjects.get(nodeId);
+    if (selMesh) {
+      selMesh.material.color.setHex(C.nodeSelected);
+      selMesh.material.emissive.setHex(C.nodeSelected);
+      selMesh.material.emissiveIntensity = 1.0;
+    }
+
+    // Unit vector for the source node
+    const ra = this._v3(src.lat, src.lng, 1).normalize();
+
+    // ── Draw connection lines ────────────────────────────────────────────
+    for (const tid of routingTableIds) {
+      const tgt = nodeMap.get(tid);
+      if (!tgt) continue;
+
+      const rb = this._v3(tgt.lat, tgt.lng, 1).normalize();
+
+      // Angular separation along the great circle
+      const omega = Math.acos(Math.max(-1, Math.min(1, ra.dot(rb))));
+      if (omega < 0.001) continue; // skip coincident nodes
+
+      // Ramp fraction: portion of arc used by each end ramp.
+      // The ramp covers ~R_TRANS radians of arc (since R_ORBIT ≈ 1).
+      const rampFrac = Math.min(R_TRANS / omega, 0.45);
+
+      const N    = 64;
+      const sinΩ = Math.sin(omega);
+      const pts  = [];
+
+      for (let i = 0; i <= N; i++) {
+        const t  = i / N;
+
+        // SLERP: smoothly interpolate direction along the great circle
+        const w0  = Math.sin((1 - t) * omega) / sinΩ;
+        const w1  = Math.sin(t * omega) / sinΩ;
+        const dir = new THREE.Vector3(
+          ra.x * w0 + rb.x * w1,
+          ra.y * w0 + rb.y * w1,
+          ra.z * w0 + rb.z * w1,
+        ).normalize(); // ensure unit length
+
+        // Height profile: sine-shaped quarter-circle ramps at each end,
+        // flat orbit section in the middle.
+        let h;
+        if (t < rampFrac) {
+          h = R_NODE + R_TRANS * Math.sin((t / rampFrac) * (Math.PI / 2));
+        } else if (t > 1 - rampFrac) {
+          h = R_NODE + R_TRANS * Math.sin(((1 - t) / rampFrac) * (Math.PI / 2));
+        } else {
+          h = R_ORBIT;
+        }
+
+        pts.push(dir.multiplyScalar(h));
+      }
+
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      const mat = new THREE.LineBasicMaterial({
+        color: C.connLine, transparent: true, opacity: 0.95, depthWrite: false,
+      });
+      this.connGroup.add(new THREE.Line(geo, mat));
+
+      // Tint the connected node light-blue
+      const tgtMesh = this._nodeObjects.get(tid);
+      if (tgtMesh) {
+        tgtMesh.material.color.setHex(C.connNodeHighlight);
+        tgtMesh.material.emissive.setHex(C.connNodeHighlight);
+        tgtMesh.material.emissiveIntensity = 0.9;
+      }
+    }
+  }
+
+  clearConnections() {
+    this.connGroup.clear();
+    // Restore colours for previously highlighted nodes
+    this._nodeObjects.forEach((mesh, id) => {
+      const data = this._nodeDataMap.get(id);
+      if (!data) return;
+      const col = data.alive ? C.nodeAlive : C.nodeDead;
+      mesh.material.color.setHex(col);
+      mesh.material.emissive.setHex(col);
+      mesh.material.emissiveIntensity = 0.7;
+    });
+    this._selectedId = null;
+  }
+
+  // ── Raycasting (node clicks) ──────────────────────────────────────────────
+
+  _setupRaycasting() {
+    // Track pointer movement to distinguish a click from a drag
+    this.canvas.addEventListener('pointerdown', () => { this._pointerMoved = false; });
+    this.canvas.addEventListener('pointermove', () => { this._pointerMoved = true; });
+    this.canvas.addEventListener('pointerup',   (e) => {
+      if (!this._pointerMoved) this._handleClick(e);
+    });
+  }
+
+  _handleClick(event) {
+    if (this._nodeObjects.size === 0) return;
+
+    const rect = this.canvas.getBoundingClientRect();
+    const ndc  = new THREE.Vector2(
+      ((event.clientX - rect.left) / rect.width)  * 2 - 1,
+      -((event.clientY - rect.top)  / rect.height) * 2 + 1
+    );
+
+    this._raycaster.setFromCamera(ndc, this.camera);
+    // Slightly inflate the ray threshold for easier picking of small spheres
+    // Raycast against invisible (4× larger) hit spheres for reliable picking
+    const hitList = [...this._hitObjects.values()];
+    const hits = this._raycaster.intersectObjects(hitList, false);
+
+    // Only accept hits on the visible (front) face of the globe.
+    // A node is front-facing when its world position has a positive dot product
+    // with the camera direction — works regardless of camera orientation.
+    const cameraDir = this.camera.position.clone().normalize();
+    const frontHits = hits.filter(h => h.object.position.dot(cameraDir) > 0);
+
+    if (frontHits.length > 0) {
+      const nodeId = frontHits[0].object.userData.nodeId;
+      // Emit a custom event so main.js can fetch routing table data
+      this.canvas.dispatchEvent(new CustomEvent('nodeclicked', { detail: { nodeId } }));
+    } else {
+      // Click on empty space (or back of globe) → clear selection
+      this.clearConnections();
+      this.canvas.dispatchEvent(new CustomEvent('nodeclicked', { detail: { nodeId: null } }));
+    }
+  }
+
+  // ── Routing arcs (lookup paths) ───────────────────────────────────────────
+
+  showPath(path, nodeMap) {
+    this.clearArcs();
+    if (!path || path.length < 2) return;
+    for (let i = 0; i < path.length - 1; i++) {
+      const a = nodeMap.get(path[i]);
+      const b = nodeMap.get(path[i + 1]);
+      if (a && b) {
+        const t = path.length > 2 ? i / (path.length - 2) : 0;
+        this.arcGroup.add(this._buildArc(a, b, this._hopColor(t)));
+      }
+    }
+  }
+
+  async animatePath(path, nodeMap, delayMs = 380) {
+    this.clearArcs();
+    if (path.length < 2) return;
+
+    // ── Intro: pan to source, then blink it twice ──────────────────────────
+    const srcNode = nodeMap.get(path[0]);
+    if (srcNode) {
+      this.panToDir(this._v3(srcNode.lat, srcNode.lng, 1).normalize(), delayMs * 0.9);
+      await new Promise(r => setTimeout(r, delayMs));   // let pan settle
+      await this._blinkNode(path[0], 2, 260);
+    }
+
+    // ── Hop-by-hop ────────────────────────────────────────────────────────
+    for (let i = 0; i < path.length - 1; i++) {
+      const a = nodeMap.get(path[i]);
+      const b = nodeMap.get(path[i + 1]);
+      if (a && b) {
+        const t = path.length > 2 ? i / (path.length - 2) : 0;
+        this.arcGroup.add(this._buildArc(a, b, this._hopColor(t)));
+        // Pan to destination node, completing before the next hop
+        this.panToDir(this._v3(b.lat, b.lng, 1).normalize(), delayMs * 0.8);
+      }
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+
+    // ── Outro: blink destination twice ────────────────────────────────────
+    await this._blinkNode(path[path.length - 1], 2, 260);
+  }
+
+  /**
+   * Flash a node orange and enlarge it to signal start or arrival.
+   * @param {number} nodeId
+   * @param {number} times     – number of flashes
+   * @param {number} pulseMs   – duration of each on/off phase in ms
+   */
+  async _blinkNode(nodeId, times = 2, pulseMs = 260) {
+    const mesh = this._nodeObjects.get(nodeId);
+    const data = this._nodeDataMap.get(nodeId);
+    if (!mesh || !data) return;
+    const normalColor = data.alive ? C.nodeAlive : C.nodeDead;
+    for (let i = 0; i < times; i++) {
+      mesh.material.color.setHex(0xff7700);
+      mesh.material.emissive.setHex(0xff7700);
+      mesh.material.emissiveIntensity = 2.0;
+      mesh.scale.setScalar(2);
+      await new Promise(r => setTimeout(r, pulseMs));
+      mesh.material.color.setHex(normalColor);
+      mesh.material.emissive.setHex(normalColor);
+      mesh.material.emissiveIntensity = 0.7;
+      mesh.scale.setScalar(1);
+      await new Promise(r => setTimeout(r, pulseMs));
+    }
+  }
+
+  clearArcs() { this.arcGroup.clear(); }
+
+  /**
+   * Draw a geodesic circle on the globe surface showing the regional radius
+   * boundary centred on (lat, lng).
+   */
+  drawRegionalBoundary(lat, lng, radiusKm) {
+    this.clearRegionalBoundary();
+    const d    = radiusKm / EARTH_RADIUS_KM; // angular radius in radians
+    const lat1 = lat * Math.PI / 180;
+    const lng1 = lng * Math.PI / 180;
+    const N    = 128;
+    const pts  = [];
+
+    for (let i = 0; i <= N; i++) {
+      const bearing = (i / N) * 2 * Math.PI;
+      const lat2 = Math.asin(
+        Math.sin(lat1) * Math.cos(d) +
+        Math.cos(lat1) * Math.sin(d) * Math.cos(bearing)
+      );
+      const lng2 = lng1 + Math.atan2(
+        Math.sin(bearing) * Math.sin(d) * Math.cos(lat1),
+        Math.cos(d) - Math.sin(lat1) * Math.sin(lat2)
+      );
+      const { x, y, z } = latLngToXYZ(
+        lat2 * 180 / Math.PI, lng2 * 180 / Math.PI, GLOBE_RADIUS * 1.003
+      );
+      pts.push(new THREE.Vector3(x, y, z));
+    }
+
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineBasicMaterial({
+      color: 0xffff00,
+      depthTest:  false,   // always render on top of the globe mesh
+      depthWrite: false,
+      transparent: true,
+      opacity: 0.9,
+    });
+    this._regionalCircle = new THREE.Line(geo, mat);
+    this._regionalCircle.renderOrder = 999;  // draw after everything else
+    this.scene.add(this._regionalCircle);
+  }
+
+  clearRegionalBoundary() {
+    if (this._regionalCircle) {
+      this.scene.remove(this._regionalCircle);
+      this._regionalCircle.geometry.dispose();
+      this._regionalCircle.material.dispose();
+      this._regionalCircle = null;
+    }
+  }
+
+  _hopColor(t) {
+    // Bright yellow (#ffee00) → orange (#ff8800) → deep orange-red (#ff2200)
+    // Chosen to maximise contrast against the green (#00ff88) nodes and the
+    // dark blue globe background.
+    const g = Math.round(0xee * Math.pow(1 - t, 0.6)); // rapid drop from 238→0
+    const b = 0;
+    return (0xff << 16) | (g << 8) | b;
+  }
+
+  _buildArc(nA, nB, color) {
+    const R_NODE  = GLOBE_RADIUS * 1.009;
+    const R_ORBIT = GLOBE_RADIUS * 1.11;
+    const R_TRANS = R_ORBIT - R_NODE;
+
+    const ra = this._v3(nA.lat, nA.lng, 1).normalize();
+    const rb = this._v3(nB.lat, nB.lng, 1).normalize();
+
+    const omega = Math.acos(Math.max(-1, Math.min(1, ra.dot(rb))));
+    if (omega < 0.001) {
+      return new THREE.Mesh(); // degenerate arc — skip silently
+    }
+
+    const rampFrac = Math.min(R_TRANS / omega, 0.45);
+    const sinΩ = Math.sin(omega);
+    const pts  = [];
+
+    for (let i = 0; i <= 64; i++) {
+      const t  = i / 64;
+      const w0 = Math.sin((1 - t) * omega) / sinΩ;
+      const w1 = Math.sin(t * omega) / sinΩ;
+      const dir = new THREE.Vector3(
+        ra.x * w0 + rb.x * w1,
+        ra.y * w0 + rb.y * w1,
+        ra.z * w0 + rb.z * w1,
+      ).normalize();
+
+      let h;
+      if (t < rampFrac) {
+        h = R_NODE + R_TRANS * Math.sin((t / rampFrac) * (Math.PI / 2));
+      } else if (t > 1 - rampFrac) {
+        h = R_NODE + R_TRANS * Math.sin(((1 - t) / rampFrac) * (Math.PI / 2));
+      } else {
+        h = R_ORBIT;
+      }
+
+      pts.push(dir.multiplyScalar(h));
+    }
+
+    // Use TubeGeometry so the arc has real pixel-independent thickness.
+    // (LineBasicMaterial.linewidth is ignored by WebGL on most platforms.)
+    const curve  = new THREE.CatmullRomCurve3(pts);
+    const tubeGeo = new THREE.TubeGeometry(curve, 64, 0.0013, 5, false);
+    return new THREE.Mesh(tubeGeo, new THREE.MeshBasicMaterial({ color }));
+  }
+
+  /**
+   * Smoothly spin the camera to centre on a given direction vector.
+   * @param {THREE.Vector3} dir  – unit vector from globe centre toward target
+   * @param {number}        ms   – transition duration in milliseconds
+   */
+  panToDir(dir, ms = 600) {
+    this._panStart    = this.camera.position.clone().normalize();
+    this._panTarget   = dir.clone().normalize();
+    this._panDuration = ms;
+    this._panT        = 0;
+  }
+
+  /** Spherical linear interpolation between two unit vectors. */
+  _slerpDir(a, b, t) {
+    const dot = Math.max(-1, Math.min(1, a.dot(b)));
+    if (dot > 0.9999) return b.clone();
+    // Antipodal: pick an arbitrary perpendicular axis to rotate around
+    if (dot < -0.9999) {
+      const perp = Math.abs(a.x) < 0.9
+        ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+      const axis = perp.cross(a).normalize();
+      return a.clone().applyAxisAngle(axis, Math.PI * t);
+    }
+    const omega    = Math.acos(dot);
+    const sinOmega = Math.sin(omega);
+    const w0 = Math.sin((1 - t) * omega) / sinOmega;
+    const w1 = Math.sin(t * omega) / sinOmega;
+    return new THREE.Vector3(
+      a.x * w0 + b.x * w1,
+      a.y * w0 + b.y * w1,
+      a.z * w0 + b.z * w1,
+    );
+  }
+
+  _v3(lat, lng, r) {
+    const { x, y, z } = latLngToXYZ(lat, lng, r);
+    return new THREE.Vector3(x, y, z);
+  }
+
+  // ── Render loop ───────────────────────────────────────────────────────────
+
+  _startRenderLoop() {
+    let lastTime = performance.now();
+    const loop = (now) => {
+      this._animFrame = requestAnimationFrame(loop);
+      const dt = now - lastTime;
+      lastTime = now;
+
+      // Smooth camera pan – SLERP camera direction toward target
+      if (this._panTarget && this._panT < 1) {
+        this._panT = Math.min(1, this._panT + dt / this._panDuration);
+        // Quadratic ease-in-out
+        const e = this._panT < 0.5
+          ? 2 * this._panT * this._panT
+          : -1 + (4 - 2 * this._panT) * this._panT;
+        const dist = this.camera.position.length();
+        const dir  = this._slerpDir(this._panStart, this._panTarget, e);
+        this.camera.position.copy(dir.multiplyScalar(dist));
+      }
+
+      this.controls.update();
+      this.renderer.render(this.scene, this.camera);
+    };
+    requestAnimationFrame(loop);
+  }
+
+  _onResize() {
+    const W = this.canvas.clientWidth  || 800;
+    const H = this.canvas.clientHeight || 600;
+    this.renderer.setSize(W, H, false);
+    this.camera.aspect = W / H;
+    this.camera.updateProjectionMatrix();
+  }
+
+  setAutoRotate(v) { this.controls.autoRotate = v; }
+
+  dispose() {
+    cancelAnimationFrame(this._animFrame);
+    this.renderer.dispose();
+  }
+}

@@ -1,0 +1,1265 @@
+/**
+ * Results – renders test outcomes into the results panel.
+ * Uses Chart.js (loaded globally as `Chart`) for histograms and time-series.
+ */
+export class Results {
+  constructor(panelId = 'resultsOverlay') {
+    this.panel = document.getElementById(panelId);
+    this._charts = {};
+    this._trainingHistory    = null;
+    this._concordanceHistory = null;
+    this._pairHistory        = null;
+    this._benchmarkRows      = null;  // set by showBenchmarkResults
+    this._lastLookupResult   = null;
+    this._lastChurnResult    = null;
+  }
+
+  // ── CSV download helpers ──────────────────────────────────────────────────
+
+  /**
+   * Trigger a browser download of `csvString` as `filename`.
+   */
+  _downloadCSV(csvString, filename) {
+    const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.style.display = 'none';
+    a.href     = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 100);
+  }
+
+  /**
+   * Insert (or replace) a title bar as the FIRST CHILD of the panel div
+   * identified by `panelId`.  Title is left-justified; ⬇ CSV button is right.
+   * `csvFn` is called at click-time so it always captures current data.
+   */
+  _attachPanelHeader(panelId, title, csvFn, filename) {
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    // Remove any previous panel header
+    const existing = panel.querySelector(':scope > .panel-title-bar');
+    if (existing) existing.remove();
+    const bar = document.createElement('div');
+    bar.className = 'panel-title-bar';
+    const lbl = document.createElement('span');
+    lbl.className   = 'panel-title';
+    lbl.textContent = title;
+    const btn = document.createElement('button');
+    btn.className   = 'chart-dl-btn';
+    btn.textContent = '⬇ CSV';
+    btn.title       = 'Download data as CSV';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const csv = csvFn();
+      if (csv) this._downloadCSV(csv, filename);
+    });
+    bar.appendChild(lbl);
+    bar.appendChild(btn);
+    panel.insertBefore(bar, panel.firstChild);
+  }
+
+  /**
+   * Insert (or replace) a small header row immediately BEFORE the chart-box
+   * element identified by `beforeId`.  Used for sub-charts inside a panel.
+   */
+  _attachChartHeader(beforeId, title, csvFn, filename) {
+    const target = document.getElementById(beforeId);
+    if (!target) return;
+    const prev = target.previousElementSibling;
+    if (prev?.classList.contains('chart-header')) prev.remove();
+    const hdr = document.createElement('div');
+    hdr.className = 'chart-header';
+    const lbl = document.createElement('span');
+    lbl.className   = 'chart-header-title';
+    lbl.textContent = title;
+    const btn = document.createElement('button');
+    btn.className   = 'chart-dl-btn';
+    btn.textContent = '⬇ CSV';
+    btn.title       = 'Download chart data as CSV';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const csv = csvFn();
+      if (csv) this._downloadCSV(csv, filename);
+    });
+    hdr.appendChild(lbl);
+    hdr.appendChild(btn);
+    target.parentNode.insertBefore(hdr, target);
+  }
+
+  _el(id) { return document.getElementById(id); }
+
+  // ── Lookup Test Results ──────────────────────────────────────────────────
+
+  showLookupResults(result) {
+    this._lastLookupResult = result;
+    this._attachPanelHeader('lookupResults', 'Lookup Test', () => this._lookupHopsCSV(), `dht-lookup-${Date.now()}.csv`);
+    const { hops, time, totalRuns, successes, failures, successRate } = result;
+
+    this._setText('resNodeCount',    this._el('nodeCountVal')?.value ?? '—');
+    this._setText('resProtocol',     document.getElementById('dhtProtocol')?.selectedOptions[0]?.text ?? '—');
+    this._setText('resTotalRuns',    totalRuns.toLocaleString());
+    this._setText('resSuccessRate',  `${(successRate * 100).toFixed(1)}%`);
+    this._setText('resFailures',     failures.toLocaleString());
+    const regionalOn     = document.getElementById('regionalMode')?.checked ?? false;
+    const regionalRadius = parseInt(document.getElementById('regionalRadius')?.value ?? 2000);
+    const destOn         = document.getElementById('destMode')?.checked ?? false;
+    const destPct        = parseInt(document.getElementById('destPct')?.value ?? 10);
+    const modeLabel      = destOn    ? `Dest ${destPct}%`
+                         : regionalOn ? `Regional ≤${regionalRadius} km`
+                         : 'Global';
+    this._setText('resMode', modeLabel);
+    const modeEl = this._el('resMode');
+    if (modeEl) modeEl.style.color = destOn ? '#44ddff' : regionalOn ? '#ffff44' : '';
+
+    if (hops) {
+      this._setText('resAvgHops',  hops.mean.toFixed(2));
+      this._setText('resP50Hops',  hops.median.toFixed(1));
+      this._setText('resP95Hops',  hops.p95.toFixed(1));
+      this._setText('resMaxHops',  hops.max);
+    }
+    if (time) {
+      this._setText('resAvgTime',  `${time.mean.toFixed(1)} ms`);
+      this._setText('resP50Time',  `${time.median.toFixed(1)} ms`);
+      this._setText('resP95Time',  `${time.p95.toFixed(1)} ms`);
+      this._setText('resMaxTime',  `${time.max.toFixed(1)} ms`);
+    }
+
+    this._showSection('lookupResults');
+    this._hideSection('churnResults');
+    this._hideSection('demoResults');
+    this._hideSection('benchmarkResults');
+    this._hideSection('trainingResults');
+    this._hideSection('concordanceResults');
+    this._hideSection('pairResults');
+    this.panel?.classList.remove('bench-wide');
+
+    if (result.hopsRaw && result.timeRaw) {
+      requestAnimationFrame(() => {
+        this._drawHistogram('hopsHistChart', result.hopsRaw, 'Hop Distribution', '#00ff88');
+        this._drawHistogram('timeHistChart', result.timeRaw, 'Time Distribution (ms)', '#ffaa00');
+        this._attachChartHeader('hopsChartBox', 'Hop Distribution', () => this._lookupHopsCSV(), `dht-hops-${Date.now()}.csv`);
+        this._attachChartHeader('timeChartBox', 'Latency Distribution', () => this._lookupTimeCSV(), `dht-time-${Date.now()}.csv`);
+      });
+    }
+  }
+
+  // ── Demo Lookup Results ──────────────────────────────────────────────────
+
+  showDemoResults(result) {
+    this._setText('demoProtocol',  document.getElementById('dhtProtocol')?.selectedOptions[0]?.text ?? '—');
+    this._setText('demoNodeCount', document.getElementById('nodeCountVal')?.value ?? '—');
+    this._setText('demoHops',      result.hops ?? '—');
+    this._setText('demoTime',      result.time != null ? `${result.time.toFixed(1)} ms` : '—');
+    this._setText('demoPathLen',   result.path?.length ?? '—');
+    this._setText('demoSuccess',   result.found ? 'Found ✓' : 'Failed ✗');
+
+    const successEl = this._el('demoSuccess');
+    if (successEl) successEl.style.color = result.found ? '#00ff88' : '#ff4444';
+
+    const regionalOn     = document.getElementById('regionalMode')?.checked ?? false;
+    const regionalRadius = parseInt(document.getElementById('regionalRadius')?.value ?? 2000);
+    this._setText('demoMode', regionalOn ? `Regional ≤${regionalRadius} km` : 'Global');
+    const modeEl = this._el('demoMode');
+    if (modeEl) modeEl.style.color = regionalOn ? '#ffff44' : '';
+
+    this._showSection('demoResults');
+    this._hideSection('lookupResults');
+    this._hideSection('churnResults');
+    this._hideSection('benchmarkResults');
+    this._hideSection('trainingResults');
+    this._hideSection('concordanceResults');
+    this._hideSection('pairResults');
+    this.panel?.classList.remove('bench-wide');
+  }
+
+  // ── Training Results ─────────────────────────────────────────────────────
+
+  /**
+   * Called once to show the training panel (first session completed).
+   * Subsequent sessions call updateTrainingProgress.
+   */
+  showTrainingResults(history) {
+    this._showSection('trainingResults');
+    this._hideSection('lookupResults');
+    this._hideSection('churnResults');
+    this._hideSection('demoResults');
+    this._hideSection('benchmarkResults');
+    this._hideSection('concordanceResults');
+    this._hideSection('pairResults');
+    this.panel?.classList.remove('bench-wide');
+    this._attachPanelHeader('trainingResults', 'Train Network', () => this._trainingCSV(), `dht-training-${Date.now()}.csv`);
+    this._updateTrainingStats(history);
+    requestAnimationFrame(() => this._drawTrainingChart(history));
+  }
+
+  updateTrainingProgress(history) {
+    if (!history.length) return;
+    this._updateTrainingStats(history);
+    // Call synchronously: chart already exists and canvas has dimensions,
+    // so no rAF needed — and rAF batching prevents incremental updates.
+    this._drawTrainingChart(history);
+  }
+
+  _updateTrainingStats(history) {
+    if (!history.length) return;
+    const s = history[history.length - 1];
+    this._setText('trainSession',  s.session);
+    this._setText('trainEpoch',    s.epoch.toLocaleString());
+    this._setText('trainAvgSyn',   s.avgSynapses != null ? s.avgSynapses.toFixed(1) : '—');
+    this._setText('trainSuccess',  `${(s.successRate * 100).toFixed(1)}%`);
+    this._setText('trainAvgHops',  s.hops?.mean != null ? s.hops.mean.toFixed(2) : '—');
+    this._setText('trainAvgTime',  s.time?.mean != null ? `${s.time.mean.toFixed(1)} ms` : '—');
+
+    // Build the row HTML (shared between baseline pin and rolling log)
+    const sessionLabel = s.isBaseline ? '◆ base' : `#${s.session}`;
+    const rowHTML =
+      `<span class="tl-session">${sessionLabel}</span>` +
+      `<span class="tl-hops">hops ${s.hops?.mean != null ? s.hops.mean.toFixed(2) : '—'}</span>` +
+      `<span class="tl-time">${s.time?.mean != null ? s.time.mean.toFixed(1) + ' ms' : '—'}</span>` +
+      `<span class="tl-success">${(s.successRate * 100).toFixed(1)}%</span>` +
+      `<span class="tl-meta">syn ${s.avgSynapses != null ? s.avgSynapses.toFixed(1) : '—'}` +
+      (s.isBaseline ? ' · pre-training' : ` · epoch ${s.epoch}`) + '</span>';
+
+    if (s.isBaseline) {
+      // Sticky pinned baseline — always visible above the session log
+      const pin = this._el('trainingBaseline');
+      if (pin) {
+        const row = document.createElement('div');
+        row.className = 'training-log-row';
+        row.innerHTML = rowHTML;
+        pin.innerHTML = '';
+        pin.appendChild(row);
+      }
+    } else {
+      // Rolling session log
+      const log = this._el('trainingLog');
+      if (log) {
+        const row = document.createElement('div');
+        row.className = 'training-log-row';
+        row.innerHTML = rowHTML;
+        log.appendChild(row);
+        log.scrollTop = log.scrollHeight;
+      }
+    }
+  }
+
+  _drawTrainingChart(history) {
+    this._trainingHistory = history;
+    const canvas = this._el('trainingLineChart');
+    if (!canvas || typeof Chart === 'undefined' || history.length < 1) return;
+
+    const labels = history.map(s => s.isBaseline ? '◆ base' : `#${s.session}`);
+    const small  = { size: 10, family: "'JetBrains Mono','Fira Mono','Consolas',monospace" };
+
+    // Per-point styling: baseline gets a larger diamond, training gets a circle
+    const hopPointStyles  = history.map(s => s.isBaseline ? 'rectRot' : 'circle');
+    const hopPointRadii   = history.map(s => s.isBaseline ? 5 : 1);
+    const timePointStyles = history.map(s => s.isBaseline ? 'rectRot' : 'circle');
+    const timePointRadii  = history.map(s => s.isBaseline ? 5 : 1);
+
+    if (this._charts['trainingLineChart']) {
+      // Incremental update — push new point without destroying
+      const chart = this._charts['trainingLineChart'];
+      chart.data.labels = labels;
+      chart.data.datasets[0].data        = history.map(s => s.hops?.mean ?? null);
+      chart.data.datasets[0].pointStyle  = hopPointStyles;
+      chart.data.datasets[0].pointRadius = hopPointRadii;
+      chart.data.datasets[1].data        = history.map(s => s.time?.mean ?? null);
+      chart.data.datasets[1].pointStyle  = timePointStyles;
+      chart.data.datasets[1].pointRadius = timePointRadii;
+      chart.update('none');
+      return;
+    }
+
+    // Vertical annotation at x=0 (baseline) via a custom plugin
+    const baselineLinePlugin = {
+      id: 'baselineLine',
+      afterDraw(chart) {
+        if (chart.data.labels.length < 1) return;
+        const ctx    = chart.ctx;
+        const xScale = chart.scales.x;
+        const yScale = chart.scales.yHops;
+        const x      = xScale.getPixelForTick(0);
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, yScale.top);
+        ctx.lineTo(x, yScale.bottom);
+        ctx.strokeStyle = 'rgba(100,130,200,0.35)';
+        ctx.lineWidth   = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.restore();
+      },
+    };
+
+    this._charts['trainingLineChart'] = new Chart(canvas, {
+      type: 'line',
+      plugins: [baselineLinePlugin],
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Avg Hops',
+            data: history.map(s => s.hops?.mean ?? null),
+            borderColor: '#00ff88',
+            backgroundColor: '#00ff8818',
+            yAxisID: 'yHops',
+            tension: 0.3,
+            pointStyle:  hopPointStyles,
+            pointRadius: hopPointRadii,
+            pointBackgroundColor: history.map(s => s.isBaseline ? '#00ff88' : '#00ff8888'),
+            borderWidth: 2,
+          },
+          {
+            label: 'Avg Time (ms)',
+            data: history.map(s => s.time?.mean ?? null),
+            borderColor: '#ffaa00',
+            backgroundColor: '#ffaa0018',
+            yAxisID: 'yTime',
+            tension: 0.3,
+            pointStyle:  timePointStyles,
+            pointRadius: timePointRadii,
+            pointBackgroundColor: history.map(s => s.isBaseline ? '#ffaa00' : '#ffaa0088'),
+            borderWidth: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        animation: false,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: '#bbccee', font: small, boxWidth: 12, padding: 8 },
+          },
+          tooltip: {
+            callbacks: {
+              title: (items) => {
+                const s = history[items[0]?.dataIndex];
+                return s?.isBaseline ? '◆ Baseline (pre-training)' : `Session #${s?.session}`;
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: '#99aacc', font: small, maxTicksLimit: 14 },
+            grid:  { color: '#1a2a44' },
+          },
+          yHops: {
+            type: 'linear', position: 'left',
+            ticks: { color: '#00ff88', font: small },
+            grid:  { color: '#1a2a4466' },
+            title: { display: true, text: 'Hops', color: '#00ff88', font: small },
+          },
+          yTime: {
+            type: 'linear', position: 'right',
+            ticks: { color: '#ffaa00', font: small },
+            grid:  { drawOnChartArea: false },
+            title: { display: true, text: 'ms', color: '#ffaa00', font: small },
+          },
+        },
+      },
+    });
+  }
+
+  _trainingCSV() {
+    if (!this._trainingHistory?.length) return '';
+    const rows = [
+      ['Session', 'Avg Hops', 'P95 Hops', 'Avg Time (ms)', 'P95 Time (ms)',
+       'Success Rate', 'Avg Synapses', 'Epoch'].join(','),
+    ];
+    for (const s of this._trainingHistory) {
+      rows.push([
+        s.isBaseline ? 'baseline' : s.session,
+        s.hops?.mean  != null ? s.hops.mean.toFixed(3)  : '',
+        s.hops?.p95   != null ? s.hops.p95.toFixed(3)   : '',
+        s.time?.mean  != null ? s.time.mean.toFixed(2)  : '',
+        s.time?.p95   != null ? s.time.p95.toFixed(2)   : '',
+        s.successRate != null ? (s.successRate * 100).toFixed(2) + '%' : '',
+        s.avgSynapses != null ? s.avgSynapses.toFixed(1) : '',
+        s.epoch       != null ? s.epoch : '',
+      ].join(','));
+    }
+    return rows.join('\r\n');
+  }
+
+  /** Clear training log and destroy training chart (called on new Init). */
+  clearTraining() {
+    const pin = this._el('trainingBaseline');
+    if (pin) pin.innerHTML = '';
+    const log = this._el('trainingLog');
+    if (log) log.innerHTML = '';
+    if (this._charts['trainingLineChart']) {
+      this._charts['trainingLineChart'].destroy();
+      delete this._charts['trainingLineChart'];
+    }
+    this._hideSection('trainingResults');
+  }
+
+  /** Clear concordance chart and log (called on new Init or new concordance run). */
+  clearConcordance() {
+    const log = this._el('concordanceLog');
+    if (log) log.innerHTML = '';
+    if (this._charts['concordanceLineChart']) {
+      this._charts['concordanceLineChart'].destroy();
+      delete this._charts['concordanceLineChart'];
+    }
+    this._hideSection('concordanceResults');
+  }
+
+  /** Clear pair-learning chart and log (called on new Init or new pair run). */
+  clearPairLearning() {
+    const log = this._el('pairLog');
+    if (log) log.innerHTML = '';
+    if (this._charts['pairLineChart']) {
+      this._charts['pairLineChart'].destroy();
+      delete this._charts['pairLineChart'];
+    }
+    this._hideSection('pairResults');
+  }
+
+  // ── Pair Learning Results ────────────────────────────────────────────────
+
+  showPairResults(history) {
+    this._showSection('pairResults');
+    this._hideSection('lookupResults');
+    this._hideSection('churnResults');
+    this._hideSection('demoResults');
+    this._hideSection('benchmarkResults');
+    this._hideSection('trainingResults');
+    this._hideSection('concordanceResults');
+    this.panel?.classList.remove('bench-wide');
+    this._attachPanelHeader('pairResults', 'Pair Learning', () => this._pairCSV(), `dht-pair-learning-${Date.now()}.csv`);
+    this._updatePairStats(history);
+    this._drawPairChart(history);
+  }
+
+  updatePairProgress(history) {
+    if (!history.length) return;
+    this._updatePairStats(history);
+    this._drawPairChart(history);
+  }
+
+  _updatePairStats(history) {
+    if (!history.length) return;
+    const s       = history[history.length - 1];
+    const base    = history[0];
+    const curHops = s.hops?.mean ?? null;
+    const basHops = base?.hops?.mean ?? null;
+    const delta   = (curHops != null && basHops != null)
+      ? (curHops - basHops).toFixed(2)
+      : null;
+    const deltaStr = delta != null
+      ? (parseFloat(delta) <= 0 ? delta : `+${delta}`)
+      : '—';
+
+    this._setText('pairSession',  s.session);
+    this._setText('pairCount',    s.pairs.toLocaleString());
+    this._setText('pairAvgHops',  curHops != null ? curHops.toFixed(2) : '—');
+    this._setText('pairBaseline', basHops != null ? basHops.toFixed(2) : '—');
+    this._setText('pairDelta',    deltaStr);
+
+    const deltaEl = this._el('pairDelta');
+    if (deltaEl && delta != null) {
+      deltaEl.style.color = parseFloat(delta) < 0 ? '#00ff88'
+                          : parseFloat(delta) > 0 ? '#ff4444'
+                          : '#7799cc';
+    }
+
+    // Rolling session log
+    const log = this._el('pairLog');
+    if (log) {
+      const row = document.createElement('div');
+      row.className = 'pair-log-row';
+      row.innerHTML =
+        `<span class="pl-session">#${s.session}</span>` +
+        `<span class="pl-hops">hops ${curHops != null ? curHops.toFixed(2) : '—'}</span>` +
+        `<span class="pl-time">${s.time?.mean != null ? s.time.mean.toFixed(1) + ' ms' : '—'}</span>` +
+        `<span class="pl-delta">${deltaStr}</span>`;
+      log.appendChild(row);
+      log.scrollTop = log.scrollHeight;
+    }
+  }
+
+  _drawPairChart(history) {
+    this._pairHistory = history;
+    const canvas = this._el('pairLineChart');
+    if (!canvas || typeof Chart === 'undefined' || history.length < 1) return;
+
+    const labels   = history.map(s => `#${s.session}`);
+    const hopData  = history.map(s => s.hops?.mean  ?? null);
+    const timeData = history.map(s => s.time?.mean  ?? null);
+
+    // Y-axis: start at 1.0 (theoretical minimum), top at observed max
+    const allHops = hopData.filter(v => v != null);
+    const yMin = 1;
+    const yMax = allHops.length ? Math.ceil(Math.max(...allHops) + 0.5) : 8;
+
+    const small = { size: 10, family: "'JetBrains Mono','Fira Mono','Consolas',monospace" };
+
+    if (this._charts['pairLineChart']) {
+      const chart = this._charts['pairLineChart'];
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = hopData;
+      chart.data.datasets[1].data = timeData;
+      chart.options.scales.yHops.min = yMin;
+      chart.options.scales.yHops.max = yMax;
+      chart.update('none');
+      return;
+    }
+
+    // Dashed goal line at hops = 1
+    const goalLinePlugin = {
+      id: 'pairGoalLine',
+      afterDraw(chart) {
+        const ctx    = chart.ctx;
+        const yScale = chart.scales.yHops;
+        const xScale = chart.scales.x;
+        if (!yScale || !xScale) return;
+        const y = yScale.getPixelForValue(1);
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(xScale.left, y);
+        ctx.lineTo(xScale.right, y);
+        ctx.strokeStyle = 'rgba(180,220,80,0.35)';
+        ctx.lineWidth   = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.restore();
+      },
+    };
+
+    this._charts['pairLineChart'] = new Chart(canvas, {
+      type: 'line',
+      plugins: [goalLinePlugin],
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Avg Hops',
+            data: hopData,
+            borderColor: '#aaff44',
+            backgroundColor: '#aaff4418',
+            yAxisID: 'yHops',
+            tension: 0.3,
+            pointRadius: 3,
+            borderWidth: 2,
+          },
+          {
+            label: 'Avg Time (ms)',
+            data: timeData,
+            borderColor: '#ff8844',
+            backgroundColor: '#ff884418',
+            yAxisID: 'yTime',
+            tension: 0.3,
+            pointRadius: 3,
+            borderWidth: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        animation: false,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: '#bbccee', font: small, boxWidth: 12, padding: 8 },
+          },
+          tooltip: {
+            callbacks: {
+              title: (items) => `Session ${history[items[0]?.dataIndex]?.session ?? ''}`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: '#99aacc', font: small, maxTicksLimit: 16 },
+            grid:  { color: '#1a2a44' },
+          },
+          yHops: {
+            type: 'linear', position: 'left',
+            min: yMin,
+            max: yMax,
+            ticks: { color: '#aaff44', font: small },
+            grid:  { color: '#1a2a4466' },
+            title: { display: true, text: 'Avg Hops', color: '#aaff44', font: small },
+          },
+          yTime: {
+            type: 'linear', position: 'right',
+            ticks: { color: '#ff8844', font: small },
+            grid:  { drawOnChartArea: false },
+            title: { display: true, text: 'ms', color: '#ff8844', font: small },
+          },
+        },
+      },
+    });
+  }
+
+  _pairCSV() {
+    if (!this._pairHistory?.length) return '';
+    const base = this._pairHistory[0]?.hops?.mean ?? null;
+    const rows = [
+      ['Session', 'Pairs', 'Avg Hops', 'Avg Time (ms)', 'Delta Hops'].join(','),
+    ];
+    for (const s of this._pairHistory) {
+      const delta = base != null && s.hops?.mean != null
+        ? (s.hops.mean - base).toFixed(3) : '';
+      rows.push([
+        s.session,
+        s.pairs ?? '',
+        s.hops?.mean != null ? s.hops.mean.toFixed(3) : '',
+        s.time?.mean != null ? s.time.mean.toFixed(2) : '',
+        delta,
+      ].join(','));
+    }
+    return rows.join('\r\n');
+  }
+
+  // ── Concordance Results ──────────────────────────────────────────────────
+
+  showConcordanceResults(history, relay) {
+    this._showSection('concordanceResults');
+    this._hideSection('lookupResults');
+    this._hideSection('churnResults');
+    this._hideSection('demoResults');
+    this._hideSection('benchmarkResults');
+    this._hideSection('trainingResults');
+    this._hideSection('pairResults');
+    this.panel?.classList.remove('bench-wide');
+    this._attachPanelHeader('concordanceResults', 'Concordance', () => this._concordanceCSV(), `dht-concordance-${Date.now()}.csv`);
+    this._updateConcordanceStats(history, relay);
+    requestAnimationFrame(() => this._drawConcordanceChart(history));
+  }
+
+  updateConcordanceProgress(history, relay) {
+    if (!history.length) return;
+    this._updateConcordanceStats(history, relay);
+    this._drawConcordanceChart(history);
+  }
+
+  _updateConcordanceStats(history, relay) {
+    if (!history.length) return;
+    const s = history[history.length - 1];
+    this._setText('concSession',     s.session);
+    this._setText('concParticipants', s.participants);
+    this._setText('concToRelay',     s.toRelay?.mean != null ? s.toRelay.mean.toFixed(2) : '—');
+    this._setText('concFromRelay',   s.fromRelay?.mean != null ? s.fromRelay.mean.toFixed(2) : '—');
+    if (relay) {
+      const hex = relay.id.toString(16).padStart(8, '0').toUpperCase();
+      this._setText('concRelay', `0x${hex.slice(0, 6)}…`);
+    }
+
+    // Rolling log
+    const log = this._el('concordanceLog');
+    if (log && !s.isBaseline) {
+      const row = document.createElement('div');
+      row.className = 'concordance-log-row';
+      row.innerHTML =
+        `<span class="cl-session">#${s.session}</span>` +
+        `<span class="cl-to">→relay ${s.toRelay?.mean != null ? s.toRelay.mean.toFixed(2) : '—'}</span>` +
+        `<span class="cl-from">relay→ ${s.fromRelay?.mean != null ? s.fromRelay.mean.toFixed(2) : '—'}</span>`;
+      log.appendChild(row);
+      log.scrollTop = log.scrollHeight;
+    }
+  }
+
+  _drawConcordanceChart(history) {
+    this._concordanceHistory = history;
+    const canvas = this._el('concordanceLineChart');
+    if (!canvas || typeof Chart === 'undefined' || history.length < 1) return;
+
+    const labels = history.map(s => `#${s.session}`);
+    const toData   = history.map(s => s.toRelay?.mean   ?? null);
+    const fromData = history.map(s => s.fromRelay?.mean ?? null);
+
+    // Y-axis min = 1.0 (theoretical minimum hops), max = data max for tight range
+    const allVals = [...toData, ...fromData].filter(v => v != null);
+    const yMin = 1;
+    const yMax = allVals.length ? Math.ceil(Math.max(...allVals) + 0.5) : 6;
+
+    const small = { size: 10, family: "'JetBrains Mono','Fira Mono','Consolas',monospace" };
+
+    if (this._charts['concordanceLineChart']) {
+      const chart = this._charts['concordanceLineChart'];
+      chart.data.labels = labels;
+      chart.data.datasets[0].data = toData;
+      chart.data.datasets[1].data = fromData;
+      chart.options.scales.yHops.min = yMin;
+      chart.options.scales.yHops.max = yMax;
+      chart.update('none');
+      return;
+    }
+
+    // Horizontal goal line at hops=1
+    const goalLinePlugin = {
+      id: 'goalLine',
+      afterDraw(chart) {
+        const ctx    = chart.ctx;
+        const yScale = chart.scales.yHops;
+        const xScale = chart.scales.x;
+        if (!yScale || !xScale) return;
+        const y = yScale.getPixelForValue(1);
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(xScale.left, y);
+        ctx.lineTo(xScale.right, y);
+        ctx.strokeStyle = 'rgba(200,180,80,0.4)';
+        ctx.lineWidth   = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.stroke();
+        ctx.restore();
+      },
+    };
+
+    this._charts['concordanceLineChart'] = new Chart(canvas, {
+      type: 'line',
+      plugins: [goalLinePlugin],
+      data: {
+        labels,
+        datasets: [
+          {
+            label: '→ Relay (avg hops)',
+            data: toData,
+            borderColor: '#44ddff',
+            backgroundColor: '#44ddff18',
+            yAxisID: 'yHops',
+            tension: 0.3,
+            pointRadius: 3,
+            borderWidth: 2,
+          },
+          {
+            label: 'Relay → (avg hops)',
+            data: fromData,
+            borderColor: '#aa66ff',
+            backgroundColor: '#aa66ff18',
+            yAxisID: 'yHops',
+            tension: 0.3,
+            pointRadius: 3,
+            borderWidth: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        animation: false,
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: '#bbccee', font: small, boxWidth: 12, padding: 8 },
+          },
+          tooltip: {
+            callbacks: {
+              title: (items) => `Session ${history[items[0]?.dataIndex]?.session ?? ''}`,
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: '#99aacc', font: small, maxTicksLimit: 16 },
+            grid:  { color: '#1a2a44' },
+          },
+          yHops: {
+            type: 'linear', position: 'left',
+            min: yMin,
+            max: yMax,
+            ticks: { color: '#bbccee', font: small },
+            grid:  { color: '#1a2a4466' },
+            title: { display: true, text: 'Avg Hops', color: '#bbccee', font: small },
+          },
+        },
+      },
+    });
+  }
+
+  _concordanceCSV() {
+    if (!this._concordanceHistory?.length) return '';
+    const rows = [
+      ['Session', 'Participants', 'Avg Hops To Relay', 'P95 Hops To Relay',
+       'Avg Hops From Relay', 'P95 Hops From Relay'].join(','),
+    ];
+    for (const s of this._concordanceHistory) {
+      rows.push([
+        s.session,
+        s.participants ?? '',
+        s.toRelay?.mean  != null ? s.toRelay.mean.toFixed(3)  : '',
+        s.toRelay?.p95   != null ? s.toRelay.p95.toFixed(3)   : '',
+        s.fromRelay?.mean != null ? s.fromRelay.mean.toFixed(3) : '',
+        s.fromRelay?.p95  != null ? s.fromRelay.p95.toFixed(3)  : '',
+      ].join(','));
+    }
+    return rows.join('\r\n');
+  }
+
+  _lookupHopsCSV() {
+    if (!this._lastLookupResult) return '';
+    const { hops, totalRuns, successes } = this._lastLookupResult;
+    const rows = [
+      ['Metric', 'Value'].join(','),
+      ['Total Runs', totalRuns],
+      ['Successes', successes],
+      ['Avg Hops', hops?.mean?.toFixed(3) ?? ''],
+      ['Median Hops', hops?.median?.toFixed(3) ?? ''],
+      ['P95 Hops', hops?.p95?.toFixed(3) ?? ''],
+      ['Max Hops', hops?.max ?? ''],
+    ];
+    if (hops?.histogram) {
+      rows.push(['', '']);
+      rows.push(['Hops', 'Count'].join(','));
+      hops.histogram.forEach((count, idx) => {
+        if (count > 0) rows.push([idx, count].join(','));
+      });
+    }
+    return rows.join('\r\n');
+  }
+
+  _lookupTimeCSV() {
+    if (!this._lastLookupResult) return '';
+    const { time } = this._lastLookupResult;
+    const rows = [
+      ['Metric', 'Value'].join(','),
+      ['Avg Time (ms)', time?.mean?.toFixed(2) ?? ''],
+      ['Median Time (ms)', time?.median?.toFixed(2) ?? ''],
+      ['P95 Time (ms)', time?.p95?.toFixed(2) ?? ''],
+      ['Max Time (ms)', time?.max ?? ''],
+    ];
+    return rows.join('\r\n');
+  }
+
+  _churnCSV() {
+    if (!this._lastChurnResult) return '';
+    const timeSeries = this._lastChurnResult.timeSeries;
+    if (!timeSeries?.length) return '';
+    const rows = [
+      ['Interval', 'Node Count', 'Nodes Replaced', 'Avg Hops', 'P95 Hops', 'Avg Time (ms)', 'Success Rate'].join(','),
+    ];
+    for (const e of timeSeries) {
+      rows.push([
+        e.interval + 1,
+        e.nodeCount ?? '',
+        e.nodesReplaced ?? '',
+        e.hops?.mean?.toFixed(3) ?? '',
+        e.hops?.p95?.toFixed(3)  ?? '',
+        e.time?.mean?.toFixed(2) ?? '',
+        e.successRate != null ? (e.successRate * 100).toFixed(2) + '%' : '',
+      ].join(','));
+    }
+    return rows.join('\r\n');
+  }
+
+  // ── Churn Test Results ───────────────────────────────────────────────────
+
+  showChurnResults(result) {
+    this._lastChurnResult = result;
+    const { timeSeries } = result;
+    this._showSection('churnResults');
+    this._hideSection('lookupResults');
+    this._hideSection('demoResults');
+    this._hideSection('benchmarkResults');
+    this._hideSection('trainingResults');
+    this._hideSection('concordanceResults');
+    this._hideSection('pairResults');
+    this.panel?.classList.remove('bench-wide');
+    this._attachPanelHeader('churnResults', 'Churn Test', () => this._churnCSV(), `dht-churn-${Date.now()}.csv`);
+    this._updateChurnStats(timeSeries);
+    requestAnimationFrame(() => this._drawChurnChart(timeSeries));
+  }
+
+  updateChurnProgress(timeSeries) {
+    if (timeSeries.length === 0) return;
+    if (this._lastChurnResult) this._lastChurnResult.timeSeries = timeSeries;
+    this._updateChurnStats(timeSeries);
+    requestAnimationFrame(() => this._drawChurnChart(timeSeries));
+  }
+
+  _updateChurnStats(timeSeries) {
+    if (!timeSeries.length) return;
+    const last  = timeSeries[timeSeries.length - 1];
+    const total = parseInt(this._el('churnIntervals')?.value ?? 10);
+    this._setText('churnCurInterval', `${last.interval + 1} / ${total}`);
+    this._setText('churnCurNodes',    last.nodeCount.toLocaleString());
+    this._setText('churnCurReplaced', `−${last.nodesReplaced}`);
+    this._setText('churnCurSuccess',  `${(last.successRate * 100).toFixed(1)}%`);
+    this._setText('churnCurHops',     last.hops?.mean?.toFixed(2) ?? '—');
+    this._setText('churnCurTime',
+      last.time?.mean != null ? `${last.time.mean.toFixed(1)} ms` : '—');
+  }
+
+  // ── Histogram ────────────────────────────────────────────────────────────
+
+  _drawHistogram(canvasId, data, label, color) {
+    const canvas = this._el(canvasId);
+    if (!canvas || typeof Chart === 'undefined') return;
+
+    if (this._charts[canvasId]) {
+      this._charts[canvasId].destroy();
+    }
+
+    const min = Math.min(...data);
+    const max = Math.max(...data);
+    const bins = Math.min(30, max - min + 1);
+    const binSize = Math.max(1, (max - min) / bins);
+    const buckets = Array.from({ length: bins }, (_, i) => ({
+      label: (min + i * binSize).toFixed(0),
+      count: 0,
+    }));
+
+    for (const v of data) {
+      const idx = Math.min(bins - 1, Math.floor((v - min) / binSize));
+      buckets[idx].count++;
+    }
+
+    this._charts[canvasId] = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: buckets.map(b => b.label),
+        datasets: [{
+          label,
+          data: buckets.map(b => b.count),
+          backgroundColor: color + 'aa',
+          borderColor: color,
+          borderWidth: 1,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#99aacc', maxTicksLimit: 10 }, grid: { color: '#1a2a44' } },
+          y: { ticks: { color: '#99aacc' }, grid: { color: '#1a2a44' } },
+        },
+      },
+    });
+  }
+
+  // ── Churn time-series chart ──────────────────────────────────────────────
+
+  _drawChurnChart(timeSeries) {
+    const canvas = this._el('churnTimeChart');
+    if (!canvas || typeof Chart === 'undefined' || !timeSeries.length) return;
+
+    if (this._charts['churnTimeChart']) {
+      this._charts['churnTimeChart'].destroy();
+    }
+
+    const labels = timeSeries.map(e => `I${e.interval + 1}`);
+    const small  = { size: 10, family: "'JetBrains Mono','Fira Mono','Consolas',monospace" };
+
+    this._charts['churnTimeChart'] = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Avg Hops',
+            data: timeSeries.map(e => e.hops?.mean ?? 0),
+            borderColor: '#00ff88',
+            backgroundColor: '#00ff8818',
+            yAxisID: 'yHops',
+            tension: 0.3,
+            pointRadius: 3,
+            borderWidth: 2,
+          },
+          {
+            label: 'Success %',
+            data: timeSeries.map(e => e.successRate * 100),
+            borderColor: '#44aaff',
+            backgroundColor: '#44aaff18',
+            yAxisID: 'ySuccess',
+            tension: 0.3,
+            pointRadius: 3,
+            borderWidth: 2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+          legend: {
+            position: 'bottom',
+            labels: { color: '#bbccee', font: small, boxWidth: 12, padding: 10 },
+          },
+          tooltip: {
+            callbacks: {
+              // Append time + node count to the tooltip body
+              afterBody: (items) => {
+                const e = timeSeries[items[0]?.dataIndex];
+                if (!e) return '';
+                const t = e.time?.mean != null ? `${e.time.mean.toFixed(1)} ms` : '—';
+                return [`Avg Time: ${t}`, `Nodes: ${e.nodeCount}  (−${e.nodesReplaced})`];
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: '#99aacc', font: small },
+            grid:  { color: '#1a2a44' },
+          },
+          yHops: {
+            type: 'linear', position: 'left',
+            ticks: { color: '#00ff88', font: small },
+            grid:  { color: '#1a2a4466' },
+            title: { display: true, text: 'Avg Hops', color: '#00ff88', font: small },
+          },
+          ySuccess: {
+            type: 'linear', position: 'right',
+            max: 100,
+            ticks: { color: '#44aaff', font: small, callback: v => v + '%' },
+            grid:  { drawOnChartArea: false },
+            title: { display: true, text: 'Success', color: '#44aaff', font: small },
+          },
+        },
+      },
+    });
+  }
+
+  // ── Benchmark Results ────────────────────────────────────────────────────
+
+  /**
+   * Render a multi-protocol × multi-radius comparison table.
+   *
+   * @param {object} benchResult  Return value from Engine.runBenchmark().
+   * @param {number} nodeCount    Node count for the header.
+   */
+  showBenchmarkResults(benchResult, nodeCount) {
+    const { protocolDefs, testSpecs, data } = benchResult;
+
+    const container = this._el('benchmarkResults');
+    if (!container) return;
+
+    // Short display names for continent codes used in column headers and tooltips.
+    const contName = { NA:'N.Am.', SA:'S.Am.', EU:'Europe', AF:'Africa', AS:'Asia', OC:'Oceania' };
+
+    // Stable key and column label for each test spec.
+    const specKey   = s => s.type === 'regional'  ? `r${s.radius}`
+                         : s.type === 'dest'       ? `dest_${s.pct}`
+                         : s.type === 'source'     ? `src_${s.pct}`
+                         : s.type === 'srcdest'    ? `srcdest_${s.srcPct}_${s.destPct}`
+                         : s.type === 'churn'      ? `churn_${s.rate}`
+                         : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
+                         : 'global';
+    const specLabel = s => s.type === 'regional'  ? `${s.radius} km`
+                         : s.type === 'dest'       ? `${s.pct}% dest`
+                         : s.type === 'source'     ? `${s.pct}% src`
+                         : s.type === 'srcdest'    ? `${s.srcPct}%→${s.destPct}%`
+                         : s.type === 'churn'      ? `${s.rate}% churn`
+                         : s.type === 'continent'  ? `${contName[s.src]??s.src}→${contName[s.dst]??s.dst}`
+                         : 'Global';
+    const specTip   = s => s.type === 'regional'
+      ? `Regional lookups: source and destination chosen within ${s.radius} km of each other. Tests geographic locality routing.`
+      : s.type === 'dest'
+      ? `Dest ${s.pct}%: all lookups target the same pool of ${s.pct}% hot destination nodes, from random sources. XOR-nearest selection gives structurally shorter paths, and Neuromorphic protocols learn these popular destinations faster.`
+      : s.type === 'source'
+      ? `Src ${s.pct}%: all lookups originate from the same pool of ${s.pct}% source nodes, with fully random destinations. No structural shortcut — performance is similar to global.`
+      : s.type === 'srcdest'
+      ? `Src${s.srcPct}%→Dest${s.destPct}%: lookups always originate from the same ${s.srcPct}% sender pool and target the same ${s.destPct}% receiver pool (non-overlapping). Models real-world traffic where a fixed set of clients sends to a fixed set of servers. N-4 lateral shortcut propagation means the entire sender cluster learns fast routes to receivers simultaneously.`
+      : s.type === 'churn'
+      ? `Churn ${s.rate}%: ${s.rate}% of nodes are replaced with fresh (state-free) nodes across 5 successive rounds before measurement. Neuromorphic protocols get 100 adaptation lookups between rounds to partially re-learn the changed topology. Tests steady-state routing resilience under ongoing node turnover.`
+      : s.type === 'continent'
+      ? `Cross-continental: sources drawn from ${contName[s.src]??s.src}, destinations from ${contName[s.dst]??s.dst}. Guaranteed to require at least one long trans-oceanic hop (~150–200 ms one-way). Tests whether long-range XOR strata are preserved after regional specialisation — the exact problem N-5's stratified synaptome was designed to solve. Neuromorphic protocols receive continent-crossing warmup lookups so trans-oceanic shortcuts can form before measurement.`
+      : 'Global: both source and destination chosen uniformly at random from all nodes. Worst-case baseline — no locality or hot-spot bias.';
+
+    // Protocol row tooltip descriptions.
+    const protoTips = {
+      kademlia:  'Classic Kademlia: XOR-metric k-bucket routing with α-parallel iterative node lookups. No geographic awareness.',
+      geo8:      'Geo-DHT-8: XOR routing with an 8-bit S2 geographic cell prefix embedded in node IDs. Biases routing toward physically nearby nodes.',
+      ngdht:     'Neuromorphic-1 (N-1): Hebbian synapse weighting layered on top of geographic routing. Synapses strengthen on frequently used paths. First-generation adaptive DHT.',
+      ngdht2:    'Neuromorphic-2 (N-2): Adds two-hop lookahead AP (advance-per-latency) selection and triadic-closure hop caching to N-1. Learns shortcut connections through intermediate nodes.',
+      ngdht2bp:  'Ablation — N-2 + Cascade Backpropagation only (N-2-BP): when a direct-to-target shortcut fires at a gateway node, all upstream path nodes learn a synapse to that gateway. Marginally better than N-2 alone because shortcuts must already exist to trigger the cascade.',
+      ngdht2shc: 'Ablation — N-2 + Source-Inclusive Hop Caching only (N-2-SHC): the source node itself caches a direct synapse to the target after every successful lookup (N-2 excluded the source). Fires unconditionally, rapidly seeding direct shortcuts throughout the network.',
+      ngdht3:    'Neuromorphic-3 (N-3): N-2 + source-inclusive hop caching + cascade backpropagation + tuned constants (denser bootstrap, longer synapse lifetime, stronger intra-regional weight). Full synergy: hop caching seeds shortcuts that cascade then propagates to all upstream nodes — six new shortcuts per event.',
+      ngdht4:    'Neuromorphic-4 (N-4): N-3 + two new mechanisms. (1) Lateral shortcut propagation: when any node learns a new direct route to a target, it immediately shares that shortcut with its top-3 same-region routing neighbours — the entire local sender cluster benefits from the first successful lookup. (2) Passive dead-node eviction: stale synapses to churned-out peers are zeroed on first encounter during routing, accelerating churn recovery vs. waiting for the decay schedule.',
+      ngdht5:    'Neuromorphic-5 (N-5): N-4 + two new mechanisms that fix specialisation-induced interference. (1) Stratified Synaptome: the 32 XOR strata are grouped into 8 buckets; each bucket is guaranteed a minimum of 3 synapse slots. When the synaptome is full, eviction targets the most over-represented bucket — regional training can no longer crowd out the long-range inter-continental entries needed for global routing. (2) Simulated Annealing: each node carries a temperature that starts high and cools as it participates in lookups. After every hop, the node probabilistically replaces its weakest over-represented synapse with a candidate from the most under-represented stratum group — either globally random (high T, exploration) or from its 2-hop neighbourhood (low T, exploitation).',
+    };
+
+    // Header row
+    let html = `
+      <div class="panel-title-bar">
+        <span class="panel-title">Benchmark — ${nodeCount.toLocaleString()} nodes · 500 lookups/cell <span class="bench-title-note">· each cell: mean / p95</span></span>
+        <button class="chart-dl-btn" id="benchCsvBtn">&#8595; CSV</button>
+      </div>
+      <div class="bench-table-wrap">
+      <table class="bench-table">
+        <thead>
+          <tr>
+            <th>Protocol</th>`;
+    for (const s of testSpecs) {
+      const cls = s.type === 'dest'      ? ' class="dest-col"'
+                : s.type === 'source'    ? ' class="src-col"'
+                : s.type === 'srcdest'   ? ' class="srcdest-col"'
+                : s.type === 'churn'     ? ' class="churn-col"'
+                : s.type === 'continent' ? ' class="continent-col"'
+                : '';
+      html += `<th colspan="2"${cls} data-tip="${specTip(s)}">${specLabel(s)}</th>`;
+    }
+    html += `
+          </tr>
+          <tr>
+            <th></th>`;
+    for (const s of testSpecs) {
+      const isSrc       = s.type === 'source';
+      const isDest      = s.type === 'dest';
+      const isSrcDest   = s.type === 'srcdest';
+      const isChurn     = s.type === 'churn';
+      const isContinent = s.type === 'continent';
+      const sub = isSrc ? ' src-sub' : isDest ? ' dest-sub' : isSrcDest ? ' srcdest-sub' : isChurn ? ' churn-sub' : isContinent ? ' continent-sub' : '';
+      html += `<th class="sub${sub}">hops</th><th class="sub${sub}">ms</th>`;
+    }
+    html += `</tr></thead><tbody>`;
+
+    // Find per-column minimums for winner highlighting
+    const minHops = {};
+    const minTime = {};
+    for (const s of testSpecs) {
+      const k = specKey(s);
+      minHops[k] = Infinity;
+      minTime[k] = Infinity;
+      for (const def of protocolDefs) {
+        const cell = data[def.key]?.[k];
+        if (cell?.hops?.mean != null && cell.hops.mean < minHops[k]) minHops[k] = cell.hops.mean;
+        if (cell?.time?.mean != null && cell.time.mean < minTime[k]) minTime[k] = cell.time.mean;
+      }
+    }
+
+    // Data rows
+    for (const def of protocolDefs) {
+      const rowTip = protoTips[def.key] ?? '';
+      html += `<tr><td class="proto-name"${rowTip ? ` data-tip="${rowTip}"` : ''}>${def.label}</td>`;
+      for (const s of testSpecs) {
+        const k           = specKey(s);
+        const cell        = data[def.key]?.[k];
+        const isSrc       = s.type === 'source';
+        const isDest      = s.type === 'dest';
+        const isSrcDest   = s.type === 'srcdest';
+        const isChurn     = s.type === 'churn';
+        const isContinent = s.type === 'continent';
+        const specCls     = isSrc ? ' src-cell' : isDest ? ' dest-cell' : isSrcDest ? ' srcdest-cell' : isChurn ? ' churn-cell' : isContinent ? ' continent-cell' : '';
+        if (!cell || !cell.hops) {
+          html += `<td class="no-data${specCls}" colspan="2">—</td>`;
+          continue;
+        }
+        const hops    = cell.hops.mean.toFixed(2);
+        const ms      = cell.time?.mean  != null ? cell.time.mean.toFixed(1)  : '—';
+        const p95hops = cell.hops.p95    != null ? cell.hops.p95.toFixed(1)   : null;
+        const p95ms   = cell.time?.p95   != null ? cell.time.p95.toFixed(0)   : null;
+        const sr      = cell.successRate < 0.99
+          ? ` <span class="sr">${(cell.successRate * 100).toFixed(0)}%</span>` : '';
+
+        const hopsWin = cell.hops.mean <= minHops[k] + 0.005;
+        const timeWin = cell.time?.mean != null && cell.time.mean <= minTime[k] + 0.5;
+
+        const p95HopsStr = p95hops ? `<span class="p95">${p95hops}</span>` : '';
+        const p95MsStr   = p95ms   ? `<span class="p95">${p95ms}</span>`   : '';
+
+        html += `<td class="hops-cell${hopsWin ? ' win' : ''}${specCls}">${hops}${sr}${p95HopsStr}</td>`;
+        html += `<td class="time-cell${timeWin ? ' win' : ''}${specCls}">${ms}${p95MsStr}</td>`;
+      }
+      html += `</tr>`;
+    }
+
+    html += `</tbody></table></div>`;
+    container.innerHTML = html;
+
+    // Wire up benchmark CSV button (can't use addEventListener before innerHTML)
+    const benchCsvBtn = container.querySelector('#benchCsvBtn');
+    if (benchCsvBtn) {
+      benchCsvBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const csv = this._benchmarkCSV(benchResult, nodeCount);
+        if (csv) this._downloadCSV(csv, `dht-benchmark-${Date.now()}.csv`);
+      });
+    }
+
+    this._showSection('benchmarkResults');
+    this._hideSection('lookupResults');
+    this._hideSection('churnResults');
+    this._hideSection('demoResults');
+    this._hideSection('trainingResults');
+    this._hideSection('concordanceResults');
+    this._hideSection('pairResults');
+    this.panel?.classList.add('bench-wide');
+  }
+
+  _benchmarkCSV(benchResult, nodeCount) {
+    if (!benchResult) return '';
+    const { protocolDefs, testSpecs, data } = benchResult;
+    const specLabel = s => s.type === 'regional'  ? `${s.radius}km`
+                         : s.type === 'dest'       ? `${s.pct}%dest`
+                         : s.type === 'source'     ? `${s.pct}%src`
+                         : s.type === 'srcdest'    ? `${s.srcPct}%→${s.destPct}%`
+                         : s.type === 'churn'      ? `${s.rate}%churn`
+                         : s.type === 'continent'  ? `${s.src}→${s.dst}`
+                         : 'global';
+    // Build header: Protocol, then hops+ms per spec
+    const headerCols = ['Protocol'];
+    for (const s of testSpecs) {
+      const lbl = specLabel(s);
+      headerCols.push(`${lbl} hops`, `${lbl} hops p95`, `${lbl} ms`, `${lbl} ms p95`);
+    }
+    const rows = [headerCols.join(',')];
+    for (const proto of protocolDefs) {
+      const cols = [proto.label ?? proto.key];
+      for (const s of testSpecs) {
+        const key = s.type === 'regional'  ? `r${s.radius}`
+                  : s.type === 'dest'       ? `dest_${s.pct}`
+                  : s.type === 'source'     ? `src_${s.pct}`
+                  : s.type === 'srcdest'    ? `srcdest_${s.srcPct}_${s.destPct}`
+                  : s.type === 'churn'      ? `churn_${s.rate}`
+                  : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
+                  : 'global';
+        const cell = data?.[proto.key]?.[key];
+        cols.push(
+          cell?.hops?.mean  != null ? cell.hops.mean.toFixed(3)  : '',
+          cell?.hops?.p95   != null ? cell.hops.p95.toFixed(3)   : '',
+          cell?.time?.mean  != null ? cell.time.mean.toFixed(2)  : '',
+          cell?.time?.p95   != null ? cell.time.p95.toFixed(2)   : '',
+        );
+      }
+      rows.push(cols.join(','));
+    }
+    rows.unshift(`# DHT Benchmark — ${nodeCount?.toLocaleString()} nodes · 500 lookups/cell`);
+    return rows.join('\r\n');
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  _setText(id, val) {
+    const el = this._el(id);
+    if (el) el.textContent = val;
+  }
+
+  _showSection(id) {
+    const el = this._el(id);
+    if (el) el.style.display = '';
+  }
+
+  _hideSection(id) {
+    const el = this._el(id);
+    if (el) el.style.display = 'none';
+  }
+
+  clear() {
+    Object.values(this._charts).forEach(c => c.destroy?.());
+    this._charts = {};
+    this._hideSection('benchmarkResults');
+    this._hideSection('concordanceResults');
+    this._hideSection('pairResults');
+    this.panel?.classList.remove('bench-wide');
+  }
+}

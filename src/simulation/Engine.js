@@ -1,4 +1,4 @@
-import { randomU32, computeStats, haversine, continentOf } from '../utils/geo.js';
+import { randomU64, computeStats, haversine, continentOf } from '../utils/geo.js';
 
 /**
  * SimulationEngine – orchestrates lookup tests and churn tests on a DHT.
@@ -212,7 +212,7 @@ export class SimulationEngine {
                 // build dense shortcut webs (the tributary effect).
                 const srcId = source.id;
                 receiver = others.reduce((best, n) =>
-                  ((n.id ^ srcId) >>> 0) < ((best.id ^ srcId) >>> 0) ? n : best
+                  (n.id ^ srcId) < (best.id ^ srcId) ? n : best
                 );
               }
             } else {
@@ -226,7 +226,7 @@ export class SimulationEngine {
           } else {
             receiver = this._randomOtherNode(dht, source.id);
           }
-          result = await dht.lookup(source.id, receiver ? receiver.id : randomU32());
+          result = await dht.lookup(source.id, receiver ? receiver.id : randomU64());
         }
 
         if (result && result.found) {
@@ -568,7 +568,7 @@ export class SimulationEngine {
         if (!source) { failures++; continue; }
         try {
           const receiver = this._randomOtherNode(dht, source.id);
-          const result = await dht.lookup(source.id, receiver ? receiver.id : randomU32());
+          const result = await dht.lookup(source.id, receiver ? receiver.id : randomU64());
           if (result && result.found) {
             hopsArr.push(result.hops);
             timeArr.push(result.time);

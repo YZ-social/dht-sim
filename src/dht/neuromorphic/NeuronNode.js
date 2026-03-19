@@ -66,10 +66,10 @@ export class NeuronNode extends DHTNode {
    * XOR distance can only decrease each hop, so no node can be revisited.
    */
   progressCandidates(targetId) {
-    const myDist = (this.id ^ targetId) >>> 0;
+    const myDist = this.id ^ targetId;  // BigInt XOR
     const result = [];
     for (const s of this.synaptome.values()) {
-      if (((s.peerId ^ targetId) >>> 0) < myDist) result.push(s);
+      if ((s.peerId ^ targetId) < myDist) result.push(s);
     }
     return result;
   }
@@ -88,12 +88,12 @@ export class NeuronNode extends DHTNode {
    *                  genuinely represent fast routes, not just frequent ones.
    */
   bestByAP(candidates, targetId, weightScale = 0.15) {
-    const myDist = (this.id ^ targetId) >>> 0;
+    const myDist = this.id ^ targetId;  // BigInt XOR
     let best = null;
     let bestAP = -Infinity;
     for (const s of candidates) {
-      const peerDist = (s.peerId ^ targetId) >>> 0;
-      const delta    = myDist - peerDist;
+      const peerDist = s.peerId ^ targetId;  // BigInt XOR
+      const delta    = Number(myDist - peerDist); // Convert for float arithmetic
       const ap       = (delta / s.latency) * (1 + weightScale * s.weight);
       if (ap > bestAP) { bestAP = ap; best = s; }
     }

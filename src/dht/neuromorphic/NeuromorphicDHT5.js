@@ -58,7 +58,7 @@
 import { DHT }               from '../DHT.js';
 import { Synapse }           from './Synapse.js';
 import { NeuronNode }        from './NeuronNode.js';
-import { randomU32,
+import { randomU64, clz64,
          roundTripLatency,
          buildXorRoutingTable } from '../../utils/geo.js';
 import { geoCellId }         from '../../utils/s2.js';
@@ -84,7 +84,7 @@ const MAX_SYNAPTOME_SIZE     = 800;
 // ── N-5 specific ──────────────────────────────────────────────────────────────
 
 // Stratification
-const STRATA_GROUPS   = 8;    // 32 strata ÷ 4 = 8 groups of 4 strata each
+const STRATA_GROUPS   = 16;   // 64 strata ÷ 4 = 16 groups of 4 strata each
 const STRATUM_FLOOR   = 3;    // minimum synapses guaranteed per stratum group
 
 // Simulated annealing
@@ -123,9 +123,9 @@ export class NeuromorphicDHT5 extends DHT {
 
   async addNode(lat, lng) {
     const prefix = geoCellId(lat, lng, GEO_BITS);
-    const shift  = 32 - GEO_BITS;
-    const rand   = randomU32() & ((1 << shift) - 1);
-    const id     = ((prefix << shift) | rand) >>> 0;
+    const shift  = 64 - GEO_BITS;
+    const randBits = randomU64() & ((1n << BigInt(shift)) - 1n);
+    const id     = (BigInt(prefix) << BigInt(shift)) | randBits;
     const node   = new NeuronNode({ id, lat, lng });
     // Inject per-node annealing state (duck-typing, same pattern as _nodeMapRef)
     node.temperature = T_INIT;
@@ -147,11 +147,11 @@ export class NeuromorphicDHT5 extends DHT {
   // ── Neurogenesis ──────────────────────────────────────────────────────────
 
   buildRoutingTables() {
-    const sorted = [...this.nodeMap.values()].sort((a, b) => a.id - b.id);
+    const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     for (const node of sorted) {
       for (const peer of buildXorRoutingTable(node.id, sorted, this._k * K_BOOT_FACTOR)) {
         const latMs   = roundTripLatency(node, peer);
-        const stratum = Math.clz32((node.id ^ peer.id) >>> 0);
+        const stratum = clz64(node.id ^ peer.id);
         // Bootstrap uses addSynapse directly — synaptome is empty at this point
         // (40 initial peers well under MAX_SYNAPTOME_SIZE) so no eviction needed.
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
@@ -188,14 +188,14 @@ export class NeuromorphicDHT5 extends DHT {
       const current = this.nodeMap.get(currentId);
       if (!current || !current.alive) break;
 
-      const currentDist = (currentId ^ targetKey) >>> 0;
-      if (currentDist === 0) { reached = true; break; }
+      const currentDist = current.id ^ targetKey;  // BigInt
+      if (currentDist === 0n) { reached = true; break; }
 
       // Collect alive candidates that make strict XOR progress.
       // N-4 / N-5: zero-weight dead entries immediately (passive dead-node eviction).
       const candidates = [];
       for (const s of current.synaptome.values()) {
-        if (((s.peerId ^ targetKey) >>> 0) >= currentDist) continue;
+        if ((s.peerId ^ targetKey) >= currentDist) continue;
         const peer = this.nodeMap.get(s.peerId);
         if (!peer?.alive) {
           s.weight = 0;
@@ -207,7 +207,7 @@ export class NeuromorphicDHT5 extends DHT {
 
       // Two-tier region check.
       const inTargetRegion =
-        ((currentId ^ targetKey) >>> (32 - GEO_REGION_BITS)) === 0;
+        ((current.id ^ targetKey) >> BigInt(64 - GEO_REGION_BITS)) === 0n;
 
       // Priority 0 — Direct-to-target short-circuit.
       let nextSyn;
@@ -304,8 +304,8 @@ export class NeuromorphicDHT5 extends DHT {
   _bestByTwoHopAP(current, candidates, targetKey, currentDist, wScale) {
     const sorted = candidates
       .map(s => {
-        const pd  = (s.peerId ^ targetKey) >>> 0;
-        const ap1 = ((currentDist - pd) / s.latency) * (1 + wScale * s.weight);
+        const pd  = s.peerId ^ targetKey;  // BigInt
+        const ap1 = (Number(currentDist - pd) / s.latency) * (1 + wScale * s.weight);
         return { s, ap1 };
       })
       .sort((a, b) => b.ap1 - a.ap1);
@@ -316,15 +316,15 @@ export class NeuromorphicDHT5 extends DHT {
     let bestAP2 = -Infinity;
 
     for (const firstSyn of probeSet) {
-      const firstDist = (firstSyn.peerId ^ targetKey) >>> 0;
-      if (firstDist === 0) return firstSyn;
+      const firstDist = firstSyn.peerId ^ targetKey;  // BigInt
+      if (firstDist === 0n) return firstSyn;
 
       const firstNode = this.nodeMap.get(firstSyn.peerId);
       if (!firstNode?.alive) continue;
 
       const fwdCands = [];
       for (const fs of firstNode.synaptome.values()) {
-        if (((fs.peerId ^ targetKey) >>> 0) < firstDist) {
+        if ((fs.peerId ^ targetKey) < firstDist) {
           if (this.nodeMap.get(fs.peerId)?.alive) fwdCands.push(fs);
         }
       }
@@ -335,11 +335,11 @@ export class NeuromorphicDHT5 extends DHT {
         secondLatency = 0;
       } else {
         const bestFwd = firstNode.bestByAP(fwdCands, targetKey, wScale);
-        twoHopDist    = (bestFwd.peerId ^ targetKey) >>> 0;
+        twoHopDist    = bestFwd.peerId ^ targetKey;  // BigInt
         secondLatency = bestFwd.latency;
       }
 
-      const progress2 = currentDist - twoHopDist;
+      const progress2 = Number(currentDist - twoHopDist);  // Convert for float arithmetic
       const totalLat  = firstSyn.latency + secondLatency;
       const ap2       = (progress2 / totalLat) * (1 + wScale * firstSyn.weight);
 
@@ -374,7 +374,7 @@ export class NeuromorphicDHT5 extends DHT {
     if (nodeA.hasSynapse(cId)) return;
 
     const latMs   = roundTripLatency(nodeA, nodeC);
-    const stratum = Math.clz32((nodeA.id ^ nodeC.id) >>> 0);
+    const stratum = clz64(nodeA.id ^ nodeC.id);
     const syn     = new Synapse({ peerId: cId, latencyMs: latMs, stratum });
     syn.weight    = initialWeight; // direct shortcuts start at 0.5; cascade relays at 0.1
     this._stratifiedAdd(nodeA, syn);
@@ -390,18 +390,18 @@ export class NeuromorphicDHT5 extends DHT {
     if (nodeA.hasSynapse(cId)) return;
 
     const latMs   = roundTripLatency(nodeA, nodeC);
-    const stratum = Math.clz32((nodeA.id ^ nodeC.id) >>> 0);
+    const stratum = clz64(nodeA.id ^ nodeC.id);
     const syn     = new Synapse({ peerId: cId, latencyMs: latMs, stratum });
     syn.weight    = 0.5;
     const added   = this._stratifiedAdd(nodeA, syn);
 
     if (added) {
       // Lateral spread — share the new shortcut with A's top same-region neighbours.
-      const aRegion  = aId >>> (32 - GEO_REGION_BITS);
+      const aRegion  = aId >> BigInt(64 - GEO_REGION_BITS);
       const regional = [];
       for (const s of nodeA.synaptome.values()) {
         if (s.peerId === cId) continue;
-        if ((s.peerId >>> (32 - GEO_REGION_BITS)) !== aRegion) continue;
+        if ((s.peerId >> BigInt(64 - GEO_REGION_BITS)) !== aRegion) continue;
         if (this.nodeMap.get(s.peerId)?.alive) regional.push(s);
       }
       regional.sort((a, b) => b.weight - a.weight);
@@ -497,7 +497,7 @@ export class NeuromorphicDHT5 extends DHT {
     // Swap: evict the loser, install the explorer at a low initial weight.
     node.synaptome.delete(weakest.peerId);
     const latMs   = roundTripLatency(node, candidate);
-    const stratum = Math.clz32((node.id ^ candidate.id) >>> 0);
+    const stratum = clz64(node.id ^ candidate.id);
     const newSyn  = new Synapse({ peerId: candidate.id, latencyMs: latMs, stratum });
     newSyn.weight = 0.1; // must prove itself before getting reinforced
     node.addSynapse(newSyn);
@@ -526,7 +526,7 @@ export class NeuromorphicDHT5 extends DHT {
       if (id === node.id) continue;
       const candidate = this.nodeMap.get(id);
       if (!candidate?.alive || node.hasSynapse(id)) continue;
-      const stratum = Math.clz32((node.id ^ id) >>> 0);
+      const stratum = clz64(node.id ^ id);
       if (stratum >= lo && stratum <= hi) return candidate;
     }
     return null;
@@ -549,7 +549,7 @@ export class NeuromorphicDHT5 extends DHT {
         if (id === node.id || node.hasSynapse(id)) continue;
         const candidate = this.nodeMap.get(id);
         if (!candidate?.alive) continue;
-        const stratum = Math.clz32((node.id ^ id) >>> 0);
+        const stratum = clz64(node.id ^ id);
         if (stratum >= lo && stratum <= hi) {
           candidates.push(candidate);
           if (candidates.length >= ANNEAL_LOCAL_SAMPLE) break outer;

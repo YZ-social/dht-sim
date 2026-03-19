@@ -98,7 +98,7 @@ async function init() {
     globe.clearArcs();
     globe.showNodeConnections(nodeId, nodeMap, entries.map(n => n.id));
 
-    const hex = nodeId.toString(16).padStart(8, '0').toUpperCase();
+    const hex = nodeId.toString(16).padStart(16, '0').toUpperCase();
     controls.setStatus(
       `Node 0x${hex} — ${entries.length} routing-table contacts. Click elsewhere to deselect.`,
       'info'
@@ -283,7 +283,7 @@ async function onDemoLookup() {
   }
 
   controls.setStatus(
-    `Demo lookup from node ${source.id.toString(16)}` +
+    `Demo lookup from node 0x${source.id.toString(16).padStart(16,'0').toUpperCase().slice(0,8)}…` +
     `${params.regional ? ` (regional ≤${params.regionalRadius} km)` : ''}…`,
     'info'
   );
@@ -303,8 +303,8 @@ async function onDemoLookup() {
     const receiver = nearby[Math.floor(Math.random() * nearby.length)];
     result = await dht.lookup(source.id, receiver.id);
   } else {
-    const { randomU32 } = await import('./utils/geo.js');
-    result = await dht.lookup(source.id, randomU32());
+    const { randomU64 } = await import('./utils/geo.js');
+    result = await dht.lookup(source.id, randomU64());
   }
 
   // Sanity-check: destination should be within the regional ring.
@@ -564,7 +564,7 @@ async function onConcordance() {
   let session   = 0;
 
   results.clearConcordance();
-  controls.setStatus(`Concordance: relay 0x${relay.id.toString(16).padStart(8,'0').toUpperCase().slice(0,6)}… · ${participants.length} participants`, 'info');
+  controls.setStatus(`Concordance: relay 0x${relay.id.toString(16).padStart(16,'0').toUpperCase().slice(0,8)}… · ${participants.length} participants`, 'info');
 
   while (concordanceActive) {
     session++;

@@ -78,7 +78,7 @@ export class Controls {
   get nodeCount()   { return parseInt(this._el('nodeCount')?.value ?? 500); }
   get kParam()      { return parseInt(this._el('kParam')?.value ?? 20); }
   get alphaParam()  { return parseInt(this._el('alphaParam')?.value ?? 3); }
-  get idBits()      { return parseInt(this._el('idBits')?.value ?? 32); }
+  get idBits()      { return parseInt(this._el('idBits')?.value ?? 64); }
   get nodeDelay()   { return parseInt(this._el('nodeDelay')?.value ?? 10); }
   get msgCount()    { return parseInt(this._el('msgCount')?.value ?? 500); }
   get hotPct()      { return parseInt(this._el('hotPct')?.value  ?? 100); }

@@ -88,42 +88,54 @@ export function randomU32() {
 }
 
 /**
- * O(n log n) XOR-bucket routing table builder.
+ * Generate a cryptographically random 64-bit unsigned BigInt.
+ */
+export function randomU64() {
+  const arr = crypto.getRandomValues(new Uint32Array(2));
+  return (BigInt(arr[0]) << 32n) | BigInt(arr[1]);
+}
+
+/**
+ * Count leading zeros of a 64-bit BigInt (0n returns 64).
+ */
+export function clz64(n) {
+  if (n === 0n) return 64;
+  const hi = Number(n >> 32n);
+  if (hi !== 0) return Math.clz32(hi);
+  return 32 + Math.clz32(Number(n & 0xFFFFFFFFn));
+}
+
+/**
+ * O(n log n) XOR-bucket routing table builder for 64-bit BigInt node IDs.
  *
- * Given all nodes pre-sorted ascending by .id (unsigned 32-bit), returns up
- * to k peers per XOR-distance bucket for the node with the given selfId.
- * Replaces the O(n²) double-loop in buildRoutingTables().
+ * Given all nodes pre-sorted ascending by .id (BigInt), returns up to k peers
+ * per XOR-distance bucket for the node with the given selfId.
  *
- * Algorithm: for Kademlia bucket b (0 = LSB bucket, 31 = MSB bucket), the
- * peer IDs that belong to bucket b form a contiguous range in the sorted ID
- * array — their top (32-b) bits match selfId except that bit b is flipped.
- * Binary search locates that range in O(log n); we take the first k entries.
- *
- * @param {number}   selfId  32-bit unsigned node ID.
- * @param {object[]} sorted  Nodes sorted ascending by .id (all nodes incl. self).
+ * @param {BigInt}   selfId  64-bit unsigned BigInt node ID.
+ * @param {object[]} sorted  Nodes sorted ascending by .id (BigInt).
  * @param {number}   k       Max peers per bucket.
  * @returns {object[]}       Peer nodes to add (never includes selfId).
  */
 export function buildXorRoutingTable(selfId, sorted, k) {
   const result = [];
 
-  for (let b = 0; b <= 31; b++) {
+  for (let b = 0; b <= 63; b++) {
+    const bBig = BigInt(b);
     let rangeStart, rangeEnd;
 
-    if (b < 31) {
-      // Top (31-b) bits of peer match selfId; bit b is flipped; lower b bits = any.
-      const highBits    = selfId >>> (b + 1);
-      const flippedBitB = ((selfId >>> b) & 1) ^ 1;
-      const peerPfx     = ((highBits << 1) | flippedBitB) >>> 0;
-      rangeStart        = (peerPfx << b) >>> 0;
-      rangeEnd          = (rangeStart | ((1 << b) - 1)) >>> 0;
+    if (b < 63) {
+      const highBits    = selfId >> (bBig + 1n);
+      const flippedBitB = ((selfId >> bBig) & 1n) ^ 1n;
+      const peerPfx     = (highBits << 1n) | flippedBitB;
+      rangeStart        = peerPfx << bBig;
+      rangeEnd          = rangeStart | ((1n << bBig) - 1n);
     } else {
-      // b = 31: MSB differs — peers live in the opposite half of the ID space.
-      rangeStart = (selfId >>> 31) === 0 ? 0x80000000 : 0;
-      rangeEnd   = (selfId >>> 31) === 0 ? 0xFFFFFFFF : 0x7FFFFFFF;
+      // b = 63: MSB differs — peers live in the opposite half of the ID space.
+      rangeStart = (selfId >> 63n) === 0n ? (1n << 63n) : 0n;
+      rangeEnd   = (selfId >> 63n) === 0n ? 0xFFFFFFFFFFFFFFFFn : ((1n << 63n) - 1n);
     }
 
-    // Binary search for the first index ≥ rangeStart.
+    // Binary search for the first index >= rangeStart.
     let lo = 0, hi = sorted.length;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
@@ -131,7 +143,6 @@ export function buildXorRoutingTable(selfId, sorted, k) {
     }
 
     // Collect up to k peers from [rangeStart, rangeEnd].
-    // selfId is never in any bucket range (XOR with self = 0 has no bucket).
     let taken = 0;
     for (let i = lo; i < sorted.length && taken < k; i++) {
       if (sorted[i].id > rangeEnd) break;

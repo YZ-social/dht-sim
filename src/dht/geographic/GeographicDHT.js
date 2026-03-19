@@ -26,7 +26,7 @@
  */
 
 import { KademliaDHT, KademliaNode } from '../kademlia/KademliaDHT.js';
-import { randomU32 }                  from '../../utils/geo.js';
+import { randomU64 }                  from '../../utils/geo.js';
 import { geoCellId }                  from '../../utils/s2.js';
 
 export class GeographicDHT extends KademliaDHT {
@@ -50,10 +50,10 @@ export class GeographicDHT extends KademliaDHT {
    */
   async addNode(lat, lng) {
     const prefix   = geoCellId(lat, lng, this.geoBits);
-    const shift    = 32 - this.geoBits;
-    const randMask = shift > 0 ? ((1 << shift) - 1) : 0;
-    const rand     = randomU32() & randMask;
-    const id       = ((prefix << shift) | rand) >>> 0;  // unsigned 32-bit
+    const shift    = 64 - this.geoBits;
+    // Top geoBits encode geographic cell; bottom (64-geoBits) bits are random.
+    const randBits = randomU64() & ((1n << BigInt(shift)) - 1n);
+    const id       = (BigInt(prefix) << BigInt(shift)) | randBits;
 
     const node = new KademliaNode({
       id, lat, lng, k: this.k, bits: this.bits,

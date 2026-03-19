@@ -1,6 +1,6 @@
 import { DHTNode } from '../DHTNode.js';
 import { DHT } from '../DHT.js';
-import { randomU32, roundTripLatency, buildXorRoutingTable } from '../../utils/geo.js';
+import { randomU64, clz64, roundTripLatency, buildXorRoutingTable } from '../../utils/geo.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // K-Bucket
@@ -47,7 +47,7 @@ export class KademliaNode extends DHTNode {
    * @param {number} opts.k     - Bucket size (default 20)
    * @param {number} opts.bits  - Key-space bit width (default 32)
    */
-  constructor({ id, lat, lng, k = 20, bits = 32 }) {
+  constructor({ id, lat, lng, k = 20, bits = 64 }) {
     super({ id, lat, lng });
     this.k = k;
     this.bits = bits;
@@ -58,15 +58,14 @@ export class KademliaNode extends DHTNode {
   // ── XOR helpers ─────────────────────────────────────────────────────────
 
   xorDistance(otherId) {
-    return (this.id ^ otherId) >>> 0; // Unsigned 32-bit XOR
+    return this.id ^ otherId; // 64-bit BigInt XOR
   }
 
   /** 0-based bucket index for another node's ID (highest differing bit). */
   bucketIndex(otherId) {
-    const xor = this.xorDistance(otherId);
-    if (xor === 0) return -1;
-    // clz32 counts leading zeros in a 32-bit representation
-    return Math.min(31 - Math.clz32(xor), this.bits - 1);
+    const xor = this.id ^ otherId;
+    if (xor === 0n) return -1;
+    return Math.min(63 - clz64(xor), this.bits - 1);
   }
 
   // ── Routing table management ─────────────────────────────────────────────
@@ -80,9 +79,9 @@ export class KademliaNode extends DHTNode {
   }
 
   removeFromBucket(nodeId) {
-    const xor = (this.id ^ nodeId) >>> 0;
-    if (xor === 0) return;
-    const idx = Math.min(31 - Math.clz32(xor), this.bits - 1);
+    const xor = this.id ^ nodeId;
+    if (xor === 0n) return;
+    const idx = Math.min(63 - clz64(xor), this.bits - 1);
     this.buckets[idx].remove(nodeId);
   }
 
@@ -91,10 +90,13 @@ export class KademliaNode extends DHTNode {
    * distance to `targetId`.
    */
   findClosest(targetId, count) {
-    const xorTo = id => (id ^ targetId) >>> 0;
     const all = this.buckets.flatMap(b => b.getAll());
     return all
-      .sort((a, b) => xorTo(a.id) - xorTo(b.id))
+      .sort((a, b) => {
+        const da = a.id ^ targetId;
+        const db = b.id ^ targetId;
+        return da < db ? -1 : da > db ? 1 : 0;
+      })
       .slice(0, count);
   }
 
@@ -157,7 +159,7 @@ export class KademliaDHT extends DHT {
     super(config);
     this.k = config.k ?? 20;
     this.alpha = config.alpha ?? 3;
-    this.bits = config.bits ?? 32;
+    this.bits = config.bits ?? 64;
     /** @type {Map<number, KademliaNode>} */
     this.nodeMap = new Map();
   }
@@ -165,7 +167,7 @@ export class KademliaDHT extends DHT {
   // ── Node lifecycle ───────────────────────────────────────────────────────
 
   async addNode(lat, lng) {
-    const id = randomU32();
+    const id = randomU64();
     const node = new KademliaNode({
       id, lat, lng, k: this.k, bits: this.bits,
     });
@@ -189,7 +191,7 @@ export class KademliaDHT extends DHT {
    */
   buildRoutingTables() {
     const k      = this.k;
-    const sorted = [...this.nodeMap.values()].sort((a, b) => a.id - b.id);
+    const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     for (const node of sorted) {
       for (const peer of buildXorRoutingTable(node.id, sorted, k)) {
         node.addToBucket(peer);
@@ -238,7 +240,7 @@ export class KademliaDHT extends DHT {
     const useGeo = geoKey !== undefined;
     const xorTo = useGeo
       ? id => { const n = this.nodeMap.get(id); return n ? (n.s2Cell ^ geoKey) >>> 0 : 0xffffffff; }
-      : id => (id ^ targetKey) >>> 0;
+      : id => id ^ targetKey;  // BigInt XOR for non-geo mode
 
     // Bootstrap shortlist from source's routing table
     let shortlist = useGeo
@@ -249,7 +251,7 @@ export class KademliaDHT extends DHT {
 
     let totalHops = 0;
     // Track the closest node seen so far for termination
-    let closestDist = shortlist.length ? xorTo(shortlist[0].id) : Infinity;
+    let closestDist = shortlist.length ? xorTo(shortlist[0].id) : (useGeo ? 0xffffffff : 0xFFFFFFFFFFFFFFFFn);
     let noProgressRounds = 0;
 
     while (true) {
@@ -295,11 +297,14 @@ export class KademliaDHT extends DHT {
       const seen = new Set();
       shortlist = combined
         .filter(n => n && n.alive && !seen.has(n.id) && seen.add(n.id))
-        .sort((a, b) => xorTo(a.id) - xorTo(b.id))
+        .sort((a, b) => {
+          const da = xorTo(a.id), db = xorTo(b.id);
+          return da < db ? -1 : da > db ? 1 : 0;
+        })
         .slice(0, k);
 
       // Termination: stop when no closer node is found after 2 fruitless rounds
-      const newClosest = shortlist.length ? xorTo(shortlist[0].id) : Infinity;
+      const newClosest = shortlist.length ? xorTo(shortlist[0].id) : (useGeo ? 0xffffffff : 0xFFFFFFFFFFFFFFFFn);
       if (newClosest >= closestDist) {
         if (++noProgressRounds >= 2) break;
       } else {

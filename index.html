@@ -25,7 +25,7 @@
 
     <!-- Row 1: Network topology parameters -->
     <div class="ctrl-line ctrl-line-top">
-      <span class="app-title">&#9670; DHT Globe</span>
+      <button class="app-title" id="btnAbout" data-tip="Open the DHT Globe user guide.">&#9670; About DHT Globe</button>
 
       <div class="ctrl-group cg-net">
         <span class="cg-label">Network</span>
@@ -337,6 +337,96 @@
 
 </div>
 
+<!-- ── User Guide Overlay ──────────────────────────────────────────────── -->
+<div id="guideOverlay">
+  <div id="guideModal">
+
+    <div id="guideHeader">
+      <span class="guide-title">&#9670; DHT Globe — User Guide</span>
+      <button id="guideClose">&#x2715; Close</button>
+    </div>
+
+    <div id="guideBody">
+
+      <p class="guide-intro">
+        <strong>DHT Globe</strong> is a browser-based simulator for Distributed Hash Table protocols.
+        Nodes are placed on a 3-D globe; lookups route messages through the network hop by hop.
+        Classical protocols (Kademlia, Geographic) use static routing tables.
+        <strong>Neuromorphic</strong> protocols learn from traffic — synaptic shortcuts form on heavily-used
+        paths and decay on idle ones, letting the routing table adapt over time.
+      </p>
+
+      <div class="guide-section">
+        <div class="guide-section-title">Quick Start</div>
+        <ol class="guide-steps">
+          <li>Choose a <strong>Protocol</strong> and set the <strong>Node count</strong>, then click <strong>Init</strong> to build the network.</li>
+          <li>Click <strong>Lookup Test</strong> to run random key lookups and see hop-count and latency stats.</li>
+          <li>Click <strong>Demo</strong> to animate a single lookup — arcs trace each hop on the globe.</li>
+          <li>For neuromorphic protocols, click <strong>Train Network</strong> and watch average hops drop as synaptic shortcuts form.</li>
+          <li>Click <strong>Benchmark</strong> (or enable <strong>Fast</strong> mode) to compare protocols side-by-side across many conditions.</li>
+        </ol>
+        <p class="guide-tip">Drag the globe to rotate · scroll to zoom · click any node to show its routing table connections.</p>
+      </div>
+
+      <div class="guide-section">
+        <div class="guide-section-title">Tests &amp; Modes</div>
+        <table class="guide-table">
+          <thead><tr><th>Button</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td>&#9632; Init</td><td>Place nodes on land, assign IDs, and populate routing tables. Re-clicking resets everything.</td></tr>
+            <tr><td>&#9654; Lookup Test</td><td>Run <em>Count</em> random key lookups. Reports success rate, hop count (avg / p50 / p95 / max), and latency histograms.</td></tr>
+            <tr><td>&#8635; Churn Test</td><td>Simulate node turnover over multiple intervals. Measures how routing health (success rate, hop count) degrades and recovers as nodes leave and join.</td></tr>
+            <tr><td>&#9654; Demo</td><td>Animate one lookup on the globe. The camera follows each hop; arcs shift yellow → orange → deep orange with distance.</td></tr>
+            <tr><td>&#10227; Train Network</td><td>Repeat lookup sessions in a loop. Each session also runs the neuromorphic learning pass — Markov annealing, hop-caching, triadic closure, LTP. Press again to stop. Exports a CSV of all sessions.</td></tr>
+            <tr><td>&#9678; Concordance</td><td>Star-topology test: all participants route to and from a single relay node. Neuromorphic protocols converge toward 1 hop in both directions as the synaptome learns the relay's address.</td></tr>
+            <tr><td>&#x21D4; Pair Learning</td><td>Each node is assigned a fixed random target. Every session routes all pairs and records average hops. Measures how quickly the network memorises persistent routes.</td></tr>
+            <tr><td>&#x1F321; Hotspot</td><td>Two-phase load test. <em>Highway</em>: tracks which nodes relay the most traffic (Gini / Lorenz curve). <em>Storage</em>: queries content items with a Zipf distribution and measures query-load concentration.</td></tr>
+            <tr><td>&#9654;&#9654; Benchmark</td><td>Runs every protocol (or the Fast subset) across many conditions: regional radii, source/dest-restricted, global, continent-crossing, and churn. No Init required.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="guide-section">
+        <div class="guide-section-title">Control Groups</div>
+        <table class="guide-table">
+          <thead><tr><th>Group</th><th>Parameters</th></tr></thead>
+          <tbody>
+            <tr><td>Network</td><td><strong>Protocol</strong> — routing algorithm. <strong>Nodes</strong> — network size (20 – 100K). <strong>K</strong> — bucket size (Kademlia default 20). <strong>α</strong> — parallel queries per round. <strong>Bits</strong> — ID bit-width (64 default). <strong>Delay</strong> — per-node processing latency added to every hop.</td></tr>
+            <tr><td>Lookup</td><td><strong>Count</strong> — lookups per test run. <strong>Hot%</strong> — traffic concentration: 100% = uniform random; lower values focus traffic on a popular sub-network so neuromorphic protocols learn denser shortcuts.</td></tr>
+            <tr><td>Churn</td><td><strong>Rate</strong> — % of nodes replaced per interval. <strong>Int</strong> — number of churn cycles. <strong>L/Int</strong> — lookups measured per cycle.</td></tr>
+            <tr><td>Filters</td><td><strong>Region</strong> — restrict lookups to targets within a km radius. <strong>Src</strong> — only the top X% of nodes initiate lookups. <strong>Dest</strong> — only the top X% of nodes are valid targets.</td></tr>
+            <tr><td>Hotspot</td><td><strong>Queries</strong> — number of lookups in the highway phase. <strong>Items</strong> — content items in the storage phase. <strong>Zipf</strong> — exponent controlling skew (0 = uniform, 1 = classic internet, 2 = extreme).</td></tr>
+            <tr><td>Bench</td><td><strong>Warmup</strong> — training sessions given to neuromorphic protocols before scoring (each session = 500 lookups). <strong>Fast</strong> — run only Kademlia, G-DHT-8, N-8W, N-9W, and the Compare pick. <strong>Compare</strong> — which additional neuromorphic to include in Fast mode.</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="guide-section">
+        <div class="guide-section-title">Protocols</div>
+        <table class="guide-table">
+          <thead><tr><th>Protocol</th><th>Key idea</th></tr></thead>
+          <tbody>
+            <tr><td>Kademlia</td><td>Classical DHT baseline. XOR distance metric; O(log N) hops. K-bucket routing table, α parallel queries per round.</td></tr>
+            <tr><td>Geographic-8 / 16</td><td>Assigns IDs from physical location using an S2 Hilbert-curve prefix. Nearby nodes share high-order bits — routing paths naturally follow geographic clusters. Higher prefix bits = finer resolution.</td></tr>
+            <tr><td>N-1</td><td>First neuromorphic variant. Adds a synaptome (learned routing table) on top of Kademlia. Every hop caches the path — heavily-used routes get stronger synapses; idle ones decay.</td></tr>
+            <tr><td>N-2 / N-2-BP / N-2-SHC</td><td>Adds learning algorithms: backpropagation credit assignment and stochastic hill-climbing to guide which synapses reinforce.</td></tr>
+            <tr><td>N-3</td><td>Triadic closure — if A routes through B to reach C, A tentatively wires a direct synapse to C, shortcutting B over time.</td></tr>
+            <tr><td>N-4</td><td>Markov annealing — periodically scans for candidate peers and promotes or demotes synapses based on observed routing improvement.</td></tr>
+            <tr><td>N-5</td><td>Stratified routing table — maintains at most k synapses per distance stratum, ensuring broad coverage at all scales.</td></tr>
+            <tr><td>N-5W</td><td>Adds weighted synapse reinforcement calibrated to browser-style traffic patterns (bursty, with hot nodes).</td></tr>
+            <tr><td>N-6W</td><td>Adaptive load shedding via exponential moving-average (EMA) backpressure — overloaded nodes signal congestion; traffic redistributes around hotspots.</td></tr>
+            <tr><td>N-7W</td><td>Highway formation — high-traffic nodes evolve into dedicated relays. Gini-aware load balancing prevents relay monopolies.</td></tr>
+            <tr><td>N-8W</td><td>Multi-path cascade spread — lookups fan out across parallel synaptic paths; LTP (long-term potentiation) backpropagates credit to earlier hops that contributed to successful routes.</td></tr>
+            <tr><td>N-9W</td><td>Synaptome floor protection — prevents the routing table from collapsing in random global traffic. Guard A stops annealing from pruning below the floor; Guard B resets decaying entries rather than deleting them when the tier is at or below the floor.</td></tr>
+          </tbody>
+        </table>
+        <p class="guide-tip">Neuromorphic protocols are cumulative — each generation adds one mechanism on top of the previous one. N-9W contains all mechanisms from N-1 through N-8W.</p>
+      </div>
+
+    </div><!-- /guideBody -->
+  </div><!-- /guideModal -->
+</div><!-- /guideOverlay -->
+
 <div id="tip" hidden></div>
 
 <script type="module">
@@ -385,6 +475,27 @@
     tip.style.left = (e.clientX + pad + w > innerWidth  ? e.clientX - w - pad : e.clientX + pad) + 'px';
     tip.style.top  = (e.clientY + pad + h > innerHeight ? e.clientY - h - pad : e.clientY + pad) + 'px';
   });
+
+  // ── User Guide ────────────────────────────────────────────────────────────
+  const guideOverlay = document.getElementById('guideOverlay');
+  const btnAbout     = document.getElementById('btnAbout');
+  const guideClose   = document.getElementById('guideClose');
+
+  function openGuide()  { guideOverlay.classList.add('visible'); }
+  function closeGuide() { guideOverlay.classList.remove('visible'); }
+
+  btnAbout.addEventListener('click', openGuide);
+  guideClose.addEventListener('click', closeGuide);
+  // Click outside modal to dismiss
+  guideOverlay.addEventListener('click', e => { if (e.target === guideOverlay) closeGuide(); });
+  // Escape key to dismiss
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeGuide(); });
+
+  // Show automatically on first visit
+  if (!localStorage.getItem('dht-globe-guide-seen')) {
+    openGuide();
+    localStorage.setItem('dht-globe-guide-seen', '1');
+  }
 </script>
 </body>
 </html>

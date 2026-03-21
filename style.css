@@ -531,4 +531,125 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
   display: flex; flex-direction: column; gap: 4px;
 }
 .leg  { display: flex; align-items: center; gap: 6px; color: var(--dim); }
+
+/* ── About / User Guide overlay ─────────────────────────────────────────── */
+#guideOverlay {
+  position: fixed; inset: 0; z-index: 9000;
+  background: rgba(2, 10, 20, 0.82);
+  backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity .2s ease;
+}
+#guideOverlay.visible {
+  opacity: 1; pointer-events: auto;
+}
+
+#guideModal {
+  width: min(780px, 92vw);
+  max-height: 88vh;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 0 40px rgba(34, 136, 221, 0.25), 0 8px 32px rgba(0,0,0,0.6);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+
+#guideHeader {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.guide-title {
+  font-size: 14px; font-weight: 700;
+  letter-spacing: 0.08em; color: var(--glow);
+  text-shadow: 0 0 12px #2288dd88;
+}
+#guideClose {
+  background: none; border: 1px solid var(--border); color: var(--dim);
+  font-family: var(--font); font-size: 14px;
+  border-radius: 3px; cursor: pointer; padding: 2px 8px;
+  transition: border-color .12s, color .12s, box-shadow .12s;
+  line-height: 1.4;
+}
+#guideClose:hover {
+  border-color: var(--glow); color: var(--text);
+  box-shadow: 0 0 6px var(--glow);
+}
+
+#guideBody {
+  overflow-y: auto; padding: 18px 24px 24px;
+  scrollbar-width: thin; scrollbar-color: var(--border) transparent;
+}
+#guideBody::-webkit-scrollbar { width: 6px; }
+#guideBody::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.guide-intro {
+  color: var(--text); font-size: 12px; line-height: 1.7;
+  margin-bottom: 18px;
+}
+.guide-intro strong { color: var(--glow); }
+
+.guide-section { margin-bottom: 20px; }
+.guide-section-title {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase; color: #8aafd0;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px; margin-bottom: 10px;
+}
+
+.guide-table {
+  width: 100%; border-collapse: collapse; font-size: 11px;
+}
+.guide-table th {
+  text-align: left; color: #8aafd0;
+  font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  padding: 4px 10px 4px 0;
+}
+.guide-table td {
+  padding: 5px 10px 5px 0; color: var(--text);
+  border-bottom: 1px solid rgba(26, 58, 96, 0.4);
+  vertical-align: top; line-height: 1.5;
+}
+.guide-table td:first-child {
+  color: #77ccff; white-space: nowrap; font-weight: 600;
+  padding-right: 16px;
+}
+.guide-table tr:last-child td { border-bottom: none; }
+
+.guide-steps {
+  list-style: none; counter-reset: guide-step;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.guide-steps li {
+  counter-increment: guide-step;
+  display: flex; gap: 10px; align-items: baseline;
+  font-size: 12px; color: var(--text); line-height: 1.6;
+}
+.guide-steps li::before {
+  content: counter(guide-step);
+  flex-shrink: 0;
+  width: 18px; height: 18px;
+  background: var(--accent); color: #aaddff;
+  border-radius: 50%; font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.guide-steps li strong { color: #77ccff; }
+
+.guide-tip {
+  font-size: 11px; color: var(--dim); font-style: italic;
+  margin-top: 10px; line-height: 1.6;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+}
+
+/* About button — styled like the title but clickable */
+button.app-title {
+  background: none; border: none; cursor: pointer;
+  font-family: var(--font);
+}
+button.app-title:hover { color: #55bbff; text-shadow: 0 0 14px #2288ddcc; }
 .ldot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }

@@ -7,7 +7,12 @@ import { latLngToXYZ, EARTH_RADIUS_KM } from '../utils/geo.js';
 // ─────────────────────────────────────────────────────────────────────────────
 
 const GLOBE_RADIUS = 1;
-const NODE_RADIUS  = 0.007;
+
+/** Scale node dot radius down with density. Capped at 0.007 (default size).
+ *  At 5 000 nodes → 0.007.  At 50 000 nodes → ~0.0022.  Floor: 0.0018. */
+function nodeRadius(n) {
+  return Math.min(0.007, Math.max(0.0018, 0.007 * Math.sqrt(5000 / Math.max(1, n))));
+}
 
 const C = {
   ocean:      '#061626',
@@ -305,9 +310,10 @@ export class Globe {
     this._nodeDataMap.clear();
     this.clearConnections();
 
-    const visGeo = new THREE.SphereGeometry(NODE_RADIUS, 7, 7);
+    const r = nodeRadius(nodes.length);
+    const visGeo = new THREE.SphereGeometry(r, 7, 7);
     // Invisible hit sphere: 4× larger for reliable clicking even when zoomed out
-    const hitGeo = new THREE.SphereGeometry(NODE_RADIUS * 4, 5, 5);
+    const hitGeo = new THREE.SphereGeometry(r * 4, 5, 5);
     const hitMat = new THREE.MeshBasicMaterial({ visible: false });
 
     for (const n of nodes) {

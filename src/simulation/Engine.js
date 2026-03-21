@@ -1,4 +1,4 @@
-import { randomU64, computeStats, haversine, continentOf } from '../utils/geo.js';
+import { randomU64, computeStats, haversine, continentOf, buildXorRoutingTable } from '../utils/geo.js';
 
 /**
  * SimulationEngine – orchestrates lookup tests and churn tests on a DHT.
@@ -326,10 +326,14 @@ export class SimulationEngine {
 
     this.running = true;
     const data   = {};
+    const totalProtos = protocolDefs.length;
 
-    for (const def of protocolDefs) {
+    for (let defIdx = 0; defIdx < totalProtos; defIdx++) {
+      const def = protocolDefs[defIdx];
       if (!this.running) break;
       data[def.key] = {};
+      // Tag prepended to every status message: "N-5 (7/11)"
+      const tag = `${def.label} (${defIdx + 1}/${totalProtos})`;
 
       // Build phase reported by caller via def.buildFn
       const dht = await def.buildFn();
@@ -340,7 +344,7 @@ export class SimulationEngine {
       // any measurement cells are recorded.  Warmup counts are specified on the
       // protocol def; non-neuromorphic protocols leave warmupLookups undefined/0.
       if (def.warmupLookups > 0) {
-        onStart(`${def.label} · warming up (${def.warmupLookups.toLocaleString()} lookups)…`);
+        onStart(`${tag} · warming up (${def.warmupLookups.toLocaleString()} lookups)…`);
         await this.runLookupTest(dht, {
           numMessages:    def.warmupLookups,
           captureLastPath: false,
@@ -393,7 +397,7 @@ export class SimulationEngine {
 
         // Dest-specific warmup for neuromorphic protocols.
         if (spec.type === 'dest' && def.warmupLookups > 0) {
-          onStart(`${def.label} · warming up for ${spec.pct}% dest (${def.warmupLookups.toLocaleString()} lookups)…`);
+          onStart(`${tag} · warming up for ${spec.pct}% dest (${def.warmupLookups.toLocaleString()} lookups)…`);
           await this.runLookupTest(dht, {
             numMessages:    def.warmupLookups,
             captureLastPath: false,
@@ -404,7 +408,7 @@ export class SimulationEngine {
 
         // Source-specific warmup for neuromorphic protocols.
         if (spec.type === 'source' && def.warmupLookups > 0) {
-          onStart(`${def.label} · warming up for ${spec.pct}% src (${def.warmupLookups.toLocaleString()} lookups)…`);
+          onStart(`${tag} · warming up for ${spec.pct}% src (${def.warmupLookups.toLocaleString()} lookups)…`);
           await this.runLookupTest(dht, {
             numMessages:    def.warmupLookups,
             captureLastPath: false,
@@ -415,7 +419,7 @@ export class SimulationEngine {
 
         // Src→Dest combined warmup for neuromorphic protocols.
         if (spec.type === 'srcdest' && def.warmupLookups > 0) {
-          onStart(`${def.label} · warming up for ${spec.srcPct}%→${spec.destPct}% (${def.warmupLookups.toLocaleString()} lookups)…`);
+          onStart(`${tag} · warming up for ${spec.srcPct}%→${spec.destPct}% (${def.warmupLookups.toLocaleString()} lookups)…`);
           await this.runLookupTest(dht, {
             numMessages:    def.warmupLookups,
             captureLastPath: false,
@@ -428,7 +432,7 @@ export class SimulationEngine {
         // Continent-crossing warmup: train the synaptome on trans-continental
         // routes before measurement so long-range strata can build shortcuts.
         if (spec.type === 'continent' && def.warmupLookups > 0) {
-          onStart(`${def.label} · warming up for ${spec.src}→${spec.dst} (${def.warmupLookups.toLocaleString()} lookups)…`);
+          onStart(`${tag} · warming up for ${spec.src}→${spec.dst} (${def.warmupLookups.toLocaleString()} lookups)…`);
           await this.runLookupTest(dht, {
             numMessages:    def.warmupLookups,
             captureLastPath: false,
@@ -449,17 +453,22 @@ export class SimulationEngine {
 
           for (let round = 0; round < CHURN_ROUNDS; round++) {
             if (!this.running) break;
-            onStart(`${def.label} · churn round ${round + 1}/${CHURN_ROUNDS} (${spec.rate}% turnover)…`);
+            onStart(`${tag} · churn round ${round + 1}/${CHURN_ROUNDS} (${spec.rate}% turnover)…`);
 
             const alive = dht.getNodes().filter(n => n.alive);
             const numToReplace = Math.max(1, Math.floor(alive.length * rate));
             for (const node of shuffleSample(alive, numToReplace)) {
               await dht.removeNode(node.id);
             }
+            // Build sorted array once after removals; reuse for all additions.
+            // Avoids re-sorting N nodes for each of the numToReplace new nodes.
+            const sortedForBootstrap = dht.getNodes()
+              .filter(n => n.alive)
+              .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
             for (let i = 0; i < numToReplace; i++) {
               const { lat, lng } = getLandPoint();
               const newNode = await dht.addNode(lat, lng);
-              this._bootstrapNode(dht, newNode);
+              this._bootstrapNode(newNode, sortedForBootstrap, dht.k ?? 20);
             }
 
             // Neuromorphic protocols get adaptation lookups between rounds
@@ -475,7 +484,7 @@ export class SimulationEngine {
           }
         }
 
-        const cellLabel = `${def.label} · ${specLabel(spec)}`;
+        const cellLabel = `${tag} · ${specLabel(spec)}`;
         onStart(`${cellLabel}…`);
 
         const result = await this.runLookupTest(dht, {
@@ -694,16 +703,208 @@ export class SimulationEngine {
    * For Kademlia: add the new node to every existing node's bucket (if it fits),
    * and populate the new node's own buckets from existing nodes.
    */
-  _bootstrapNode(dht, newNode) {
-    // This is a simplified bootstrap: in production Kademlia the new node
-    // would issue a self-lookup to fill its buckets.
-    const existing = dht.getNodes().filter(n => n.alive && n.id !== newNode.id);
-    if (typeof newNode.addToBucket === 'function') {
-      for (const other of existing) {
-        newNode.addToBucket(other);
-        other.addToBucket(newNode);
+  // sorted: pre-sorted (by id) array of live nodes, built once per churn round.
+  _bootstrapNode(newNode, sorted, k = 20) {
+    if (typeof newNode.addToBucket !== 'function') return;
+    if (!sorted?.length) return;
+
+    // Use buildXorRoutingTable (O(k·log N)) — fills only the K-closest peers
+    // per XOR bucket, matching real Kademlia self-lookup semantics.
+    for (const peer of buildXorRoutingTable(newNode.id, sorted, k)) {
+      newNode.addToBucket(peer);
+      peer.addToBucket(newNode);
+    }
+  }
+
+  // ── Hotspot Test ─────────────────────────────────────────────────────────
+
+  /**
+   * Gini coefficient of an array of non-negative numbers.
+   * 0 = perfectly equal, 1 = one entity holds everything.
+   */
+  _gini(values) {
+    const n = values.length;
+    if (!n) return 0;
+    const sorted = [...values].sort((a, b) => a - b);
+    const sum = sorted.reduce((s, v) => s + v, 0);
+    if (!sum) return 0;
+    let num = 0;
+    for (let i = 0; i < n; i++) num += (2 * (i + 1) - n - 1) * sorted[i];
+    return num / (n * sum);
+  }
+
+  /**
+   * Build Lorenz curve data from a raw frequency array.
+   * Returns { xs, ys } – both 0–100 arrays for Chart.js.
+   * Nodes ranked from least-loaded to most-loaded on X axis.
+   */
+  _lorenz(values) {
+    const sorted = [...values].sort((a, b) => a - b);
+    const total  = sorted.reduce((s, v) => s + v, 0);
+    const n      = sorted.length;
+    const xs = [0], ys = [0];
+    let cum = 0;
+    for (let i = 0; i < n; i++) {
+      cum += sorted[i];
+      xs.push(((i + 1) / n) * 100);
+      ys.push(total ? (cum / total) * 100 : ((i + 1) / n) * 100);
+    }
+    return { xs, ys };
+  }
+
+  /**
+   * Run the two-phase Hotspot Test.
+   *
+   * Phase 1 — Highway: random lookups; track which nodes act as intermediate
+   *   relay hops.  Measures routing-load concentration across nodes.
+   *
+   * Phase 2 — Storage: Zipf-distributed queries to a fixed content-item set;
+   *   tracks destination query concentration.  Models popular-content hotspots.
+   *
+   * @param {object} dht
+   * @param {object} params
+   * @param {number} params.warmupLookups    – train neuromorphic nets before measuring
+   * @param {number} params.numLookups       – highway-phase query count
+   * @param {number} params.contentCount     – number of unique content items
+   * @param {number} params.zipfExponent     – Zipf skew (0=uniform, 1=classic, 2=extreme)
+   * @param {number} params.contentLookups   – storage-phase query count
+   * @returns {Promise<{highway, storage}>}
+   */
+  async runHotspotTest(dht, params = {}) {
+    const {
+      warmupLookups  = 0,
+      numLookups     = 1000,
+      contentCount   = 50,
+      zipfExponent   = 1.0,
+      contentLookups = 1000,
+    } = params;
+
+    this.running = true;
+    const YIELD_EVERY = 50;
+    const totalOps = warmupLookups + numLookups + contentLookups;
+
+    // ── Warmup ─────────────────────────────────────────────────────────────
+    for (let i = 0; i < warmupLookups && this.running; i++) {
+      const src = this._randomNode(dht);
+      const dst = src ? this._randomOtherNode(dht, src.id) : null;
+      if (src && dst) {
+        try { await dht.lookup(src.id, dst.id); } catch { /* skip */ }
+      }
+      if ((i + 1) % YIELD_EVERY === 0) {
+        this.onProgress?.((i + 1) / totalOps, { phase: 'warmup', done: i + 1, total: warmupLookups });
+        await this._yield();
       }
     }
+
+    // ── Phase 1: Highway hotspot ────────────────────────────────────────────
+    const transitCounts  = new Map();   // nodeId → transit-hop count
+    let   hwSuccesses    = 0;
+
+    for (let i = 0; i < numLookups && this.running; i++) {
+      const src = this._randomNode(dht);
+      const dst = src ? this._randomOtherNode(dht, src.id) : null;
+      if (!src || !dst) continue;
+
+      try {
+        const r = await dht.lookup(src.id, dst.id);
+        if (r?.found && r.path?.length > 2) {
+          hwSuccesses++;
+          // intermediate hops only (not source=path[0], not dest=path[last])
+          for (let j = 1; j < r.path.length - 1; j++) {
+            const id = r.path[j];
+            transitCounts.set(id, (transitCounts.get(id) ?? 0) + 1);
+          }
+        }
+      } catch { /* skip */ }
+
+      if ((i + 1) % YIELD_EVERY === 0) {
+        this.onProgress?.((warmupLookups + i + 1) / totalOps,
+          { phase: 'highway', done: i + 1, total: numLookups });
+        await this._yield();
+      }
+    }
+
+    const allNodes      = dht.getNodes().filter(n => n.alive);
+    const transitValues = allNodes.map(n => transitCounts.get(n.id) ?? 0);
+    const totalTransits = transitValues.reduce((s, v) => s + v, 0);
+    const sortedTrans   = [...transitValues].sort((a, b) => b - a);
+    const n1  = Math.max(1, Math.ceil(allNodes.length * 0.01));
+    const n10 = Math.max(1, Math.ceil(allNodes.length * 0.10));
+    const top1pctLoad  = totalTransits
+      ? sortedTrans.slice(0, n1).reduce((s, v) => s + v, 0)  / totalTransits : 0;
+    const top10pctLoad = totalTransits
+      ? sortedTrans.slice(0, n10).reduce((s, v) => s + v, 0) / totalTransits : 0;
+
+    const highwayResult = {
+      gini:          this._gini(transitValues),
+      top1pctLoad,
+      top10pctLoad,
+      maxLoad:       sortedTrans[0] ?? 0,
+      totalTransits,
+      successRate:   hwSuccesses / Math.max(1, numLookups),
+      lorenz:        this._lorenz(transitValues),
+      numNodes:      allNodes.length,
+    };
+
+    // ── Phase 2: Storage hotspot ────────────────────────────────────────────
+    // Select contentCount random nodes as content holders
+    const shuffled = [...allNodes].sort(() => Math.random() - 0.5);
+    const contentNodes = shuffled.slice(0, Math.min(contentCount, shuffled.length));
+
+    // Precompute Zipf cumulative weights
+    const weights = contentNodes.map((_, i) => 1 / Math.pow(i + 1, Math.max(0.01, zipfExponent)));
+    const wSum    = weights.reduce((s, w) => s + w, 0);
+    const cumW    = [];
+    let acc = 0;
+    for (const w of weights) { acc += w / wSum; cumW.push(acc); }
+
+    const destCounts   = new Map();
+    let   stSuccesses  = 0;
+
+    for (let i = 0; i < contentLookups && this.running; i++) {
+      // Zipf-sample a content target
+      const r    = Math.random();
+      const idx  = cumW.findIndex(c => c >= r);
+      const target = contentNodes[idx >= 0 ? idx : contentNodes.length - 1];
+      const src    = this._randomOtherNode(dht, target.id);
+      if (!src) continue;
+
+      try {
+        const res = await dht.lookup(src.id, target.id);
+        if (res?.found) {
+          stSuccesses++;
+          destCounts.set(target.id, (destCounts.get(target.id) ?? 0) + 1);
+        }
+      } catch { /* skip */ }
+
+      if ((i + 1) % YIELD_EVERY === 0) {
+        this.onProgress?.((warmupLookups + numLookups + i + 1) / totalOps,
+          { phase: 'storage', done: i + 1, total: contentLookups });
+        await this._yield();
+      }
+    }
+
+    const destValues       = contentNodes.map(n => destCounts.get(n.id) ?? 0);
+    const totalDest        = destValues.reduce((s, v) => s + v, 0);
+    const sortedDest       = [...destValues].sort((a, b) => b - a);
+    const top10pctItems    = Math.max(1, Math.ceil(contentNodes.length * 0.10));
+    const top10pctItemLoad = totalDest
+      ? sortedDest.slice(0, top10pctItems).reduce((s, v) => s + v, 0) / totalDest : 0;
+
+    const storageResult = {
+      gini:              this._gini(destValues),
+      top10pctItemLoad,
+      maxLoad:           sortedDest[0] ?? 0,
+      totalQueries:      contentLookups,
+      successRate:       stSuccesses / Math.max(1, contentLookups),
+      lorenz:            this._lorenz(destValues),
+      numItems:          contentNodes.length,
+      zipfExponent,
+    };
+
+    this.running = false;
+    this.onComplete?.({ type: 'hotspot', highway: highwayResult, storage: storageResult });
+    return { highway: highwayResult, storage: storageResult };
   }
 }
 

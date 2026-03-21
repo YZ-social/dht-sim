@@ -17,20 +17,16 @@ export class Controls {
       this._updateLookupLabel();
     }
 
-    // Sliders with live value display (Network row)
-    this._bindSlider('nodeCount', 'nodeCountVal');
-    this._bindSlider('kParam', 'kParamVal');
-    this._bindSlider('alphaParam', 'alphaParamVal');
-    this._bindSlider('nodeDelay', 'nodeDelayVal');
-
-    // Standalone number inputs — clamp on change
-    this._bindNumber('msgCount', 50, 5000);
-    this._bindNumber('hotPct',    1,  100);
-
-    // Sliders with live value display (Churn row)
-    this._bindSlider('churnRate', 'churnRateVal');
-    this._bindSlider('churnIntervals', 'churnIntervalsVal');
-    this._bindSlider('lookupsPerInterval', 'lookupsPerIntervalVal');
+    // Number inputs — clamp on change
+    this._bindNumber('nodeCount',         20,   100000);
+    this._bindNumber('kParam',             1,       50);
+    this._bindNumber('alphaParam',         1,       10);
+    this._bindNumber('nodeDelay',          0,      500);
+    this._bindNumber('msgCount',          50,     5000);
+    this._bindNumber('hotPct',             1,      100);
+    this._bindNumber('churnRate',          1,       30);
+    this._bindNumber('churnIntervals',     2,       30);
+    this._bindNumber('lookupsPerInterval', 20,     500);
   }
 
   _bindSlider(sliderId, displayId, fmt = v => v) {
@@ -91,11 +87,16 @@ export class Controls {
   get sourcePct()      { return parseInt(this._el('sourcePct')?.value ?? 10); }
   get destMode()          { return this._el('destMode')?.checked ?? false; }
   get destPct()           { return parseInt(this._el('destPct')?.value ?? 10); }
-  get benchChurnPct()        { return parseInt(this._el('benchChurnPct')?.value ?? 5); }
-  get benchWarmupSessions()  { return Math.max(1, Math.min(10, parseInt(this._el('benchWarmupSessions')?.value ?? 4))); }
+  get benchChurnPct()        { return parseInt(this._el('churnRate')?.value ?? 5); }
+  get benchWarmupSessions()  { return Math.max(1, Math.min(99, parseInt(this._el('benchWarmupSessions')?.value ?? 4))); }
+  get benchFast()            { return this._el('benchFast')?.checked ?? false; }
+  get benchCompare()         { return this._el('benchCompare')?.value ?? 'ngdht6w'; }
   get showAnimation() { return this._el('showAnimation')?.checked ?? true; }
   get autoRotate()  { return this._el('autoRotate')?.checked ?? false; }
   get concordanceSize() { return Math.max(4, Math.min(256, parseInt(this._el('concordanceSize')?.value ?? 32))); }
+  get hotspotLookups()  { return Math.max(100, parseInt(this._el('hotspotLookups')?.value ?? 1000)); }
+  get contentCount()    { return Math.max(10,  parseInt(this._el('contentCount')?.value   ?? 50)); }
+  get zipfExponent()    { return Math.max(0.1, parseFloat(this._el('zipfExponent')?.value ?? 1.0)); }
 
   /** Return all current parameters as a plain object. */
   snapshot() {
@@ -116,7 +117,12 @@ export class Controls {
       destPct:        this.destPct,
       benchChurnPct:       this.benchChurnPct,
       benchWarmupSessions: this.benchWarmupSessions,
+      benchFast:           this.benchFast,
+      benchCompare:        this.benchCompare,
       concordanceSize: this.concordanceSize,
+      hotspotLookups: this.hotspotLookups,
+      contentCount:   this.contentCount,
+      zipfExponent:   this.zipfExponent,
       churnRate: this.churnRate,
       churnIntervals: this.churnIntervals,
       lookupsPerInterval: this.lookupsPerInterval,
@@ -127,7 +133,7 @@ export class Controls {
   _updateLookupLabel() {
     const btn = this._el('btnLookupTest');
     if (btn) {
-      const isNeuro = this.dhtProtocol === 'ngdht' || this.dhtProtocol === 'ngdht2' || this.dhtProtocol === 'ngdht2bp' || this.dhtProtocol === 'ngdht2shc' || this.dhtProtocol === 'ngdht3' || this.dhtProtocol === 'ngdht4' || this.dhtProtocol === 'ngdht5';
+      const isNeuro = this.dhtProtocol === 'ngdht' || this.dhtProtocol === 'ngdht2' || this.dhtProtocol === 'ngdht2bp' || this.dhtProtocol === 'ngdht2shc' || this.dhtProtocol === 'ngdht3' || this.dhtProtocol === 'ngdht4' || this.dhtProtocol === 'ngdht5' || this.dhtProtocol === 'ngdht5w' || this.dhtProtocol === 'ngdht6w' || this.dhtProtocol === 'ngdht7w' || this.dhtProtocol === 'ngdht8w';
       btn.textContent = isNeuro ? '▶ Lookup Training' : '▶ Lookup Test';
     }
   }
@@ -150,6 +156,8 @@ export class Controls {
     if (concBtn) concBtn.disabled = running;
     const pairBtn = this._el('btnPairLearning');
     if (pairBtn) pairBtn.disabled = running;
+    const hotBtn = this._el('btnHotspotTest');
+    if (hotBtn) hotBtn.disabled = running;
   }
 
   setBenchmarking(active) {
@@ -166,6 +174,8 @@ export class Controls {
     if (concBtn) concBtn.disabled = active;
     const pairBtn2 = this._el('btnPairLearning');
     if (pairBtn2) pairBtn2.disabled = active;
+    const hotBtn2 = this._el('btnHotspotTest');
+    if (hotBtn2) hotBtn2.disabled = active;
 
     const benchBtn = this._el('btnBenchmark');
     if (benchBtn) {
@@ -220,7 +230,7 @@ export class Controls {
   }
 
   setTraining(active) {
-    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnBenchmark', 'btnConcordance', 'btnPairLearning'];
+    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnBenchmark', 'btnConcordance', 'btnPairLearning', 'btnHotspotTest'];
     btns.forEach(id => {
       const el = this._el(id);
       if (el) el.disabled = active;
@@ -236,6 +246,23 @@ export class Controls {
         trainBtn.classList.remove('active');
       }
     }
+  }
+
+  setHotspotTesting(active) {
+    const btn = this._el('btnHotspotTest');
+    if (btn) {
+      btn.disabled = false;
+      if (active) {
+        btn.textContent = '⏹ Stop Hotspot';
+        btn.classList.add('active');
+      } else {
+        btn.textContent = '🌡 Hotspot';
+        btn.classList.remove('active');
+      }
+    }
+    ['btnInit','btnLookupTest','btnChurnTest','btnDemoLookup',
+     'btnTrainNetwork','btnConcordance','btnPairLearning','btnBenchmark']
+      .forEach(id => { const b = this._el(id); if (b) b.disabled = active; });
   }
 
   setStatus(msg, type = 'info') {

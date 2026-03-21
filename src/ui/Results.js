@@ -12,6 +12,7 @@ export class Results {
     this._benchmarkRows      = null;  // set by showBenchmarkResults
     this._lastLookupResult   = null;
     this._lastChurnResult    = null;
+    this._hotspotData        = null;
   }
 
   // ── CSV download helpers ──────────────────────────────────────────────────
@@ -137,6 +138,7 @@ export class Results {
     this._hideSection('trainingResults');
     this._hideSection('concordanceResults');
     this._hideSection('pairResults');
+    this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
 
     if (result.hopsRaw && result.timeRaw) {
@@ -175,6 +177,7 @@ export class Results {
     this._hideSection('trainingResults');
     this._hideSection('concordanceResults');
     this._hideSection('pairResults');
+    this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
   }
 
@@ -192,6 +195,7 @@ export class Results {
     this._hideSection('benchmarkResults');
     this._hideSection('concordanceResults');
     this._hideSection('pairResults');
+    this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
     this._attachPanelHeader('trainingResults', 'Train Network', () => this._trainingCSV(), `dht-training-${Date.now()}.csv`);
     this._updateTrainingStats(history);
@@ -374,16 +378,14 @@ export class Results {
   _trainingCSV() {
     if (!this._trainingHistory?.length) return '';
     const rows = [
-      ['Session', 'Avg Hops', 'P95 Hops', 'Avg Time (ms)', 'P95 Time (ms)',
+      ['Session', 'Avg Hops', 'Avg Time (ms)',
        'Success Rate', 'Avg Synapses', 'Epoch'].join(','),
     ];
     for (const s of this._trainingHistory) {
       rows.push([
         s.isBaseline ? 'baseline' : s.session,
         s.hops?.mean  != null ? s.hops.mean.toFixed(3)  : '',
-        s.hops?.p95   != null ? s.hops.p95.toFixed(3)   : '',
         s.time?.mean  != null ? s.time.mean.toFixed(2)  : '',
-        s.time?.p95   != null ? s.time.p95.toFixed(2)   : '',
         s.successRate != null ? (s.successRate * 100).toFixed(2) + '%' : '',
         s.avgSynapses != null ? s.avgSynapses.toFixed(1) : '',
         s.epoch       != null ? s.epoch : '',
@@ -437,6 +439,7 @@ export class Results {
     this._hideSection('benchmarkResults');
     this._hideSection('trainingResults');
     this._hideSection('concordanceResults');
+    this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
     this._attachPanelHeader('pairResults', 'Pair Learning', () => this._pairCSV(), `dht-pair-learning-${Date.now()}.csv`);
     this._updatePairStats(history);
@@ -636,6 +639,7 @@ export class Results {
     this._hideSection('benchmarkResults');
     this._hideSection('trainingResults');
     this._hideSection('pairResults');
+    this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
     this._attachPanelHeader('concordanceResults', 'Concordance', () => this._concordanceCSV(), `dht-concordance-${Date.now()}.csv`);
     this._updateConcordanceStats(history, relay);
@@ -787,17 +791,14 @@ export class Results {
   _concordanceCSV() {
     if (!this._concordanceHistory?.length) return '';
     const rows = [
-      ['Session', 'Participants', 'Avg Hops To Relay', 'P95 Hops To Relay',
-       'Avg Hops From Relay', 'P95 Hops From Relay'].join(','),
+      ['Session', 'Participants', 'Avg Hops To Relay', 'Avg Hops From Relay'].join(','),
     ];
     for (const s of this._concordanceHistory) {
       rows.push([
         s.session,
         s.participants ?? '',
         s.toRelay?.mean  != null ? s.toRelay.mean.toFixed(3)  : '',
-        s.toRelay?.p95   != null ? s.toRelay.p95.toFixed(3)   : '',
         s.fromRelay?.mean != null ? s.fromRelay.mean.toFixed(3) : '',
-        s.fromRelay?.p95  != null ? s.fromRelay.p95.toFixed(3)  : '',
       ].join(','));
     }
     return rows.join('\r\n');
@@ -812,7 +813,6 @@ export class Results {
       ['Successes', successes],
       ['Avg Hops', hops?.mean?.toFixed(3) ?? ''],
       ['Median Hops', hops?.median?.toFixed(3) ?? ''],
-      ['P95 Hops', hops?.p95?.toFixed(3) ?? ''],
       ['Max Hops', hops?.max ?? ''],
     ];
     if (hops?.histogram) {
@@ -832,7 +832,6 @@ export class Results {
       ['Metric', 'Value'].join(','),
       ['Avg Time (ms)', time?.mean?.toFixed(2) ?? ''],
       ['Median Time (ms)', time?.median?.toFixed(2) ?? ''],
-      ['P95 Time (ms)', time?.p95?.toFixed(2) ?? ''],
       ['Max Time (ms)', time?.max ?? ''],
     ];
     return rows.join('\r\n');
@@ -843,7 +842,7 @@ export class Results {
     const timeSeries = this._lastChurnResult.timeSeries;
     if (!timeSeries?.length) return '';
     const rows = [
-      ['Interval', 'Node Count', 'Nodes Replaced', 'Avg Hops', 'P95 Hops', 'Avg Time (ms)', 'Success Rate'].join(','),
+      ['Interval', 'Node Count', 'Nodes Replaced', 'Avg Hops', 'Avg Time (ms)', 'Success Rate'].join(','),
     ];
     for (const e of timeSeries) {
       rows.push([
@@ -851,7 +850,6 @@ export class Results {
         e.nodeCount ?? '',
         e.nodesReplaced ?? '',
         e.hops?.mean?.toFixed(3) ?? '',
-        e.hops?.p95?.toFixed(3)  ?? '',
         e.time?.mean?.toFixed(2) ?? '',
         e.successRate != null ? (e.successRate * 100).toFixed(2) + '%' : '',
       ].join(','));
@@ -871,6 +869,7 @@ export class Results {
     this._hideSection('trainingResults');
     this._hideSection('concordanceResults');
     this._hideSection('pairResults');
+    this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
     this._attachPanelHeader('churnResults', 'Churn Test', () => this._churnCSV(), `dht-churn-${Date.now()}.csv`);
     this._updateChurnStats(timeSeries);
@@ -1086,6 +1085,10 @@ export class Results {
       ngdht3:    'Neuromorphic-3 (N-3): N-2 + source-inclusive hop caching + cascade backpropagation + tuned constants (denser bootstrap, longer synapse lifetime, stronger intra-regional weight). Full synergy: hop caching seeds shortcuts that cascade then propagates to all upstream nodes — six new shortcuts per event.',
       ngdht4:    'Neuromorphic-4 (N-4): N-3 + two new mechanisms. (1) Lateral shortcut propagation: when any node learns a new direct route to a target, it immediately shares that shortcut with its top-3 same-region routing neighbours — the entire local sender cluster benefits from the first successful lookup. (2) Passive dead-node eviction: stale synapses to churned-out peers are zeroed on first encounter during routing, accelerating churn recovery vs. waiting for the decay schedule.',
       ngdht5:    'Neuromorphic-5 (N-5): N-4 + two new mechanisms that fix specialisation-induced interference. (1) Stratified Synaptome: the 32 XOR strata are grouped into 8 buckets; each bucket is guaranteed a minimum of 3 synapse slots. When the synaptome is full, eviction targets the most over-represented bucket — regional training can no longer crowd out the long-range inter-continental entries needed for global routing. (2) Simulated Annealing: each node carries a temperature that starts high and cools as it participates in lookups. After every hop, the node probabilistically replaces its weakest over-represented synapse with a candidate from the most under-represented stratum group — either globally random (high T, exploration) or from its 2-hop neighbourhood (low T, exploitation).',
+      ngdht5w:   'Neuromorphic-5W (N-5W): Browser-realistic variant of N-5. Identical algorithms and all five inherited mechanisms but operates under real WebRTC resource constraints: synaptome cap reduced from 800 → 60 (matching the ~50–80 warm WebRTC PeerConnections a browser tab can sustain), bootstrap density halved (K_BOOT=1, 20 peers vs 40), and stratum floor adjusted to 2 to preserve meaningful eviction headroom at the tighter cap. Expected routing diameter at N=5,000: log(5000)/log(60) ≈ 2.2 hops vs N-5\'s 1.3 and Kademlia\'s 12.3. Use this to validate that neuromorphic routing remains competitive under real-world deployment constraints.',
+      ngdht6w:   'Neuromorphic-6W (N-6W): Browser-realistic next-generation protocol with four mechanisms beyond N-5W. (1) Two-tier synaptome: 48 local (stratified/annealing) + 12 highway slots = 60 total WebRTC connections. Highway reserved for globally well-connected hub nodes, collapsing inter-continental routes to 1–2 hops. (2) Hub discovery: every 300 lookup participations, scan the 2-hop neighbourhood and fill highway with the nodes covering the most distinct stratum groups — simulates the gossip protocol a real deployment would use. (3) Adaptive temporal decay: each synapse tracks a use-count; frequently reinforced synapses decay near-zero (gamma≈0.9998) while unused bootstrap entries die quickly (gamma≈0.990), self-pruning the synaptome toward actually useful routes. (4) Markov hot-destination learning: source tracks its last 32 destinations; after a target appears 3 times, a direct synapse is eagerly pre-built before routing begins — fires even on failed lookups where hop-caching would never trigger.',
+      ngdht7w:   'Neuromorphic-7W (N-7W): N-6W + load-balancing mechanisms targeting highway hotspot concentration (Gini 0.85 vs Kademlia\'s 0.84). (5) Per-node load EMA: each node tracks relay traffic via a lazy exponential moving average (LOAD_DECAY=0.995), updated only when visited. (6) Load-aware AP scoring: both 1-hop and 2-hop AP scores are discounted by a load penalty (up to 40% reduction at saturation), naturally steering lookups away from overloaded hubs. (7) Extended hub pool: highway widened to 20 slots, scan cap raised to 120 candidates, random noise (HUB_NOISE=1.0) added to diversity scores to prevent deterministic re-selection of the same hubs. (8) Adaptive Markov weight: Markov-triggered shortcuts get an initial weight proportional to destination frequency (0.3–0.9) rather than a fixed value.',
+      ngdht8w:   'Neuromorphic-8W (N-8W): N-7W + cascading lateral spread (Mechanism 9). Tier split restored to N-6W values (48 local + 12 highway). Lateral spread deepened to depth 2: when node A learns a shortcut to target C, it tells its top-6 regional neighbours (depth-1); each of those tells their own top-2 regional neighbours (depth-2). Coverage per discovery: 1 + 6 + 12 = 19 nodes in the geographic cluster, vs 4 in N-7W. Addresses the scaling degradation seen at 50K nodes where synaptome-based annealing covers only 0.12% of the network; cascade spread propagates shortcuts through graph topology rather than random sampling, maintaining sub-logarithmic scaling.',
     };
 
     // Header row
@@ -1193,6 +1196,7 @@ export class Results {
     this._hideSection('trainingResults');
     this._hideSection('concordanceResults');
     this._hideSection('pairResults');
+    this._hideSection('hotspotResults');
     this.panel?.classList.add('bench-wide');
   }
 
@@ -1210,7 +1214,7 @@ export class Results {
     const headerCols = ['Protocol'];
     for (const s of testSpecs) {
       const lbl = specLabel(s);
-      headerCols.push(`${lbl} hops`, `${lbl} hops p95`, `${lbl} ms`, `${lbl} ms p95`);
+      headerCols.push(`${lbl} hops`, `${lbl} ms`);
     }
     const rows = [headerCols.join(',')];
     for (const proto of protocolDefs) {
@@ -1226,9 +1230,7 @@ export class Results {
         const cell = data?.[proto.key]?.[key];
         cols.push(
           cell?.hops?.mean  != null ? cell.hops.mean.toFixed(3)  : '',
-          cell?.hops?.p95   != null ? cell.hops.p95.toFixed(3)   : '',
           cell?.time?.mean  != null ? cell.time.mean.toFixed(2)  : '',
-          cell?.time?.p95   != null ? cell.time.p95.toFixed(2)   : '',
         );
       }
       rows.push(cols.join(','));
@@ -1260,6 +1262,165 @@ export class Results {
     this._hideSection('benchmarkResults');
     this._hideSection('concordanceResults');
     this._hideSection('pairResults');
+    this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
+  }
+
+  // ── Hotspot Results ───────────────────────────────────────────────────────
+
+  _destroyChart(key) {
+    if (this._charts[key]) {
+      this._charts[key].destroy();
+      delete this._charts[key];
+    }
+  }
+
+  clearHotspot() {
+    this._hotspotData = null;
+    this._destroyChart('highwayLorenz');
+    this._destroyChart('storageLorenz');
+    this._hideSection('hotspotResults');
+  }
+
+  showHotspotResults(data) {
+    this._hotspotData = data;
+    // Hide other panels
+    ['lookupResults','churnResults','benchmarkResults',
+     'trainingResults','concordanceResults','pairResults']
+      .forEach(id => this._hideSection(id));
+
+    this._attachPanelHeader('hotspotResults', 'Hotspot Test',
+      () => this._hotspotCSV(), 'hotspot.csv');
+
+    this._updateHotspotStats(data);
+    this._drawHotspotCharts(data);
+    document.getElementById('hotspotResults').style.display = '';
+  }
+
+  _updateHotspotStats(data) {
+    const hw = data.highway;
+    const st = data.storage;
+    const fmt = (v, digits = 2) => (v ?? 0).toFixed(digits);
+    const pct  = v => (v * 100).toFixed(1) + '%';
+
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    set('hsHwGini',      fmt(hw.gini));
+    set('hsHwTop1',      pct(hw.top1pctLoad));
+    set('hsHwTop10',     pct(hw.top10pctLoad));
+    set('hsHwMax',       hw.maxLoad);
+    set('hsHwSuccess',   pct(hw.successRate));
+    set('hsStGini',      fmt(st.gini));
+    set('hsStTop10',     pct(st.top10pctItemLoad));
+    set('hsStMax',       st.maxLoad);
+    set('hsStSuccess',   pct(st.successRate));
+    set('hsStItems',     st.numItems);
+    set('hsStZipf',      st.zipfExponent.toFixed(1));
+  }
+
+  _drawHotspotCharts(data) {
+    this._destroyChart('highwayLorenz');
+    this._destroyChart('storageLorenz');
+
+    const GRID   = 'rgba(30,90,160,0.2)';
+    const LABEL  = '#7799cc';
+    const EQUAL  = 'rgba(255,255,255,0.15)';
+
+    // Shared Lorenz chart builder
+    const drawLorenz = (canvasId, key, lorenz, color, title) => {
+      const canvas = document.getElementById(canvasId);
+      if (!canvas) return;
+      const equalLine = [{ x: 0, y: 0 }, { x: 100, y: 100 }];
+      const curveData = lorenz.xs.map((x, i) => ({ x, y: lorenz.ys[i] }));
+      this._charts[key] = new Chart(canvas.getContext('2d'), {
+        type: 'scatter',
+        data: {
+          datasets: [
+            {
+              label: 'Perfect equality',
+              data: equalLine,
+              borderColor: EQUAL,
+              borderWidth: 1,
+              borderDash: [4, 4],
+              pointRadius: 0,
+              showLine: true,
+              fill: false,
+            },
+            {
+              label: title,
+              data: curveData,
+              borderColor: color,
+              backgroundColor: color.replace(')', ',0.12)').replace('rgb', 'rgba'),
+              borderWidth: 1.5,
+              pointRadius: 0,
+              showLine: true,
+              fill: { target: { value: 100 }, below: color.replace(')', ',0.06)').replace('rgb', 'rgba') },
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: ctx => `${ctx.parsed.x.toFixed(1)}% of nodes → ${ctx.parsed.y.toFixed(1)}% of load`,
+              },
+            },
+          },
+          scales: {
+            x: {
+              type: 'linear', min: 0, max: 100,
+              title: { display: true, text: 'Cumulative % of nodes (least→most loaded)', color: LABEL, font: { size: 10 } },
+              ticks: { color: LABEL, font: { size: 9 }, callback: v => v + '%' },
+              grid: { color: GRID },
+            },
+            y: {
+              type: 'linear', min: 0, max: 100,
+              title: { display: true, text: 'Cumulative % of traffic', color: LABEL, font: { size: 10 } },
+              ticks: { color: LABEL, font: { size: 9 }, callback: v => v + '%' },
+              grid: { color: GRID },
+            },
+          },
+        },
+      });
+    };
+
+    drawLorenz('highwayLorenzChart', 'highwayLorenz',
+      data.highway.lorenz, 'rgb(255,140,40)',   'Routing relay load');
+    drawLorenz('storageLorenzChart', 'storageLorenz',
+      data.storage.lorenz, 'rgb(100,200,255)', 'Content query load');
+  }
+
+  _hotspotCSV() {
+    if (!this._hotspotData) return '';
+    const { highway: hw, storage: st } = this._hotspotData;
+    const lines = [
+      'Section,Metric,Value',
+      `Highway,Gini,${hw.gini.toFixed(4)}`,
+      `Highway,Top 1% node load,${(hw.top1pctLoad * 100).toFixed(2)}%`,
+      `Highway,Top 10% node load,${(hw.top10pctLoad * 100).toFixed(2)}%`,
+      `Highway,Max relay count,${hw.maxLoad}`,
+      `Highway,Total transits,${hw.totalTransits}`,
+      `Highway,Success rate,${(hw.successRate * 100).toFixed(2)}%`,
+      `Highway,Nodes measured,${hw.numNodes}`,
+      `Storage,Gini,${st.gini.toFixed(4)}`,
+      `Storage,Top 10% item load,${(st.top10pctItemLoad * 100).toFixed(2)}%`,
+      `Storage,Max item queries,${st.maxLoad}`,
+      `Storage,Total queries,${st.totalQueries}`,
+      `Storage,Success rate,${(st.successRate * 100).toFixed(2)}%`,
+      `Storage,Content items,${st.numItems}`,
+      `Storage,Zipf exponent,${st.zipfExponent}`,
+      '',
+      'Highway Lorenz Curve',
+      'Node percentile,Cumulative load %',
+      ...hw.lorenz.xs.map((x, i) => `${x.toFixed(2)},${hw.lorenz.ys[i].toFixed(2)}`),
+      '',
+      'Storage Lorenz Curve',
+      'Item percentile,Cumulative queries %',
+      ...st.lorenz.xs.map((x, i) => `${x.toFixed(2)},${st.lorenz.ys[i].toFixed(2)}`),
+    ];
+    return lines.join('\n');
   }
 }

@@ -43,37 +43,39 @@
             <option value="ngdht3">Neuromorphic-3</option>
             <option value="ngdht4">Neuromorphic-4</option>
             <option value="ngdht5">Neuromorphic-5</option>
+            <option value="ngdht5w">Neuromorphic-5W (Browser)</option>
+            <option value="ngdht6w">Neuromorphic-6W (Browser+)</option>
+            <option value="ngdht7w">Neuromorphic-7W (Load-Balanced)</option>
+            <option value="ngdht8w">Neuromorphic-8W (Cascade Spread)</option>
+            <option value="ngdht9w">Neuromorphic-9W (Synaptome Floor)</option>
           </select>
         </div>
 
-        <div class="ctrl-cluster" data-tip="Size of the simulated network. Type a value or drag the slider (20 – 100,000). Larger networks take longer to initialise.">
-          <label>Nodes <input type="number" id="nodeCountVal" value="5000" min="20" max="100000" step="10"></label>
-          <input type="range" id="nodeCount" min="20" max="100000" value="5000" step="10" style="width:68px">
+        <div class="ctrl-cluster" data-tip="Size of the simulated network (20 – 100,000). Larger networks take longer to initialise.">
+          <label>Nodes <input type="number" id="nodeCount" value="5000" min="20" max="100000" step="10" style="width:52px"></label>
         </div>
 
         <div class="ctrl-cluster" data-tip="k-bucket size — max peers stored per routing table slot. Higher k improves fault tolerance at the cost of memory. Kademlia default: 20.">
-          <label>K <b id="kParamVal">20</b></label>
-          <input type="range" id="kParam" min="1" max="50" value="20" style="width:44px">
+          <label>K <input type="number" id="kParam" value="20" min="1" max="50" step="1" style="width:32px"></label>
         </div>
 
         <div class="ctrl-cluster" data-tip="Alpha (α) — parallel queries sent per lookup round. Higher values reduce hop count but increase traffic. Kademlia default: 3.">
-          <label>&#945; <b id="alphaParamVal">3</b></label>
-          <input type="range" id="alphaParam" min="1" max="10" value="3" style="width:38px">
+          <label>&#945; <input type="number" id="alphaParam" value="3" min="1" max="10" step="1" style="width:28px"></label>
         </div>
 
-        <div class="ctrl-cluster" data-tip="Bit-width of node IDs. Determines routing table depth (one k-bucket per bit). 32 bits supports ~4 billion unique node IDs.">
+        <div class="ctrl-cluster" data-tip="Bit-width of node IDs. Determines routing table depth (one k-bucket per bit). 64 bits is the default for all neuromorphic protocols.">
           <label>Bits</label>
           <select id="idBits">
             <option value="8">8</option>
             <option value="16">16</option>
             <option value="32">32</option>
             <option value="64" selected>64</option>
+            <option value="128">128</option>
           </select>
         </div>
 
-        <div class="ctrl-cluster" data-tip="Fixed processing overhead added to every message at each node, in milliseconds. Models CPU or queuing delay independent of geographic distance. Increase to see how per-hop latency affects total lookup time.">
-          <label>Delay <input type="number" id="nodeDelayVal" value="10" min="0" max="500" step="1"> ms</label>
-          <input type="range" id="nodeDelay" min="0" max="500" value="10" step="1" style="width:60px">
+        <div class="ctrl-cluster" data-tip="Fixed processing overhead added to every message at each node, in milliseconds. Models CPU or queuing delay independent of geographic distance.">
+          <label>Delay <input type="number" id="nodeDelay" value="10" min="0" max="500" step="1" style="width:36px"> ms</label>
         </div>
       </div>
     </div>
@@ -93,24 +95,21 @@
 
       <div class="ctrl-group cg-churn">
         <span class="cg-label">Churn</span>
-        <div class="ctrl-cluster" data-tip="Churn rate — percentage of nodes replaced per interval. Models real-world peer turnover (nodes leaving and new ones joining).">
-          <label>Rate <b id="churnRateVal">5</b>%</label>
-          <input type="range" id="churnRate" min="1" max="30" value="5" style="width:36px">
+        <div class="ctrl-cluster" data-tip="Churn rate — percentage of nodes replaced per interval. Also used as the churn column rate in Benchmark. Models real-world peer turnover.">
+          <label>Rate <input type="number" id="churnRate" value="5" min="1" max="30" step="1" style="width:30px">%</label>
         </div>
         <div class="ctrl-cluster" data-tip="Number of churn cycles to simulate. Each interval removes Churn% of nodes and replaces them with new ones at random land locations.">
-          <label>Int <b id="churnIntervalsVal">10</b></label>
-          <input type="range" id="churnIntervals" min="2" max="30" value="10" style="width:36px">
+          <label>Int <input type="number" id="churnIntervals" value="10" min="2" max="30" step="1" style="width:30px"></label>
         </div>
         <div class="ctrl-cluster" data-tip="Lookups per interval — how many random lookups are measured after each churn cycle to track routing health over time.">
-          <label>L/Int <b id="lookupsPerIntervalVal">100</b></label>
-          <input type="range" id="lookupsPerInterval" min="20" max="500" value="100" step="10" style="width:36px">
+          <label>L/Int <input type="number" id="lookupsPerInterval" value="100" min="20" max="500" step="10" style="width:36px"></label>
         </div>
       </div>
 
       <div class="ctrl-group cg-filters">
         <span class="cg-label">Filters</span>
         <div class="ctrl-cluster" data-tip="Regional mode: when enabled, each lookup is performed between a random source node and a target node within the specified radius (km). Measures how efficiently the DHT routes messages to geographically nearby nodes.">
-          <label><input type="checkbox" id="regionalMode"> Reg</label>
+          <label><input type="checkbox" id="regionalMode"> Region</label>
           <input type="number" id="regionalRadius" value="2000" min="100" max="20000" step="100" style="width:44px"> km
         </div>
         <div class="ctrl-cluster" data-tip="Source Mode: designate a random X% of nodes as the only valid lookup initiators. Destinations remain the full population. Models real-world scenarios where a small cluster of nodes (gateways, crawlers, access points) generates the majority of traffic. Neuromorphic protocols should learn efficient outbound routes from these nodes.">
@@ -130,6 +129,19 @@
         </div>
       </div>
 
+      <div class="ctrl-group cg-hot">
+        <span class="cg-label">Hotspot</span>
+        <div class="ctrl-cluster" data-tip="Number of random lookups used to measure routing-relay load distribution in the Highway phase.">
+          <label>Queries <input type="number" id="hotspotLookups" value="1000" min="100" max="5000" step="100" style="width:40px"></label>
+        </div>
+        <div class="ctrl-cluster" data-tip="Number of distinct content items (target nodes) in the Storage hotspot phase. These nodes receive queries at Zipf-distributed frequency.">
+          <label>Items <input type="number" id="contentCount" value="50" min="10" max="200" step="10" style="width:32px"></label>
+        </div>
+        <div class="ctrl-cluster" data-tip="Zipf exponent controlling query skew in the Storage phase. 0=uniform, 1=classic internet Zipf (top item gets 2× the next), 2=extreme skew. Real-world content popularity follows Zipf-1 to Zipf-1.5.">
+          <label>Zipf <input type="number" id="zipfExponent" value="1.0" min="0.1" max="3.0" step="0.1" style="width:36px"></label>
+        </div>
+      </div>
+
     </div>
 
     <!-- Row 3: Action buttons + bench settings + progress + status -->
@@ -139,22 +151,31 @@
       <button class="btn" id="btnChurnTest" disabled data-tip="Simulate node turnover over multiple intervals, measuring how routing success rate and hop count change as nodes join and leave.">&#8635; Churn Test</button>
       <button class="btn" id="btnDemoLookup" disabled data-tip="Animate a single random lookup on the globe: the camera follows each hop and arcs trace the path.">&#9654; Demo</button>
       <button class="btn btn-train" id="btnTrainNetwork" disabled data-tip="Run repeated lookup sessions in a loop, displaying stats after each session. For Neuromorphic protocols each session also reinforces synaptic shortcuts. Press again to stop.">&#10227; Train Network</button>
-      <button class="btn btn-bench" id="btnBenchmark" data-tip="Run all protocols across all test conditions — four regional radii, source/dest/srcdest restricted, global, continent-crossing (NA→Asia), and churn. Builds a fresh DHT per protocol; no Init required. Warmup sessions control how much training Neuromorphic protocols receive before scoring.">&#9654;&#9654; Benchmark</button>
       <button class="btn btn-conc" id="btnConcordance" disabled data-tip="Run a star-topology concordance test: one relay node receives messages from all participants and broadcasts back to each. Sessions repeat until stopped. Neuromorphic protocols converge toward 1 hop in both directions as the synaptome builds relay shortcuts.">&#9678; Concordance</button>
       <button class="btn btn-pair" id="btnPairLearning" disabled data-tip="Assign every node a fixed random target. Each session routes all nodes to their fixed targets and records average hops. Neuromorphic protocols converge toward 1 hop per pair as synaptic shortcuts form for the persistent routes. Fixed pairs persist across all sessions until stopped.">&#x21D4; Pair Learning</button>
+      <button class="btn btn-hot" id="btnHotspotTest" disabled data-tip="Run a two-phase hotspot test: (1) Highway — measures routing-load concentration by tracking which nodes act as relay hops across many random lookups; (2) Storage — queries content items with a Zipf distribution and measures query-load concentration. Both phases produce Lorenz curves and a Gini coefficient. Lower Gini = more evenly distributed load.">&#x1F321; Hotspot</button>
+      <button class="btn btn-bench" id="btnBenchmark" data-tip="Run all protocols across all test conditions — four regional radii, source/dest/srcdest restricted, global, continent-crossing (NA→Asia), and churn. Builds a fresh DHT per protocol; no Init required. Warmup sessions control how much training Neuromorphic protocols receive before scoring.">&#9654;&#9654; Benchmark</button>
 
       <div class="sep"></div>
 
       <div class="ctrl-group cg-bench">
         <span class="cg-label">Bench</span>
-        <div class="ctrl-cluster" data-tip="Benchmark churn rate: percentage of nodes replaced per round across 5 successive rounds before measuring. Each replaced node joins fresh with no routing state. Tests how well each protocol survives ongoing node turnover — the churn column in the benchmark table always uses this rate.">
-          <label>Churn <input type="number" id="benchChurnPct" value="5" min="1" max="50" step="1" style="width:28px">%</label>
+        <div class="ctrl-cluster" data-tip="Warmup sessions for Neuromorphic protocols in benchmark mode. Each session runs 500 lookups so the network can learn shortcuts before measurement. Range: 1–99 (500–49,500 total warmup lookups). Default: 4 sessions = 2,000 lookups. Higher values give Neuromorphic protocols more time to converge before scoring begins.">
+          <label>Warmup <input type="number" id="benchWarmupSessions" value="4" min="1" max="99" step="1" style="width:32px"> sess</label>
         </div>
-        <div class="ctrl-cluster" data-tip="Warmup sessions for Neuromorphic protocols in benchmark mode. Each session runs 500 lookups so the network can learn shortcuts before measurement. Range: 1–10 (500–5,000 total warmup lookups). Default: 4 sessions = 2,000 lookups. Higher values give Neuromorphic protocols more time to converge before scoring begins.">
-          <label>Warmup <input type="number" id="benchWarmupSessions" value="4" min="1" max="10" step="1" style="width:24px"> sess</label>
+        <div class="ctrl-cluster" data-tip="Fast mode: runs only Kademlia, G-DHT-8, the selected comparison neuromorphic, and N-8W. Much faster at large node counts. Uncheck to run all protocols.">
+          <label><input type="checkbox" id="benchFast"> Fast</label>
         </div>
-        <div class="ctrl-cluster" data-tip="Auto-rotate the globe continuously.">
-          <label><input type="checkbox" id="autoRotate"> Rotate</label>
+        <div class="ctrl-cluster" data-tip="Which neuromorphic protocol to include alongside N-8W in Fast benchmark mode.">
+          <select id="benchCompare">
+            <option value="ngdht9w">N-9W</option>
+            <option value="ngdht8w">N-8W</option>
+            <option value="ngdht6w">N-6W</option>
+            <option value="ngdht7w">N-7W</option>
+            <option value="ngdht5w">N-5W</option>
+            <option value="ngdht4">N-4</option>
+            <option value="ngdht5">N-5</option>
+          </select>
         </div>
       </div>
 
@@ -173,6 +194,11 @@
   <!-- ── Globe fills remaining space ───────────────────────────────────── -->
   <div id="globeWrap">
     <canvas id="globeCanvas"></canvas>
+
+    <!-- Rotate toggle (top-right of globe) -->
+    <div id="globeRotateCtrl">
+      <label data-tip="Auto-rotate the globe continuously."><input type="checkbox" id="autoRotate"> Rotate</label>
+    </div>
 
     <!-- Results overlay (bottom-left of globe) -->
     <div id="resultsOverlay">
@@ -274,6 +300,31 @@
         </div>
         <div class="pair-log" id="pairLog"></div>
       </div>
+
+      <div id="hotspotResults" style="display:none">
+        <div class="hotspot-section">
+          <div class="hotspot-section-label">&#x1F321; Highway: Routing Relay Load</div>
+          <div class="stat-row">
+            <div class="stat" data-tip="Gini coefficient of routing relay usage. 0=every node relays equal traffic. 1=one node relays everything. Lower is better."><span class="sl">Gini</span><span class="sv hops" id="hsHwGini">&#8212;</span></div>
+            <div class="stat" data-tip="Percentage of all relay hops handled by the busiest 1% of nodes."><span class="sl">Top 1%</span><span class="sv warn" id="hsHwTop1">&#8212;</span></div>
+            <div class="stat" data-tip="Percentage of all relay hops handled by the busiest 10% of nodes."><span class="sl">Top 10%</span><span class="sv" id="hsHwTop10">&#8212;</span></div>
+            <div class="stat" data-tip="Highest relay-hop count observed on any single node."><span class="sl">Max Relay</span><span class="sv" id="hsHwMax">&#8212;</span></div>
+            <div class="stat" data-tip="Fraction of highway-phase lookups that successfully reached their target."><span class="sl">Success</span><span class="sv rate" id="hsHwSuccess">&#8212;</span></div>
+          </div>
+          <div class="hotspot-chart-box" id="highwayLorenzBox"><canvas id="highwayLorenzChart"></canvas></div>
+        </div>
+        <div class="hotspot-section">
+          <div class="hotspot-section-label">&#x1F4E6; Storage: Content Query Load</div>
+          <div class="stat-row">
+            <div class="stat" data-tip="Gini coefficient of content query distribution. 0=all items queried equally. 1=one item gets everything. Lower is better for load balance."><span class="sl">Gini</span><span class="sv hops" id="hsStGini">&#8212;</span></div>
+            <div class="stat" data-tip="Percentage of all content queries absorbed by the most popular 10% of items."><span class="sl">Top 10%</span><span class="sv warn" id="hsStTop10">&#8212;</span></div>
+            <div class="stat" data-tip="Highest query count received by any single content item."><span class="sl">Max Load</span><span class="sv" id="hsStMax">&#8212;</span></div>
+            <div class="stat" data-tip="Query success rate in the storage phase."><span class="sl">Success</span><span class="sv rate" id="hsStSuccess">&#8212;</span></div>
+            <div class="stat" data-tip="Number of distinct content items and Zipf exponent used."><span class="sl">Items / Zipf</span><span class="sv" id="hsStItems">&#8212;</span> / <span class="sv" id="hsStZipf">&#8212;</span></div>
+          </div>
+          <div class="hotspot-chart-box" id="storageLorenzBox"><canvas id="storageLorenzChart"></canvas></div>
+        </div>
+      </div>
     </div>
 
     <!-- Legend -->
@@ -307,6 +358,8 @@
       if (concBtn) concBtn.disabled = false;
       const pairBtn = document.getElementById('btnPairLearning');
       if (pairBtn) pairBtn.disabled = false;
+      const hotBtn = document.getElementById('btnHotspotTest');
+      if (hotBtn) hotBtn.disabled = false;
     }
   };
   const observer = new MutationObserver(unlock);

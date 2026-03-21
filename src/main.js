@@ -18,6 +18,11 @@ import { NeuromorphicDHT2SHC } from './dht/neuromorphic/NeuromorphicDHT2SHC.js';
 import { NeuromorphicDHT3 }    from './dht/neuromorphic/NeuromorphicDHT3.js';
 import { NeuromorphicDHT4 }    from './dht/neuromorphic/NeuromorphicDHT4.js';
 import { NeuromorphicDHT5 }    from './dht/neuromorphic/NeuromorphicDHT5.js';
+import { NeuromorphicDHT5W }   from './dht/neuromorphic/NeuromorphicDHT5W.js';
+import { NeuromorphicDHT6W }   from './dht/neuromorphic/NeuromorphicDHT6W.js';
+import { NeuromorphicDHT7W }   from './dht/neuromorphic/NeuromorphicDHT7W.js';
+import { NeuromorphicDHT8W }   from './dht/neuromorphic/NeuromorphicDHT8W.js';
+import { NeuromorphicDHT9W }   from './dht/neuromorphic/NeuromorphicDHT9W.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -74,6 +79,7 @@ async function init() {
   document.getElementById('btnTrainNetwork')?.addEventListener('click', onTrainNetwork);
   document.getElementById('btnConcordance')?.addEventListener('click', onConcordance);
   document.getElementById('btnPairLearning')?.addEventListener('click', onPairLearning);
+  document.getElementById('btnHotspotTest')?.addEventListener('click', onHotspotTest);
   document.getElementById('btnBenchmark')?.addEventListener('click', onBenchmark);
 
   // Auto-rotate toggle
@@ -117,6 +123,8 @@ async function onInit() {
   controls.setConcordance(false);
   pairActive = false;
   controls.setPairLearning(false);
+  hotspotActive = false;
+  controls.setHotspotTesting(false);
   controls.setRunning(true);
   controls.setProgress(0);
   results.clear();
@@ -401,6 +409,7 @@ let trainingHistory = [];
 let trainingEpoch   = 0;   // cumulative lookups processed across all sessions
 let concordanceActive = false;
 let pairActive = false;
+let hotspotActive = false;
 
 async function onTrainNetwork() {
   if (trainingActive) {
@@ -421,6 +430,7 @@ async function onTrainNetwork() {
   trainingHistory = [];
   trainingEpoch   = 0;
   results.clearTraining();
+  results.clearHotspot();
   controls.setTraining(true);
   globe.clearArcs();
   globe.clearConnections();
@@ -685,6 +695,80 @@ async function onPairLearning() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Hotspot Test
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function onHotspotTest() {
+  if (!dht) { controls.setStatus('Initialise the network first.', 'warn'); return; }
+  if (hotspotActive) {
+    engine.stop();
+    hotspotActive = false;
+    controls.setHotspotTesting(false);
+    controls.setStatus('Hotspot test stopped.', 'warn');
+    return;
+  }
+  if (trainingActive || concordanceActive || pairActive) {
+    controls.setStatus('Stop the running test first.', 'warn');
+    return;
+  }
+
+  hotspotActive = true;
+  controls.setHotspotTesting(true);
+  results.clearHotspot();
+  globe.clearArcs();
+
+  const params    = controls.snapshot();
+  const warmup    = params.benchWarmupSessions * 500;
+
+  controls.setStatus('Hotspot test — warming up…', 'info');
+  controls.setProgress(0);
+
+  const protoName = dht.constructor.protocolName ?? params.protocol;
+  engine.onProgress = (frac, info) => {
+    controls.setProgress(frac);
+    if (info?.phase === 'warmup') {
+      controls.setStatus(`[${protoName}] Hotspot warmup: ${info.done}/${info.total} lookups…`, 'info');
+    } else if (info?.phase === 'highway') {
+      controls.setStatus(`[${protoName}] Highway phase: ${info.done}/${info.total} lookups…`, 'info');
+    } else if (info?.phase === 'storage') {
+      controls.setStatus(`[${protoName}] Storage phase: ${info.done}/${info.total} queries…`, 'info');
+    }
+  };
+
+  engine.onComplete = (result) => {
+    if (result?.type === 'hotspot') {
+      results.showHotspotResults(result);
+      const hw = result.highway;
+      const st = result.storage;
+      controls.setStatus(
+        `Hotspot done — Highway Gini: ${hw.gini.toFixed(3)} ` +
+        `(top 1% = ${(hw.top1pctLoad*100).toFixed(1)}%),  ` +
+        `Storage Gini: ${st.gini.toFixed(3)} ` +
+        `(top 10% items = ${(st.top10pctItemLoad*100).toFixed(1)}%)`,
+        'success'
+      );
+    }
+    hotspotActive = false;
+    controls.setHotspotTesting(false);
+    controls.setProgress(0);
+  };
+
+  await engine.runHotspotTest(dht, {
+    warmupLookups:  warmup,
+    numLookups:     params.hotspotLookups,
+    contentCount:   params.contentCount,
+    zipfExponent:   params.zipfExponent,
+    contentLookups: params.hotspotLookups,
+  });
+
+  if (hotspotActive) {
+    hotspotActive = false;
+    controls.setHotspotTesting(false);
+    controls.setProgress(0);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Benchmark — all-protocol × multi-radius comparison
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -723,7 +807,17 @@ async function onBenchmark() {
     { key: 'ngdht3',    label: 'N-3',     warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht4',    label: 'N-4',     warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht5',    label: 'N-5',     warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-  ];
+    { key: 'ngdht5w',   label: 'N-5W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht6w',   label: 'N-6W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht7w',   label: 'N-7W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht8w',   label: 'N-8W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht9w',   label: 'N-9W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+  ].filter(def => {
+    if (!params.benchFast) return true;
+    // Fast mode: always include baselines + compare pick + N-8W
+    const FAST_ALWAYS = new Set(['kademlia', 'geo8', 'ngdht8w', 'ngdht9w']);
+    return FAST_ALWAYS.has(def.key) || def.key === params.benchCompare;
+  });
 
   // Benchmark always tests 4 regional radii, a dest-restricted column, and global.
   // The dest percentage is taken from the Dest input (default 10%); the Dest
@@ -754,14 +848,16 @@ async function onBenchmark() {
   const stepFrac = (done, partial = 0) => (done + partial) / TOTAL_STEPS;
 
   const protocolDefs = [];
+  const TOTAL_PROTOCOLS = PROTOCOL_DEFS.length;
 
-  for (const def of PROTOCOL_DEFS) {
+  for (let defIdx = 0; defIdx < TOTAL_PROTOCOLS; defIdx++) {
+    const def = PROTOCOL_DEFS[defIdx];
+    const tag = `${def.label} (${defIdx + 1}/${TOTAL_PROTOCOLS})`;
+
     const buildFn = async () => {
       if (!benchmarkActive) return null;
 
-      controls.setStatus(
-        `[${def.label}] Building network (${N.toLocaleString()} nodes)…`, 'bench'
-      );
+      controls.setStatus(`${tag} — building network (${N.toLocaleString()} nodes)…`, 'bench');
       const benchDHT = createDHT({ ...params, protocol: def.key });
 
       for (let i = 0; i < N; i++) {
@@ -775,7 +871,7 @@ async function onBenchmark() {
       }
 
       if (!benchmarkActive) return null;
-      controls.setStatus(`[${def.label}] Building routing tables…`, 'bench');
+      controls.setStatus(`${tag} — building routing tables…`, 'bench');
       benchDHT.buildRoutingTables();
       completedSteps++;
       controls.setProgress(stepFrac(completedSteps));
@@ -800,13 +896,13 @@ async function onBenchmark() {
     landFn: () => globe.randomLandPoint(),
     // onStart: status-only update before each cell (no progress increment)
     onStart: (msg) => {
-      controls.setStatus(`[Benchmark] ${msg}`, 'bench');
+      controls.setStatus(msg, 'bench');
     },
     // onStep: called once after each cell completes — drives progress bar
     onStep: (msg) => {
       completedSteps++;
       controls.setProgress(stepFrac(completedSteps));
-      controls.setStatus(`[Benchmark] ${msg}`, 'bench');
+      controls.setStatus(msg, 'bench');
     },
   });
 
@@ -881,6 +977,36 @@ function createDHT(params) {
       });
     case 'ngdht5':
       return new NeuromorphicDHT5({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht5w':
+      return new NeuromorphicDHT5W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht6w':
+      return new NeuromorphicDHT6W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht7w':
+      return new NeuromorphicDHT7W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht8w':
+      return new NeuromorphicDHT8W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht9w':
+      return new NeuromorphicDHT9W({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,

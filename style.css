@@ -91,24 +91,15 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
   border-right: 1px solid;
 }
 
-/* Per-group colour themes */
-.cg-net     { border-color: #2a5ea0; }
-.cg-net     .cg-label { color: #88c4f0; background: #0a1e3e; border-right-color: #2a5ea0; }
+/* Uniform group theme — all groups share the same neutral border and label */
+.cg-net, .cg-lookup, .cg-churn, .cg-filters, .cg-bench, .cg-conc, .cg-hot {
+  border-color: #2a5a8a;
+}
+.cg-net .cg-label, .cg-lookup .cg-label, .cg-churn .cg-label,
+.cg-filters .cg-label, .cg-bench .cg-label, .cg-conc .cg-label, .cg-hot .cg-label {
+  color: #8aafd0; background: #081628; border-right-color: #2a5a8a;
+}
 
-.cg-lookup  { border-color: #226040; }
-.cg-lookup  .cg-label { color: #44dd88; background: #081810; border-right-color: #226040; }
-
-.cg-churn   { border-color: #5a3a18; }
-.cg-churn   .cg-label { color: #ffbb55; background: #1c1005; border-right-color: #5a3a18; }
-
-.cg-filters { border-color: #1a4a60; }
-.cg-filters .cg-label { color: #44ddee; background: #051820; border-right-color: #1a4a60; }
-
-.cg-bench   { border-color: #5a4818; }
-.cg-bench   .cg-label { color: #ffcc55; background: #1c1400; border-right-color: #5a4818; }
-
-.cg-conc    { border-color: #3a1860; }
-.cg-conc    .cg-label { color: #cc88ff; background: #140a24; border-right-color: #3a1860; }
 
 /* Cluster: label + control side by side */
 .ctrl-cluster {
@@ -377,59 +368,18 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
   background: rgba(20, 60, 110, 0.95);
 }
 
-/* Train Network button – distinct teal style */
-.btn-train {
-  background: #0a2e2e; border-color: #00ccaa; color: #00ccaa; font-weight: 600;
-}
-.btn-train:hover:not(:disabled) {
-  background: #0f4040; box-shadow: 0 0 10px #00ccaa88;
-}
-.btn-train.active {
-  background: #2e0a0a; border-color: var(--err); color: var(--err);
-}
-.btn-train.active:hover:not(:disabled) {
-  background: #4a1010; box-shadow: 0 0 10px #cc333388;
-}
+/* Action buttons — standard appearance, bold to distinguish from info buttons */
+.btn-train, .btn-bench, .btn-conc, .btn-pair { font-weight: 600; }
 
-/* Benchmark button – bright amber accent */
-.btn-bench {
-  background: #1a0d00; border-color: #ff9900; color: #ff9900; font-weight: 600;
-}
-.btn-bench:hover:not(:disabled) {
-  background: #2e1800; box-shadow: 0 0 10px #ff990088;
-}
-.btn-bench.active {
+/* Active/stop state: turns red when the button becomes a Stop control */
+.btn-train.active, .btn-bench.active, .btn-conc.active, .btn-pair.active, .btn-hot.active {
   background: #2e0a0a; border-color: var(--err); color: var(--err);
 }
-.btn-bench.active:hover:not(:disabled) {
-  background: #4a1010; box-shadow: 0 0 10px #cc333388;
-}
-
-/* Concordance button – violet accent */
-.btn-conc {
-  background: #140a24; border-color: #aa44ff; color: #aa44ff; font-weight: 600;
-}
-.btn-conc:hover:not(:disabled) {
-  background: #220a3e; box-shadow: 0 0 10px #aa44ff88;
-}
-.btn-conc.active {
-  background: #2e0a0a; border-color: var(--err); color: var(--err);
-}
-.btn-conc.active:hover:not(:disabled) {
-  background: #4a1010; box-shadow: 0 0 10px #cc333388;
-}
-
-/* Pair Learning button – lime accent */
-.btn-pair {
-  background: #0c1a04; border-color: #88dd44; color: #88dd44; font-weight: 600;
-}
-.btn-pair:hover:not(:disabled) {
-  background: #162e06; box-shadow: 0 0 10px #88dd4488;
-}
-.btn-pair.active {
-  background: #2e0a0a; border-color: var(--err); color: var(--err);
-}
-.btn-pair.active:hover:not(:disabled) {
+.btn-train.active:hover:not(:disabled),
+.btn-bench.active:hover:not(:disabled),
+.btn-conc.active:hover:not(:disabled),
+.btn-pair.active:hover:not(:disabled),
+.btn-hot.active:hover:not(:disabled) {
   background: #4a1010; box-shadow: 0 0 10px #cc333388;
 }
 
@@ -534,6 +484,42 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
 #resultsOverlay .chart-dl-btn,
 #legend .leg { pointer-events: auto; cursor: default; }
 #resultsOverlay .chart-dl-btn { cursor: pointer; }
+
+/* ── Hotspot button ──────────────────────────────────────────────────────── */
+.btn-hot { font-weight: 600; }
+
+/* ── Hotspot control group ───────────────────────────────────────────────── */
+/* (colour inherited from uniform group theme above) */
+
+/* ── Hotspot results panel ───────────────────────────────────────────────── */
+.hotspot-section {
+  padding: 6px 0 4px;
+  border-bottom: 1px solid rgba(90,32,0,0.4);
+}
+.hotspot-section:last-child { border-bottom: none; }
+.hotspot-section-label {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+  color: #cc6622; padding: 0 10px 4px; text-transform: uppercase;
+}
+.hotspot-chart-box {
+  position: relative; height: 160px; margin: 4px 8px 0;
+}
+
+/* ── Globe rotate control (top-right of globe panel) ────────────────────── */
+#globeRotateCtrl {
+  position: absolute; top: 8px; right: 14px;
+  background: rgba(8, 18, 36, 0.75);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 3px 8px;
+  pointer-events: auto;
+  z-index: 10;
+}
+#globeRotateCtrl label {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--dim); cursor: pointer;
+  white-space: nowrap;
+}
+#globeRotateCtrl input[type="checkbox"] { cursor: pointer; }
 
 /* ── Legend overlay ──────────────────────────────────────────────────────── */
 #legend {

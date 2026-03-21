@@ -491,11 +491,8 @@
   // Escape key to dismiss
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeGuide(); });
 
-  // Show automatically on first visit
-  if (!localStorage.getItem('dht-globe-guide-seen')) {
-    openGuide();
-    localStorage.setItem('dht-globe-guide-seen', '1');
-  }
+  // Show automatically on every page load
+  openGuide();
 </script>
 </body>
 </html>

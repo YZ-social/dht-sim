@@ -7,7 +7,7 @@ export class Results {
     this.panel = document.getElementById(panelId);
     this._charts = {};
     this._trainingHistory    = null;
-    this._concordanceHistory = null;
+    this._pubsubHistory = null;
     this._pairHistory        = null;
     this._benchmarkRows      = null;  // set by showBenchmarkResults
     this._lastLookupResult   = null;
@@ -136,7 +136,7 @@ export class Results {
     this._hideSection('demoResults');
     this._hideSection('benchmarkResults');
     this._hideSection('trainingResults');
-    this._hideSection('concordanceResults');
+    this._hideSection('pubsubResults');
     this._hideSection('pairResults');
     this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
@@ -175,7 +175,7 @@ export class Results {
     this._hideSection('churnResults');
     this._hideSection('benchmarkResults');
     this._hideSection('trainingResults');
-    this._hideSection('concordanceResults');
+    this._hideSection('pubsubResults');
     this._hideSection('pairResults');
     this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
@@ -193,7 +193,7 @@ export class Results {
     this._hideSection('churnResults');
     this._hideSection('demoResults');
     this._hideSection('benchmarkResults');
-    this._hideSection('concordanceResults');
+    this._hideSection('pubsubResults');
     this._hideSection('pairResults');
     this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
@@ -407,15 +407,16 @@ export class Results {
     this._hideSection('trainingResults');
   }
 
-  /** Clear concordance chart and log (called on new Init or new concordance run). */
-  clearConcordance() {
-    const log = this._el('concordanceLog');
+  /** Clear pub/sub chart and log (called on new Init or new pub/sub run). */
+  clearPubSub() {
+    const log = this._el('pubsubLog');
     if (log) log.innerHTML = '';
-    if (this._charts['concordanceLineChart']) {
-      this._charts['concordanceLineChart'].destroy();
-      delete this._charts['concordanceLineChart'];
+    if (this._charts['pubsubLineChart']) {
+      this._charts['pubsubLineChart'].destroy();
+      delete this._charts['pubsubLineChart'];
     }
-    this._hideSection('concordanceResults');
+    this._pubsubHistory = null;
+    this._hideSection('pubsubResults');
   }
 
   /** Clear pair-learning chart and log (called on new Init or new pair run). */
@@ -438,7 +439,7 @@ export class Results {
     this._hideSection('demoResults');
     this._hideSection('benchmarkResults');
     this._hideSection('trainingResults');
-    this._hideSection('concordanceResults');
+    this._hideSection('pubsubResults');
     this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
     this._attachPanelHeader('pairResults', 'Pair Learning', () => this._pairCSV(), `dht-pair-learning-${Date.now()}.csv`);
@@ -629,10 +630,10 @@ export class Results {
     return rows.join('\r\n');
   }
 
-  // ── Concordance Results ──────────────────────────────────────────────────
+  // ── Pub/Sub Results ──────────────────────────────────────────────────────
 
-  showConcordanceResults(history, relay) {
-    this._showSection('concordanceResults');
+  showPubSubResults(history, numGroups, coverage) {
+    this._showSection('pubsubResults');
     this._hideSection('lookupResults');
     this._hideSection('churnResults');
     this._hideSection('demoResults');
@@ -641,116 +642,106 @@ export class Results {
     this._hideSection('pairResults');
     this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
-    this._attachPanelHeader('concordanceResults', 'Concordance', () => this._concordanceCSV(), `dht-concordance-${Date.now()}.csv`);
-    this._updateConcordanceStats(history, relay);
-    requestAnimationFrame(() => this._drawConcordanceChart(history));
+    this._attachPanelHeader('pubsubResults', 'Pub/Sub', () => this._pubsubCSV(), `dht-pubsub-${Date.now()}.csv`);
+    this._updatePubSubStats(history, numGroups, coverage);
+    requestAnimationFrame(() => this._drawPubSubChart(history));
   }
 
-  updateConcordanceProgress(history, relay) {
-    if (!history.length) return;
-    this._updateConcordanceStats(history, relay);
-    this._drawConcordanceChart(history);
-  }
-
-  _updateConcordanceStats(history, relay) {
+  _updatePubSubStats(history, numGroups, coverage) {
     if (!history.length) return;
     const s = history[history.length - 1];
-    this._setText('concSession',     s.session);
-    this._setText('concParticipants', s.participants);
-    this._setText('concToRelay',     s.toRelay?.mean != null ? s.toRelay.mean.toFixed(2) : '—');
-    this._setText('concFromRelay',   s.fromRelay?.mean != null ? s.fromRelay.mean.toFixed(2) : '—');
-    if (relay) {
-      const hex = relay.id.toString(16).padStart(8, '0').toUpperCase();
-      this._setText('concRelay', `0x${hex.slice(0, 6)}…`);
-    }
+    this._setText('psMessages', `${s.tick}`);
+    this._setText('psGroups',   `${numGroups}`);
+    this._setText('psCoverage', `${coverage}%`);
+    this._setText('psMsgHops',  s.msgHops != null ? `${s.msgHops}` : '—');
+    this._setText('psBcastHops', s.bcastAvg != null ? s.bcastAvg.toFixed(2) : '—');
+    this._setText('psSimMs',    s.simMs != null ? `${s.simMs}` : '—');
 
     // Rolling log
-    const log = this._el('concordanceLog');
-    if (log && !s.isBaseline) {
+    const log = this._el('pubsubLog');
+    if (log) {
       const row = document.createElement('div');
       row.className = 'concordance-log-row';
       row.innerHTML =
-        `<span class="cl-session">#${s.session}</span>` +
-        `<span class="cl-to">→relay ${s.toRelay?.mean != null ? s.toRelay.mean.toFixed(2) : '—'}</span>` +
-        `<span class="cl-from">relay→ ${s.fromRelay?.mean != null ? s.fromRelay.mean.toFixed(2) : '—'}</span>`;
+        `<span class="cl-session">#${s.tick}</span>` +
+        `<span class="cl-to">msg ${s.msgHops ?? '—'} hops</span>` +
+        `<span class="cl-from">bcast ${s.bcastAvg != null ? s.bcastAvg.toFixed(1) : '—'}</span>` +
+        `<span class="cl-ms">${s.simMs ?? '—'} ms</span>`;
       log.appendChild(row);
       log.scrollTop = log.scrollHeight;
     }
   }
 
-  _drawConcordanceChart(history) {
-    this._concordanceHistory = history;
-    const canvas = this._el('concordanceLineChart');
+  _drawPubSubChart(history) {
+    this._pubsubHistory = history;
+    const canvas = this._el('pubsubLineChart');
     if (!canvas || typeof Chart === 'undefined' || history.length < 1) return;
 
-    const labels = history.map(s => `#${s.session}`);
-    const toData   = history.map(s => s.toRelay?.mean   ?? null);
-    const fromData = history.map(s => s.fromRelay?.mean ?? null);
+    // Keep a rolling window of the last 100 ticks for readability
+    const WIN  = 100;
+    const view = history.length > WIN ? history.slice(-WIN) : history;
 
-    // Y-axis min = 1.0 (theoretical minimum hops), max = data max for tight range
-    const allVals = [...toData, ...fromData].filter(v => v != null);
-    const yMin = 1;
-    const yMax = allVals.length ? Math.ceil(Math.max(...allVals) + 0.5) : 6;
+    const labels    = view.map(s => `#${s.tick}`);
+    const msgData   = view.map(s => s.msgHops   ?? null);
+    const bcastData = view.map(s => s.bcastAvg  != null ? +s.bcastAvg.toFixed(2) : null);
+    const msData    = view.map(s => s.simMs      ?? null);
+
+    const allHops = [...msgData, ...bcastData].filter(v => v != null);
+    const yHopMin = 1;
+    const yHopMax = allHops.length ? Math.ceil(Math.max(...allHops) + 0.5) : 6;
+    const allMs   = msData.filter(v => v != null);
+    const yMsMax  = allMs.length ? Math.ceil(Math.max(...allMs) / 50) * 50 + 50 : 500;
 
     const small = { size: 10, family: "'JetBrains Mono','Fira Mono','Consolas',monospace" };
 
-    if (this._charts['concordanceLineChart']) {
-      const chart = this._charts['concordanceLineChart'];
-      chart.data.labels = labels;
-      chart.data.datasets[0].data = toData;
-      chart.data.datasets[1].data = fromData;
-      chart.options.scales.yHops.min = yMin;
-      chart.options.scales.yHops.max = yMax;
+    if (this._charts['pubsubLineChart']) {
+      const chart = this._charts['pubsubLineChart'];
+      chart.data.labels            = labels;
+      chart.data.datasets[0].data  = msgData;
+      chart.data.datasets[1].data  = bcastData;
+      chart.data.datasets[2].data  = msData;
+      chart.options.scales.yHops.min = yHopMin;
+      chart.options.scales.yHops.max = yHopMax;
+      chart.options.scales.yMs.max   = yMsMax;
       chart.update('none');
       return;
     }
 
-    // Horizontal goal line at hops=1
-    const goalLinePlugin = {
-      id: 'goalLine',
-      afterDraw(chart) {
-        const ctx    = chart.ctx;
-        const yScale = chart.scales.yHops;
-        const xScale = chart.scales.x;
-        if (!yScale || !xScale) return;
-        const y = yScale.getPixelForValue(1);
-        ctx.save();
-        ctx.beginPath();
-        ctx.moveTo(xScale.left, y);
-        ctx.lineTo(xScale.right, y);
-        ctx.strokeStyle = 'rgba(200,180,80,0.4)';
-        ctx.lineWidth   = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.stroke();
-        ctx.restore();
-      },
-    };
-
-    this._charts['concordanceLineChart'] = new Chart(canvas, {
+    this._charts['pubsubLineChart'] = new Chart(canvas, {
       type: 'line',
-      plugins: [goalLinePlugin],
       data: {
         labels,
         datasets: [
           {
-            label: '→ Relay (avg hops)',
-            data: toData,
+            label: 'Msg → Relay (hops)',
+            data: msgData,
             borderColor: '#44ddff',
             backgroundColor: '#44ddff18',
             yAxisID: 'yHops',
             tension: 0.3,
-            pointRadius: 3,
+            pointRadius: 2,
             borderWidth: 2,
           },
           {
-            label: 'Relay → (avg hops)',
-            data: fromData,
+            label: 'Broadcast avg (hops)',
+            data: bcastData,
             borderColor: '#aa66ff',
             backgroundColor: '#aa66ff18',
             yAxisID: 'yHops',
             tension: 0.3,
-            pointRadius: 3,
+            pointRadius: 2,
             borderWidth: 2,
+          },
+          {
+            label: 'Sim latency (ms)',
+            data: msData,
+            borderColor: '#ffcc44',
+            backgroundColor: '#ffcc4418',
+            yAxisID: 'yMs',
+            tension: 0.3,
+            pointRadius: 2,
+            borderWidth: 1.5,
+            borderDash: [3, 3],
           },
         ],
       },
@@ -766,39 +757,50 @@ export class Results {
           },
           tooltip: {
             callbacks: {
-              title: (items) => `Session ${history[items[0]?.dataIndex]?.session ?? ''}`,
+              title: (items) => `Message ${view[items[0]?.dataIndex]?.tick ?? ''}`,
             },
           },
         },
         scales: {
           x: {
-            ticks: { color: '#99aacc', font: small, maxTicksLimit: 16 },
+            ticks: { color: '#99aacc', font: small, maxTicksLimit: 12 },
             grid:  { color: '#1a2a44' },
           },
           yHops: {
             type: 'linear', position: 'left',
-            min: yMin,
-            max: yMax,
+            min: yHopMin,
+            max: yHopMax,
             ticks: { color: '#bbccee', font: small },
             grid:  { color: '#1a2a4466' },
-            title: { display: true, text: 'Avg Hops', color: '#bbccee', font: small },
+            title: { display: true, text: 'Hops', color: '#bbccee', font: small },
+          },
+          yMs: {
+            type: 'linear', position: 'right',
+            min: 0,
+            max: yMsMax,
+            ticks: { color: '#ffcc44', font: small },
+            grid:  { drawOnChartArea: false },
+            title: { display: true, text: 'ms', color: '#ffcc44', font: small },
           },
         },
       },
     });
   }
 
-  _concordanceCSV() {
-    if (!this._concordanceHistory?.length) return '';
+  _pubsubCSV() {
+    if (!this._pubsubHistory?.length) return '';
     const rows = [
-      ['Session', 'Participants', 'Avg Hops To Relay', 'Avg Hops From Relay'].join(','),
+      ['Tick', 'Groups', 'Coverage%', 'Msg Hops', 'Bcast Avg Hops', 'Total Hops', 'Sim ms'].join(','),
     ];
-    for (const s of this._concordanceHistory) {
+    for (const s of this._pubsubHistory) {
       rows.push([
-        s.session,
-        s.participants ?? '',
-        s.toRelay?.mean  != null ? s.toRelay.mean.toFixed(3)  : '',
-        s.fromRelay?.mean != null ? s.fromRelay.mean.toFixed(3) : '',
+        s.tick,
+        s.groups    ?? '',
+        s.coverage  ?? '',
+        s.msgHops   ?? '',
+        s.bcastAvg  != null ? s.bcastAvg.toFixed(3) : '',
+        s.totalHops ?? '',
+        s.simMs     ?? '',
       ].join(','));
     }
     return rows.join('\r\n');
@@ -867,7 +869,7 @@ export class Results {
     this._hideSection('demoResults');
     this._hideSection('benchmarkResults');
     this._hideSection('trainingResults');
-    this._hideSection('concordanceResults');
+    this._hideSection('pubsubResults');
     this._hideSection('pairResults');
     this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
@@ -1194,7 +1196,7 @@ export class Results {
     this._hideSection('churnResults');
     this._hideSection('demoResults');
     this._hideSection('trainingResults');
-    this._hideSection('concordanceResults');
+    this._hideSection('pubsubResults');
     this._hideSection('pairResults');
     this._hideSection('hotspotResults');
     this.panel?.classList.add('bench-wide');
@@ -1260,7 +1262,7 @@ export class Results {
     Object.values(this._charts).forEach(c => c.destroy?.());
     this._charts = {};
     this._hideSection('benchmarkResults');
-    this._hideSection('concordanceResults');
+    this._hideSection('pubsubResults');
     this._hideSection('pairResults');
     this._hideSection('hotspotResults');
     this.panel?.classList.remove('bench-wide');
@@ -1286,7 +1288,7 @@ export class Results {
     this._hotspotData = data;
     // Hide other panels
     ['lookupResults','churnResults','benchmarkResults',
-     'trainingResults','concordanceResults','pairResults']
+     'trainingResults','pubsubResults','pairResults']
       .forEach(id => this._hideSection(id));
 
     this._attachPanelHeader('hotspotResults', 'Hotspot Test',

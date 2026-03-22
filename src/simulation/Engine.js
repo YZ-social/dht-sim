@@ -654,47 +654,65 @@ export class SimulationEngine {
     };
   }
 
-  // ── Concordance Session ──────────────────────────────────────────────────
+  // ── Pub/Sub Tick ─────────────────────────────────────────────────────────
 
   /**
-   * Run one concordance session: every participant looks up the relay, then
-   * the relay looks up every participant.  Repeated sessions drive neuromorphic
-   * synaptome formation so hop counts trend toward 1 in both directions.
+   * Run one pub/sub message cycle across a set of concordance groups.
+   * A random participant from a random group sends to its relay; the relay
+   * broadcasts back to all participants in that group.
    *
-   * @param {object} dht
-   * @param {object} relay        – the central relay node
-   * @param {object[]} participants – the N participant nodes
-   * @returns {Promise<{toRelay, fromRelay, toRelayRaw, fromRelayRaw}>}
+   * @param {object}   dht    – the active DHT instance
+   * @param {object[]} groups – array of { id, relay, participants[] }
+   * @returns {Promise<object|null>} tick stats, or null if no alive nodes found
    */
-  async runConcordanceSession(dht, relay, participants) {
-    const toRelayHops   = [];
-    const fromRelayHops = [];
-    const YIELD_EVERY   = 8;
+  async runPubSubTick(dht, groups) {
+    const HOP_MS    = 20;   // simulated milliseconds per hop
+    const JITTER_MS = 5;    // random jitter range
+    const YIELD_EVERY = 8;
 
-    for (let i = 0; i < participants.length; i++) {
-      const p = participants[i];
-      if (!p.alive || !relay.alive) continue;
+    // Pick a random group with a live relay
+    const liveGroups = groups.filter(g => g.relay.alive);
+    if (!liveGroups.length) return null;
+    const group = liveGroups[Math.floor(Math.random() * liveGroups.length)];
+    const { relay, participants } = group;
 
-      // participant → relay
-      try {
-        const r = await dht.lookup(p.id, relay.id);
-        if (r?.found) toRelayHops.push(r.hops);
-      } catch { /* skip */ }
+    // Pick a random live participant as message sender
+    const alive = participants.filter(p => p.alive);
+    if (!alive.length) return null;
+    const sender = alive[Math.floor(Math.random() * alive.length)];
 
-      // relay → participant
+    // sender → relay
+    let msgHops = 0;
+    try {
+      const r = await dht.lookup(sender.id, relay.id);
+      if (r?.found) msgHops = r.hops;
+    } catch { /* skip */ }
+
+    // relay → all participants (broadcast)
+    const bcastHops = [];
+    for (let i = 0; i < alive.length; i++) {
+      const p = alive[i];
+      if (p.id === sender.id) continue; // sender already reached relay
       try {
         const r = await dht.lookup(relay.id, p.id);
-        if (r?.found) fromRelayHops.push(r.hops);
+        if (r?.found) bcastHops.push(r.hops);
       } catch { /* skip */ }
-
       if ((i + 1) % YIELD_EVERY === 0) await this._yield();
     }
 
+    const bcastStats  = computeStats(bcastHops);
+    const totalHops   = msgHops + bcastHops.reduce((a, b) => a + b, 0);
+    const simMs       = Math.round(totalHops * HOP_MS + Math.random() * JITTER_MS);
+
     return {
-      toRelay:      computeStats(toRelayHops),
-      fromRelay:    computeStats(fromRelayHops),
-      toRelayRaw:   toRelayHops,
-      fromRelayRaw: fromRelayHops,
+      groupId:    group.id,
+      senderId:   sender.id,
+      relayId:    relay.id,
+      msgHops,
+      bcastStats,
+      bcastHops,
+      totalHops,
+      simMs,
     };
   }
 

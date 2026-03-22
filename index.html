@@ -123,9 +123,12 @@
       </div>
 
       <div class="ctrl-group cg-conc">
-        <span class="cg-label">Conc.</span>
-        <div class="ctrl-cluster" data-tip="Number of participant nodes in the Concordance star network. All participants send to and receive from a single relay node. Neuromorphic protocols learn shortcuts until hops approach 1 in both directions.">
-          <label>Nodes <input type="number" id="concordanceSize" value="32" min="4" max="256" step="4" style="width:32px"></label>
+        <span class="cg-label">Pub/Sub</span>
+        <div class="ctrl-cluster" data-tip="Number of participant nodes per concordance group (one relay + this many participants). Default: 32.">
+          <label>Group <input type="number" id="pubsubGroupSize" value="32" min="4" max="256" step="4" style="width:32px"></label>
+        </div>
+        <div class="ctrl-cluster" data-tip="Percentage of network nodes that participate in at least one concordance group. More coverage creates more groups and more routing-path overlap between them. Default: 10%.">
+          <label>Cover <input type="number" id="pubsubCoverage" value="10" min="1" max="100" step="1" style="width:30px">%</label>
         </div>
       </div>
 
@@ -151,7 +154,7 @@
       <button class="btn" id="btnChurnTest" disabled data-tip="Simulate node turnover over multiple intervals, measuring how routing success rate and hop count change as nodes join and leave.">&#8635; Churn Test</button>
       <button class="btn" id="btnDemoLookup" disabled data-tip="Animate a single random lookup on the globe: the camera follows each hop and arcs trace the path.">&#9654; Demo</button>
       <button class="btn btn-train" id="btnTrainNetwork" disabled data-tip="Run repeated lookup sessions in a loop for any protocol. Classical protocols refine k-buckets with fresher peer contacts. Neuromorphic protocols additionally run a full learning pass (annealing, hop-caching, triadic closure, LTP) and show larger hop-count reductions over time. Press again to stop.">&#10227; Train Network</button>
-      <button class="btn btn-conc" id="btnConcordance" disabled data-tip="Run a star-topology concordance test: one relay node receives messages from all participants and broadcasts back to each. Sessions repeat until stopped. Neuromorphic protocols converge toward 1 hop in both directions as the synaptome builds relay shortcuts.">&#9678; Concordance</button>
+      <button class="btn btn-conc" id="btnPubSub" disabled data-tip="Run a pub/sub overlay network test. Nodes form concordance groups (one relay + participants). A random participant sends a message to its relay; the relay broadcasts back to all participants. Multiple overlapping groups create realistic path interference. Runs continuously — measures hops and simulated latency per message cycle.">&#x2295; Pub/Sub</button>
       <button class="btn btn-pair" id="btnPairLearning" disabled data-tip="Assign every node a fixed random target. Each session routes all nodes to their fixed targets and records average hops. Neuromorphic protocols converge toward 1 hop per pair as synaptic shortcuts form for the persistent routes. Fixed pairs persist across all sessions until stopped.">&#x21D4; Pair Learning</button>
       <button class="btn btn-hot" id="btnHotspotTest" disabled data-tip="Run a two-phase hotspot test: (1) Highway — measures routing-load concentration by tracking which nodes act as relay hops across many random lookups; (2) Storage — queries content items with a Zipf distribution and measures query-load concentration. Both phases produce Lorenz curves and a Gini coefficient. Lower Gini = more evenly distributed load.">&#x1F321; Hotspot</button>
       <button class="btn btn-bench" id="btnBenchmark" data-tip="Run all protocols across all test conditions — four regional radii, source/dest/srcdest restricted, global, continent-crossing (NA→Asia), and churn. Builds a fresh DHT per protocol; no Init required. Warmup sessions control how much training Neuromorphic protocols receive before scoring.">&#9654;&#9654; Benchmark</button>
@@ -273,18 +276,19 @@
         <div class="training-log" id="trainingLog"></div>
       </div>
 
-      <div id="concordanceResults" style="display:none">
+      <div id="pubsubResults" style="display:none">
         <div class="stat-row">
-          <div class="stat" data-tip="Current concordance session number."><span class="sl">Session</span><span class="sv" id="concSession">&#8212;</span></div>
-          <div class="stat" data-tip="The relay node ID (hex prefix)."><span class="sl">Relay</span><span class="sv" id="concRelay">&#8212;</span></div>
-          <div class="stat" data-tip="Number of participant nodes in this concordance run."><span class="sl">Nodes</span><span class="sv" id="concParticipants">&#8212;</span></div>
-          <div class="stat" data-tip="Average hops from each participant to the relay this session."><span class="sl">&#x2192; Relay</span><span class="sv" style="color:#44ddff" id="concToRelay">&#8212;</span></div>
-          <div class="stat" data-tip="Average hops from the relay back to each participant this session."><span class="sl">Relay &#x2192;</span><span class="sv" style="color:#aa66ff" id="concFromRelay">&#8212;</span></div>
+          <div class="stat" data-tip="Total pub/sub messages sent this run."><span class="sl">Messages</span><span class="sv" id="psMessages">&#8212;</span></div>
+          <div class="stat" data-tip="Number of active concordance groups."><span class="sl">Groups</span><span class="sv" id="psGroups">&#8212;</span></div>
+          <div class="stat" data-tip="Percentage of network nodes in at least one concordance group."><span class="sl">Coverage</span><span class="sv" id="psCoverage">&#8212;</span></div>
+          <div class="stat" data-tip="Hops from the sender to its relay node for the last message."><span class="sl">&#x2192; Relay</span><span class="sv" style="color:#44ddff" id="psMsgHops">&#8212;</span></div>
+          <div class="stat" data-tip="Average hops from relay to each participant in the last broadcast."><span class="sl">Bcast</span><span class="sv" style="color:#aa66ff" id="psBcastHops">&#8212;</span></div>
+          <div class="stat" data-tip="Simulated round-trip latency for one message cycle (20 ms per hop)."><span class="sl">Sim ms</span><span class="sv" style="color:#ffcc44" id="psSimMs">&#8212;</span></div>
         </div>
         <div class="chart-strip">
-          <div class="concordance-chart-box" id="concordanceChartBox"><canvas id="concordanceLineChart"></canvas></div>
+          <div class="concordance-chart-box" id="pubsubChartBox"><canvas id="pubsubLineChart"></canvas></div>
         </div>
-        <div class="concordance-log" id="concordanceLog"></div>
+        <div class="concordance-log" id="pubsubLog"></div>
       </div>
 
       <div id="pairResults" style="display:none">
@@ -377,8 +381,8 @@
             <tr><td>&#9654; Lookup Test</td><td>Run <em>Count</em> random key lookups. Reports success rate, hop count (avg / p50 / p95 / max), and latency histograms.</td></tr>
             <tr><td>&#8635; Churn Test</td><td>Simulate node turnover over multiple intervals. Measures how routing health (success rate, hop count) degrades and recovers as nodes leave and join.</td></tr>
             <tr><td>&#9654; Demo</td><td>Animate one lookup on the globe. The camera follows each hop; arcs shift yellow → orange → deep orange with distance.</td></tr>
-            <tr><td>&#10227; Train Network</td><td>Repeat lookup sessions in a loop for any protocol. <em>Classical protocols</em> (Kademlia, Geographic) improve moderately — k-buckets are updated with fresher, more recently-seen peers as traffic flows through the network. <em>Neuromorphic protocols</em> additionally run a full learning pass each session (Markov annealing, hop-caching, triadic closure, LTP), producing larger and more sustained hop-count reductions. Press again to stop. Exports a CSV of all sessions.</td></tr>
-            <tr><td>&#9678; Concordance</td><td>Star-topology test: all participants route to and from a single relay node. Neuromorphic protocols converge toward 1 hop in both directions as the synaptome learns the relay's address.</td></tr>
+            <tr><td>&#10227; Train Network</td><td>Repeat lookup sessions in a loop for <strong>any</strong> protocol. All protocols improve with training: <em>Kademlia and Geographic DHT</em> update their k-buckets with fresher, more recently-seen peers as traffic flows through the network. <em>Neuromorphic protocols</em> additionally run a full learning pass each session (Markov annealing, hop-caching, triadic closure, LTP), producing larger and more sustained hop-count reductions. Press again to stop. Exports a CSV of all sessions.</td></tr>
+            <tr><td>&#x2295; Pub/Sub</td><td>Multi-group pub/sub overlay test. Nodes form <em>concordance groups</em> (one relay + participants, like a Croquet session). A random participant sends a message to its relay; the relay broadcasts back to every participant. Groups overlap — nodes can belong to multiple groups as relay, participant, or both — creating realistic routing-path interference. Runs continuously, recording hops and simulated latency (20 ms/hop) per message cycle. Press again to stop.</td></tr>
             <tr><td>&#x21D4; Pair Learning</td><td>Each node is assigned a fixed random target. Every session routes all pairs and records average hops. Measures how quickly the network memorises persistent routes.</td></tr>
             <tr><td>&#x1F321; Hotspot</td><td>Two-phase load test. <em>Highway</em>: tracks which nodes relay the most traffic (Gini / Lorenz curve). <em>Storage</em>: queries content items with a Zipf distribution and measures query-load concentration.</td></tr>
             <tr><td>&#9654;&#9654; Benchmark</td><td>Runs every protocol (or the Fast subset) across many conditions: regional radii, source/dest-restricted, global, continent-crossing, and churn. No Init required.</td></tr>
@@ -395,6 +399,7 @@
             <tr><td>Lookup</td><td><strong>Count</strong> — lookups per test run. <strong>Hot%</strong> — traffic concentration: 100% = uniform random; lower values focus traffic on a popular sub-network so neuromorphic protocols learn denser shortcuts.</td></tr>
             <tr><td>Churn</td><td><strong>Rate</strong> — % of nodes replaced per interval. <strong>Int</strong> — number of churn cycles. <strong>L/Int</strong> — lookups measured per cycle.</td></tr>
             <tr><td>Filters</td><td><strong>Region</strong> — restrict lookups to targets within a km radius. <strong>Src</strong> — only the top X% of nodes initiate lookups. <strong>Dest</strong> — only the top X% of nodes are valid targets.</td></tr>
+            <tr><td>Pub/Sub</td><td><strong>Group</strong> — participants per concordance group (relay + this many nodes, default 32). <strong>Cover %</strong> — percentage of network nodes that join at least one group (default 10%). More coverage creates more groups with overlapping routing paths.</td></tr>
             <tr><td>Hotspot</td><td><strong>Queries</strong> — number of lookups in the highway phase. <strong>Items</strong> — content items in the storage phase. <strong>Zipf</strong> — exponent controlling skew (0 = uniform, 1 = classic internet, 2 = extreme).</td></tr>
             <tr><td>Bench</td><td><strong>Warmup</strong> — training sessions given to neuromorphic protocols before scoring (each session = 500 lookups). <strong>Fast</strong> — run only Kademlia, G-DHT-8, N-8W, N-9W, and the Compare pick. <strong>Compare</strong> — which additional neuromorphic to include in Fast mode.</td></tr>
           </tbody>
@@ -444,7 +449,7 @@
       });
       const trainBtn = document.getElementById('btnTrainNetwork');
       if (trainBtn) trainBtn.disabled = false;
-      const concBtn = document.getElementById('btnConcordance');
+      const concBtn = document.getElementById('btnPubSub');
       if (concBtn) concBtn.disabled = false;
       const pairBtn = document.getElementById('btnPairLearning');
       if (pairBtn) pairBtn.disabled = false;

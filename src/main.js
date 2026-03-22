@@ -77,7 +77,7 @@ async function init() {
   document.getElementById('btnChurnTest')?.addEventListener('click', onChurnTest);
   document.getElementById('btnDemoLookup')?.addEventListener('click', onDemoLookup);
   document.getElementById('btnTrainNetwork')?.addEventListener('click', onTrainNetwork);
-  document.getElementById('btnConcordance')?.addEventListener('click', onConcordance);
+  document.getElementById('btnPubSub')?.addEventListener('click', onPubSub);
   document.getElementById('btnPairLearning')?.addEventListener('click', onPairLearning);
   document.getElementById('btnHotspotTest')?.addEventListener('click', onHotspotTest);
   document.getElementById('btnBenchmark')?.addEventListener('click', onBenchmark);
@@ -119,8 +119,8 @@ async function init() {
 async function onInit() {
   trainingActive = false;
   controls.setTraining(false);
-  concordanceActive = false;
-  controls.setConcordance(false);
+  pubsubActive = false;
+  controls.setPubSub(false);
   pairActive = false;
   controls.setPairLearning(false);
   hotspotActive = false;
@@ -129,7 +129,7 @@ async function onInit() {
   controls.setProgress(0);
   results.clear();
   results.clearTraining();
-  results.clearConcordance();
+  results.clearPubSub();
   results.clearPairLearning();
   globe.clearArcs();
   globe.clearConnections();
@@ -407,7 +407,7 @@ async function onChurnTest() {
 let trainingActive  = false;
 let trainingHistory = [];
 let trainingEpoch   = 0;   // cumulative lookups processed across all sessions
-let concordanceActive = false;
+let pubsubActive = false;
 let pairActive = false;
 let hotspotActive = false;
 
@@ -418,7 +418,7 @@ async function onTrainNetwork() {
     return;
   }
 
-  if (concordanceActive) return;
+  if (pubsubActive) return;
   if (pairActive) return;
 
   if (!dht) {
@@ -532,80 +532,106 @@ async function onTrainNetwork() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Concordance — star-topology overlay network test
+// Pub/Sub — multi-group overlay network test
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function onConcordance() {
-  if (concordanceActive) {
-    concordanceActive = false;
+async function onPubSub() {
+  if (pubsubActive) {
+    pubsubActive = false;
     return;
   }
 
-  if (trainingActive || pairActive || !dht) {
+  if (trainingActive || pairActive || hotspotActive || !dht) {
     if (!dht) controls.setStatus('Initialise the network first.', 'warn');
     return;
   }
 
-  const params = controls.snapshot();
+  const params     = controls.snapshot();
   const aliveNodes = dht.getNodes().filter(n => n.alive);
-  if (aliveNodes.length < params.concordanceSize + 1) {
-    controls.setStatus(
-      `Need at least ${params.concordanceSize + 1} nodes for concordance. Init a larger network.`,
-      'warn'
-    );
+  const groupSize  = params.pubsubGroupSize;
+
+  if (aliveNodes.length < groupSize + 1) {
+    controls.setStatus(`Need at least ${groupSize + 1} nodes for Pub/Sub. Init a larger network.`, 'warn');
     return;
   }
 
-  concordanceActive = true;
-  controls.setConcordance(true);
+  // ── Build concordance groups ──────────────────────────────────────────────
+  // Target: pubsubCoverage% of nodes in ≥1 group.
+  // Nodes stride through the shuffled array so every region of the ID/geo
+  // space is represented, and adjacent groups naturally share nodes (overlap).
+  const targetNodes = Math.ceil(aliveNodes.length * params.pubsubCoverage / 100);
+  const numGroups   = Math.max(1, Math.ceil(targetNodes / groupSize));
+  const shuffled    = [...aliveNodes].sort(() => Math.random() - 0.5);
+  const stride      = Math.max(1, Math.floor(shuffled.length / numGroups));
+
+  const groups = [];
+  for (let i = 0; i < numGroups; i++) {
+    const base         = (i * stride) % shuffled.length;
+    const relay        = shuffled[base];
+    const participants = [];
+    for (let j = 1; j <= groupSize; j++) {
+      participants.push(shuffled[(base + j) % shuffled.length]);
+    }
+    groups.push({ id: i, relay, participants });
+  }
+
+  // Actual coverage (unique nodes across all groups)
+  const covered = new Set();
+  for (const g of groups) {
+    covered.add(g.relay.id);
+    for (const p of g.participants) covered.add(p.id);
+  }
+  const actualCoverage = ((covered.size / aliveNodes.length) * 100).toFixed(1);
+
+  pubsubActive = true;
+  controls.setPubSub(true);
   globe.clearArcs();
   globe.clearConnections();
   globe.clearRegionalBoundary();
 
-  // Pick a relay and participants fresh each run
-  const shuffled    = [...aliveNodes].sort(() => Math.random() - 0.5);
-  const relay       = shuffled[0];
-  const participants = shuffled.slice(1, 1 + params.concordanceSize);
-
-  // Highlight the relay on the globe by drawing boundary rings centred on it
-  globe.drawRegionalBoundary(relay.lat, relay.lng, 500);
+  // Mark the first group's relay on the globe
+  globe.drawRegionalBoundary(groups[0].relay.lat, groups[0].relay.lng, 800);
 
   const history = [];
-  let session   = 0;
+  let tick = 0;
 
-  results.clearConcordance();
-  controls.setStatus(`Concordance: relay 0x${relay.id.toString(16).padStart(16,'0').toUpperCase().slice(0,8)}… · ${participants.length} participants`, 'info');
+  results.clearPubSub();
+  controls.setStatus(
+    `Pub/Sub: ${numGroups} groups · ${actualCoverage}% coverage · ${aliveNodes.length} nodes`,
+    'info'
+  );
 
-  while (concordanceActive) {
-    session++;
-    controls.setStatus(`Concordance session ${session}…`, 'info');
+  while (pubsubActive) {
+    tick++;
+    const result = await engine.runPubSubTick(dht, groups);
 
-    const sess = await engine.runConcordanceSession(dht, relay, participants);
-
-    if (!concordanceActive) break;
+    if (!pubsubActive) break;
+    if (!result) continue;
 
     history.push({
-      session,
-      participants: participants.length,
-      toRelay:   sess.toRelay,
-      fromRelay: sess.fromRelay,
+      tick,
+      groups:    numGroups,
+      coverage:  actualCoverage,
+      msgHops:   result.msgHops,
+      bcastAvg:  result.bcastStats?.mean ?? 0,
+      totalHops: result.totalHops,
+      simMs:     result.simMs,
     });
 
-    results.showConcordanceResults(history, relay);
-    results.updateConcordanceProgress(history, relay);
+    results.showPubSubResults(history, numGroups, actualCoverage);
 
     controls.setStatus(
-      `Concordance #${session} — →relay: ${sess.toRelay?.mean?.toFixed(2) ?? '—'} hops, ` +
-      `relay→: ${sess.fromRelay?.mean?.toFixed(2) ?? '—'} hops`,
+      `Pub/Sub #${tick} — msg: ${result.msgHops} hops · bcast avg: ` +
+      `${result.bcastStats?.mean?.toFixed(1) ?? '—'} hops · ${result.simMs} ms`,
       'info'
     );
 
     await yieldUI();
   }
 
-  concordanceActive = false;
-  controls.setConcordance(false);
-  controls.setStatus(`Concordance stopped after ${session} session(s).`, 'success');
+  pubsubActive = false;
+  controls.setPubSub(false);
+  controls.setStatus(`Pub/Sub stopped after ${tick} message(s).`, 'success');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -618,7 +644,7 @@ async function onPairLearning() {
     return;
   }
 
-  if (trainingActive || concordanceActive || !dht) {
+  if (trainingActive || pubsubActive || !dht) {
     if (!dht) controls.setStatus('Initialise the network first.', 'warn');
     return;
   }
@@ -707,7 +733,7 @@ async function onHotspotTest() {
     controls.setStatus('Hotspot test stopped.', 'warn');
     return;
   }
-  if (trainingActive || concordanceActive || pairActive) {
+  if (trainingActive || pubsubActive || pairActive) {
     controls.setStatus('Stop the running test first.', 'warn');
     return;
   }
@@ -777,7 +803,7 @@ let benchmarkActive = false;
 async function onBenchmark() {
   // Cannot start a benchmark while training is running.
   if (trainingActive) return;
-  if (concordanceActive) return;
+  if (pubsubActive) return;
   if (pairActive) return;
 
   // Toggle: clicking while running stops the benchmark.

@@ -93,7 +93,8 @@ export class Controls {
   get benchCompare()         { return this._el('benchCompare')?.value ?? 'ngdht6w'; }
   get showAnimation() { return this._el('showAnimation')?.checked ?? true; }
   get autoRotate()  { return this._el('autoRotate')?.checked ?? false; }
-  get concordanceSize() { return Math.max(4, Math.min(256, parseInt(this._el('concordanceSize')?.value ?? 32))); }
+  get pubsubGroupSize() { return Math.max(4, Math.min(256, parseInt(this._el('pubsubGroupSize')?.value ?? 32))); }
+  get pubsubCoverage()  { return Math.max(1, Math.min(100, parseInt(this._el('pubsubCoverage')?.value ?? 10))); }
   get hotspotLookups()  { return Math.max(100, parseInt(this._el('hotspotLookups')?.value ?? 1000)); }
   get contentCount()    { return Math.max(10,  parseInt(this._el('contentCount')?.value   ?? 50)); }
   get zipfExponent()    { return Math.max(0.1, parseFloat(this._el('zipfExponent')?.value ?? 1.0)); }
@@ -119,7 +120,8 @@ export class Controls {
       benchWarmupSessions: this.benchWarmupSessions,
       benchFast:           this.benchFast,
       benchCompare:        this.benchCompare,
-      concordanceSize: this.concordanceSize,
+      pubsubGroupSize: this.pubsubGroupSize,
+      pubsubCoverage:  this.pubsubCoverage,
       hotspotLookups: this.hotspotLookups,
       contentCount:   this.contentCount,
       zipfExponent:   this.zipfExponent,
@@ -147,12 +149,12 @@ export class Controls {
       const el = this._el(id);
       if (el) el.disabled = running;
     });
-    // Disable Benchmark, Train, and Concordance during normal tests
+    // Disable Benchmark, Train, and Pub/Sub during normal tests
     const benchBtn = this._el('btnBenchmark');
     if (benchBtn) benchBtn.disabled = running;
     const trainBtn = this._el('btnTrainNetwork');
     if (trainBtn) trainBtn.disabled = running;
-    const concBtn = this._el('btnConcordance');
+    const concBtn = this._el('btnPubSub');
     if (concBtn) concBtn.disabled = running;
     const pairBtn = this._el('btnPairLearning');
     if (pairBtn) pairBtn.disabled = running;
@@ -170,7 +172,7 @@ export class Controls {
     });
     const trainBtn = this._el('btnTrainNetwork');
     if (trainBtn) trainBtn.disabled = active;
-    const concBtn = this._el('btnConcordance');
+    const concBtn = this._el('btnPubSub');
     if (concBtn) concBtn.disabled = active;
     const pairBtn2 = this._el('btnPairLearning');
     if (pairBtn2) pairBtn2.disabled = active;
@@ -190,20 +192,20 @@ export class Controls {
     }
   }
 
-  setConcordance(active) {
+  setPubSub(active) {
     const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnBenchmark', 'btnTrainNetwork', 'btnPairLearning'];
     btns.forEach(id => {
       const el = this._el(id);
       if (el) el.disabled = active;
     });
-    const concBtn = this._el('btnConcordance');
+    const concBtn = this._el('btnPubSub');
     if (concBtn) {
       concBtn.disabled = false;
       if (active) {
-        concBtn.textContent = '⏹ Stop Concordance';
+        concBtn.textContent = '⏹ Stop Pub/Sub';
         concBtn.classList.add('active');
       } else {
-        concBtn.textContent = '◎ Concordance';
+        concBtn.textContent = '⊕ Pub/Sub';
         concBtn.classList.remove('active');
       }
     }
@@ -211,7 +213,7 @@ export class Controls {
 
   setPairLearning(active) {
     const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup',
-                  'btnBenchmark', 'btnTrainNetwork', 'btnConcordance'];
+                  'btnBenchmark', 'btnTrainNetwork', 'btnPubSub'];
     btns.forEach(id => {
       const el = this._el(id);
       if (el) el.disabled = active;
@@ -230,7 +232,7 @@ export class Controls {
   }
 
   setTraining(active) {
-    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnBenchmark', 'btnConcordance', 'btnPairLearning', 'btnHotspotTest'];
+    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnBenchmark', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest'];
     btns.forEach(id => {
       const el = this._el(id);
       if (el) el.disabled = active;
@@ -261,7 +263,7 @@ export class Controls {
       }
     }
     ['btnInit','btnLookupTest','btnChurnTest','btnDemoLookup',
-     'btnTrainNetwork','btnConcordance','btnPairLearning','btnBenchmark']
+     'btnTrainNetwork','btnPubSub','btnPairLearning','btnBenchmark']
       .forEach(id => { const b = this._el(id); if (b) b.disabled = active; });
   }
 

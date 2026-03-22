@@ -282,7 +282,7 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
   margin: 3px 0 2px;
 }
 
-/* ── Concordance results panel ───────────────────────────────────────────── */
+/* ── Pub/Sub results panel ───────────────────────────────────────────────── */
 .concordance-chart-box { flex: 1; height: 180px; min-width: 0; margin-top: 5px; position: relative; }
 .concordance-chart-box canvas { width: 100% !important; height: 100% !important; }
 .concordance-log {
@@ -298,6 +298,7 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
 .cl-session { color: #cc88ff; min-width: 28px; }
 .cl-to      { color: #44ddff; min-width: 72px; }
 .cl-from    { color: #aa66ff; min-width: 72px; }
+.cl-ms      { color: #ffcc44; min-width: 52px; }
 
 /* ── Pair Learning results panel ─────────────────────────────────────────── */
 .pair-chart-box { flex: 1; height: 180px; min-width: 0; margin-top: 5px; position: relative; }

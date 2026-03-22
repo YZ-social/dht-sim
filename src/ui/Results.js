@@ -1114,9 +1114,15 @@ export class Results {
                 : s.type === 'srcdest'   ? ' class="srcdest-col"'
                 : s.type === 'churn'     ? ' class="churn-col"'
                 : s.type === 'continent' ? ' class="continent-col"'
-                : s.type === 'pubsub'    ? ' class="pubsub-col"'
                 : '';
-      html += `<th colspan="2"${cls} data-tip="${specTip(s)}">${specLabel(s)}</th>`;
+      // pub/sub expands into two separate colspan="2" header cells
+      if (s.type === 'pubsub') {
+        const tip = specTip(s);
+        html += `<th colspan="2" class="pubsub-col"  data-tip="${tip}">Relay Pub/Sub</th>`;
+        html += `<th colspan="2" class="pubsub-bcol" data-tip="${tip}">B&#x2019;cast Pub/Sub</th>`;
+      } else {
+        html += `<th colspan="2"${cls} data-tip="${specTip(s)}">${specLabel(s)}</th>`;
+      }
     }
     html += `
           </tr>
@@ -1128,10 +1134,10 @@ export class Results {
       const isSrcDest   = s.type === 'srcdest';
       const isChurn     = s.type === 'churn';
       const isContinent = s.type === 'continent';
-      const isPubSub    = s.type === 'pubsub';
-      const sub = isSrc ? ' src-sub' : isDest ? ' dest-sub' : isSrcDest ? ' srcdest-sub' : isChurn ? ' churn-sub' : isContinent ? ' continent-sub' : isPubSub ? ' pubsub-sub' : '';
-      if (isPubSub) {
-        html += `<th class="sub${sub}">→relay</th><th class="sub${sub}">bcast</th>`;
+      const sub = isSrc ? ' src-sub' : isDest ? ' dest-sub' : isSrcDest ? ' srcdest-sub' : isChurn ? ' churn-sub' : isContinent ? ' continent-sub' : '';
+      if (s.type === 'pubsub') {
+        html += `<th class="sub pubsub-sub">hops</th><th class="sub pubsub-sub">ms</th>`;
+        html += `<th class="sub pubsub-bsub">hops</th><th class="sub pubsub-bsub">ms</th>`;
       } else {
         html += `<th class="sub${sub}">hops</th><th class="sub${sub}">ms</th>`;
       }
@@ -1145,17 +1151,24 @@ export class Results {
       const k = specKey(s);
       minHops[k] = Infinity;
       minTime[k] = Infinity;
-      for (const def of protocolDefs) {
-        const cell = data[def.key]?.[k];
-        if (s.type === 'pubsub') {
-          // pub/sub cells use msgHops (left) and bcastHops (right) instead of hops/time
-          if (cell?.msgHops?.mean  != null && cell.msgHops.mean  < minHops[k]) minHops[k] = cell.msgHops.mean;
-          if (cell?.bcastHops?.mean != null && cell.bcastHops.mean < minTime[k]) minTime[k] = cell.bcastHops.mean;
-        } else {
+      if (s.type !== 'pubsub') {
+        for (const def of protocolDefs) {
+          const cell = data[def.key]?.[k];
           if (cell?.hops?.mean != null && cell.hops.mean < minHops[k]) minHops[k] = cell.hops.mean;
           if (cell?.time?.mean != null && cell.time.mean < minTime[k]) minTime[k] = cell.time.mean;
         }
       }
+    }
+    // Pub/sub has four independent min values (msg hops, msg ms, bcast hops, bcast ms)
+    const HOP_MS = 20;
+    const minPS = { msgH: Infinity, msgMs: Infinity, bcastH: Infinity, bcastMs: Infinity };
+    for (const def of protocolDefs) {
+      const cell = data[def.key]?.['pubsub'];
+      if (!cell) continue;
+      if (cell.msgHops?.mean   != null) { minPS.msgH   = Math.min(minPS.msgH,   cell.msgHops.mean);
+                                          minPS.msgMs  = Math.min(minPS.msgMs,  cell.msgHops.mean * HOP_MS); }
+      if (cell.bcastHops?.mean != null) { minPS.bcastH  = Math.min(minPS.bcastH,  cell.bcastHops.mean);
+                                          minPS.bcastMs = Math.min(minPS.bcastMs, cell.bcastHops.mean * HOP_MS); }
     }
 
     // Data rows
@@ -1173,23 +1186,27 @@ export class Results {
         const isPubSub    = s.type === 'pubsub';
         const specCls     = isSrc ? ' src-cell' : isDest ? ' dest-cell' : isSrcDest ? ' srcdest-cell' : isChurn ? ' churn-cell' : isContinent ? ' continent-cell' : isPubSub ? ' pubsub-cell' : '';
 
-        // Pub/Sub cells store msgHops + bcastHops rather than hops + time
+        // Pub/Sub: four separate cells — relay hops, relay ms, bcast hops, bcast ms
         if (isPubSub) {
           if (!cell || !cell.msgHops) {
-            html += `<td class="no-data${specCls}" colspan="2">—</td>`;
+            html += `<td class="no-data pubsub-cell"  colspan="2">—</td>`;
+            html += `<td class="no-data pubsub-bcell" colspan="2">—</td>`;
             continue;
           }
-          const HOP_MS  = 20;
           const msgH    = cell.msgHops.mean.toFixed(2);
-          const bcastH  = cell.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(2) : '—';
           const msgMs   = Math.round(cell.msgHops.mean * HOP_MS);
-          const bcastMs = cell.bcastHops?.mean != null ? Math.round(cell.bcastHops.mean * HOP_MS) : null;
-          const p95msg  = cell.msgHops.p95  != null ? cell.msgHops.p95.toFixed(1)  : null;
-          const p95bcst = cell.bcastHops?.p95 != null ? cell.bcastHops.p95.toFixed(1) : null;
-          const msgWin   = cell.msgHops.mean   <= minHops[k] + 0.005;
-          const bcastWin = cell.bcastHops?.mean != null && cell.bcastHops.mean <= minTime[k] + 0.005;
-          html += `<td class="hops-cell${msgWin ? ' win' : ''}${specCls}">${msgH}${p95msg ? `<span class="p95">${p95msg}</span>` : ''}<span class="pubsub-ms">${msgMs} ms</span></td>`;
-          html += `<td class="hops-cell${bcastWin ? ' win' : ''}${specCls}">${bcastH}${p95bcst ? `<span class="p95">${p95bcst}</span>` : ''}${bcastMs != null ? `<span class="pubsub-ms">${bcastMs} ms</span>` : ''}</td>`;
+          const bcastH  = cell.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(2) : '—';
+          const bcastMs = cell.bcastHops?.mean != null ? Math.round(cell.bcastHops.mean * HOP_MS) : '—';
+          const p95msg   = cell.msgHops.p95    != null ? cell.msgHops.p95.toFixed(1)    : null;
+          const p95bcast = cell.bcastHops?.p95 != null ? cell.bcastHops.p95.toFixed(1)  : null;
+          const msgHWin   = cell.msgHops.mean   <= minPS.msgH   + 0.005;
+          const msgMsWin  = cell.msgHops.mean * HOP_MS <= minPS.msgMs  + 0.5;
+          const bcastHWin = cell.bcastHops?.mean != null && cell.bcastHops.mean   <= minPS.bcastH  + 0.005;
+          const bcastMsWin= cell.bcastHops?.mean != null && cell.bcastHops.mean * HOP_MS <= minPS.bcastMs + 0.5;
+          html += `<td class="hops-cell${msgHWin  ? ' win' : ''} pubsub-cell">${msgH}${p95msg ? `<span class="p95">${p95msg}</span>` : ''}</td>`;
+          html += `<td class="time-cell${msgMsWin ? ' win' : ''} pubsub-cell">${msgMs}</td>`;
+          html += `<td class="hops-cell${bcastHWin  ? ' win' : ''} pubsub-bcell">${bcastH}${p95bcast ? `<span class="p95">${p95bcast}</span>` : ''}</td>`;
+          html += `<td class="time-cell${bcastMsWin ? ' win' : ''} pubsub-bcell">${bcastMs}</td>`;
           continue;
         }
 

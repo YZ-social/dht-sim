@@ -1,4 +1,4 @@
-import { randomU64, computeStats, haversine, continentOf, buildXorRoutingTable } from '../utils/geo.js';
+import { randomU64, computeStats, haversine, propagationDelay, continentOf, buildXorRoutingTable } from '../utils/geo.js';
 
 /**
  * SimulationEngine – orchestrates lookup tests and churn tests on a DHT.
@@ -527,18 +527,24 @@ export class SimulationEngine {
           onStart(`${tag} · Pub/Sub (${measTicks} ticks)…`);
 
           const allMsgHops   = [];
+          const allMsgMs     = [];
           const allBcastHops = [];
+          const allBcastMs   = [];
           for (let t = 0; t < measTicks; t++) {
             if (!this.running) break;
             const tick = await this.runPubSubTick(dht, groups);
             if (!tick) continue;
             allMsgHops.push(tick.msgHops);
+            if (tick.msgMs > 0) allMsgMs.push(tick.msgMs);
             allBcastHops.push(...tick.bcastHops);
+            if (tick.bcastMsStats?.mean != null) allBcastMs.push(tick.bcastMsStats.mean);
           }
 
           data[def.key]['pubsub'] = {
             msgHops:    computeStats(allMsgHops),
+            msgMs:      computeStats(allMsgMs),
             bcastHops:  computeStats(allBcastHops),
+            bcastMs:    computeStats(allBcastMs),
             numGroups,
             totalTicks: measTicks,
           };
@@ -728,8 +734,12 @@ export class SimulationEngine {
    * @returns {Promise<object|null>} tick stats, or null if no alive nodes found
    */
   async runPubSubTick(dht, groups) {
-    const HOP_MS    = 20;   // simulated milliseconds per hop
-    const JITTER_MS = 5;    // random jitter range
+    // Per-hop processing overhead (matches geo.js HOP_COST_MS default).
+    // Propagation is computed from the actual great-circle distance between
+    // the two endpoints of each leg (sender→relay, relay→participant) so that
+    // globally distributed nodes produce realistic latency (~150 ms for an
+    // average random hop vs the ~50 ms best-case speed-of-light floor).
+    const HOP_COST_MS = 10;
     const YIELD_EVERY = 8;
 
     // Pick a random group with a live relay
@@ -745,36 +755,47 @@ export class SimulationEngine {
 
     // sender → relay
     let msgHops = 0;
+    let msgMs   = 0;
     try {
       const r = await dht.lookup(sender.id, relay.id);
-      if (r?.found) msgHops = r.hops;
+      if (r?.found) {
+        msgHops = r.hops;
+        // Geographic propagation for this leg + per-hop processing cost
+        msgMs = Math.round(propagationDelay(sender, relay) + msgHops * HOP_COST_MS);
+      }
     } catch { /* skip */ }
 
     // relay → all participants (broadcast)
     const bcastHops = [];
+    const bcastMsArr = [];
     for (let i = 0; i < alive.length; i++) {
       const p = alive[i];
       if (p.id === sender.id) continue; // sender already reached relay
       try {
         const r = await dht.lookup(relay.id, p.id);
-        if (r?.found) bcastHops.push(r.hops);
+        if (r?.found) {
+          bcastHops.push(r.hops);
+          bcastMsArr.push(Math.round(propagationDelay(relay, p) + r.hops * HOP_COST_MS));
+        }
       } catch { /* skip */ }
       if ((i + 1) % YIELD_EVERY === 0) await this._yield();
     }
 
     const bcastStats  = computeStats(bcastHops);
+    const bcastMsStats = computeStats(bcastMsArr);
     const totalHops   = msgHops + bcastHops.reduce((a, b) => a + b, 0);
-    const simMs       = Math.round(totalHops * HOP_MS + Math.random() * JITTER_MS);
 
     return {
-      groupId:    group.id,
-      senderId:   sender.id,
-      relayId:    relay.id,
+      groupId:     group.id,
+      senderId:    sender.id,
+      relayId:     relay.id,
       msgHops,
+      msgMs,
       bcastStats,
       bcastHops,
+      bcastMsStats,
       totalHops,
-      simMs,
+      simMs: msgMs + Math.round((bcastMsStats?.mean ?? 0)),
     };
   }
 

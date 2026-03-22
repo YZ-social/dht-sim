@@ -1160,15 +1160,14 @@ export class Results {
       }
     }
     // Pub/sub has four independent min values (msg hops, msg ms, bcast hops, bcast ms)
-    const HOP_MS = 20;
     const minPS = { msgH: Infinity, msgMs: Infinity, bcastH: Infinity, bcastMs: Infinity };
     for (const def of protocolDefs) {
       const cell = data[def.key]?.['pubsub'];
       if (!cell) continue;
-      if (cell.msgHops?.mean   != null) { minPS.msgH   = Math.min(minPS.msgH,   cell.msgHops.mean);
-                                          minPS.msgMs  = Math.min(minPS.msgMs,  cell.msgHops.mean * HOP_MS); }
-      if (cell.bcastHops?.mean != null) { minPS.bcastH  = Math.min(minPS.bcastH,  cell.bcastHops.mean);
-                                          minPS.bcastMs = Math.min(minPS.bcastMs, cell.bcastHops.mean * HOP_MS); }
+      if (cell.msgHops?.mean != null) minPS.msgH   = Math.min(minPS.msgH,   cell.msgHops.mean);
+      if (cell.msgMs?.mean   != null) minPS.msgMs  = Math.min(minPS.msgMs,  cell.msgMs.mean);
+      if (cell.bcastHops?.mean != null) minPS.bcastH  = Math.min(minPS.bcastH,  cell.bcastHops.mean);
+      if (cell.bcastMs?.mean   != null) minPS.bcastMs = Math.min(minPS.bcastMs, cell.bcastMs.mean);
     }
 
     // Data rows
@@ -1194,15 +1193,15 @@ export class Results {
             continue;
           }
           const msgH    = cell.msgHops.mean.toFixed(2);
-          const msgMs   = Math.round(cell.msgHops.mean * HOP_MS);
+          const msgMs   = cell.msgMs?.mean   != null ? Math.round(cell.msgMs.mean)   : '—';
           const bcastH  = cell.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(2) : '—';
-          const bcastMs = cell.bcastHops?.mean != null ? Math.round(cell.bcastHops.mean * HOP_MS) : '—';
+          const bcastMs = cell.bcastMs?.mean   != null ? Math.round(cell.bcastMs.mean)  : '—';
           const p95msg   = cell.msgHops.p95    != null ? cell.msgHops.p95.toFixed(1)    : null;
           const p95bcast = cell.bcastHops?.p95 != null ? cell.bcastHops.p95.toFixed(1)  : null;
-          const msgHWin   = cell.msgHops.mean   <= minPS.msgH   + 0.005;
-          const msgMsWin  = cell.msgHops.mean * HOP_MS <= minPS.msgMs  + 0.5;
-          const bcastHWin = cell.bcastHops?.mean != null && cell.bcastHops.mean   <= minPS.bcastH  + 0.005;
-          const bcastMsWin= cell.bcastHops?.mean != null && cell.bcastHops.mean * HOP_MS <= minPS.bcastMs + 0.5;
+          const msgHWin   = cell.msgHops.mean  <= minPS.msgH  + 0.005;
+          const msgMsWin  = cell.msgMs?.mean   != null && cell.msgMs.mean   <= minPS.msgMs  + 1;
+          const bcastHWin = cell.bcastHops?.mean != null && cell.bcastHops.mean <= minPS.bcastH  + 0.005;
+          const bcastMsWin= cell.bcastMs?.mean   != null && cell.bcastMs.mean   <= minPS.bcastMs + 1;
           html += `<td class="hops-cell${msgHWin  ? ' win' : ''} pubsub-cell">${msgH}${p95msg ? `<span class="p95">${p95msg}</span>` : ''}</td>`;
           html += `<td class="time-cell${msgMsWin ? ' win' : ''} pubsub-cell">${msgMs}</td>`;
           html += `<td class="hops-cell${bcastHWin  ? ' win' : ''} pubsub-bcell">${bcastH}${p95bcast ? `<span class="p95">${p95bcast}</span>` : ''}</td>`;
@@ -1294,14 +1293,11 @@ export class Results {
         const key  = csvSpecKey(s);
         const cell = data?.[proto.key]?.[key];
         if (s.type === 'pubsub') {
-          const HOP_MS = 20;
-          const mH = cell?.msgHops?.mean;
-          const bH = cell?.bcastHops?.mean;
           cols.push(
-            mH != null ? mH.toFixed(3)                  : '',
-            mH != null ? Math.round(mH * HOP_MS) + ''   : '',
-            bH != null ? bH.toFixed(3)                  : '',
-            bH != null ? Math.round(bH * HOP_MS) + ''   : '',
+            cell?.msgHops?.mean  != null ? cell.msgHops.mean.toFixed(3)    : '',
+            cell?.msgMs?.mean    != null ? Math.round(cell.msgMs.mean) + '' : '',
+            cell?.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(3) : '',
+            cell?.bcastMs?.mean   != null ? Math.round(cell.bcastMs.mean) + '' : '',
           );
         } else {
           cols.push(

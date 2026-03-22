@@ -1054,6 +1054,7 @@ export class Results {
                          : s.type === 'srcdest'    ? `srcdest_${s.srcPct}_${s.destPct}`
                          : s.type === 'churn'      ? `churn_${s.rate}`
                          : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
+                         : s.type === 'pubsub'     ? 'pubsub'
                          : 'global';
     const specLabel = s => s.type === 'regional'  ? `${s.radius} km`
                          : s.type === 'dest'       ? `${s.pct}% dest`
@@ -1061,6 +1062,7 @@ export class Results {
                          : s.type === 'srcdest'    ? `${s.srcPct}%→${s.destPct}%`
                          : s.type === 'churn'      ? `${s.rate}% churn`
                          : s.type === 'continent'  ? `${contName[s.src]??s.src}→${contName[s.dst]??s.dst}`
+                         : s.type === 'pubsub'     ? 'Pub/Sub'
                          : 'Global';
     const specTip   = s => s.type === 'regional'
       ? `Regional lookups: source and destination chosen within ${s.radius} km of each other. Tests geographic locality routing.`
@@ -1074,6 +1076,8 @@ export class Results {
       ? `Churn ${s.rate}%: ${s.rate}% of nodes are replaced with fresh (state-free) nodes across 5 successive rounds before measurement. Neuromorphic protocols get 100 adaptation lookups between rounds to partially re-learn the changed topology. Tests steady-state routing resilience under ongoing node turnover.`
       : s.type === 'continent'
       ? `Cross-continental: sources drawn from ${contName[s.src]??s.src}, destinations from ${contName[s.dst]??s.dst}. Guaranteed to require at least one long trans-oceanic hop (~150–200 ms one-way). Tests whether long-range XOR strata are preserved after regional specialisation — the exact problem N-5's stratified synaptome was designed to solve. Neuromorphic protocols receive continent-crossing warmup lookups so trans-oceanic shortcuts can form before measurement.`
+      : s.type === 'pubsub'
+      ? `Pub/Sub overlay: nodes form ${s.coverage ?? 10}% coverage concordance groups (1 relay + ${s.groupSize ?? 32} participants each). Left column (→relay) = avg hops from a random participant to its relay. Right column (bcast) = avg hops from the relay back to each participant. Neuromorphic protocols receive 2× the standard warmup budget using actual pub/sub traffic so synaptomes learn relay-centric routes before measurement.`
       : 'Global: both source and destination chosen uniformly at random from all nodes. Worst-case baseline — no locality or hot-spot bias.';
 
     // Protocol row tooltip descriptions.
@@ -1110,6 +1114,7 @@ export class Results {
                 : s.type === 'srcdest'   ? ' class="srcdest-col"'
                 : s.type === 'churn'     ? ' class="churn-col"'
                 : s.type === 'continent' ? ' class="continent-col"'
+                : s.type === 'pubsub'    ? ' class="pubsub-col"'
                 : '';
       html += `<th colspan="2"${cls} data-tip="${specTip(s)}">${specLabel(s)}</th>`;
     }
@@ -1123,8 +1128,13 @@ export class Results {
       const isSrcDest   = s.type === 'srcdest';
       const isChurn     = s.type === 'churn';
       const isContinent = s.type === 'continent';
-      const sub = isSrc ? ' src-sub' : isDest ? ' dest-sub' : isSrcDest ? ' srcdest-sub' : isChurn ? ' churn-sub' : isContinent ? ' continent-sub' : '';
-      html += `<th class="sub${sub}">hops</th><th class="sub${sub}">ms</th>`;
+      const isPubSub    = s.type === 'pubsub';
+      const sub = isSrc ? ' src-sub' : isDest ? ' dest-sub' : isSrcDest ? ' srcdest-sub' : isChurn ? ' churn-sub' : isContinent ? ' continent-sub' : isPubSub ? ' pubsub-sub' : '';
+      if (isPubSub) {
+        html += `<th class="sub${sub}">→relay</th><th class="sub${sub}">bcast</th>`;
+      } else {
+        html += `<th class="sub${sub}">hops</th><th class="sub${sub}">ms</th>`;
+      }
     }
     html += `</tr></thead><tbody>`;
 
@@ -1137,8 +1147,14 @@ export class Results {
       minTime[k] = Infinity;
       for (const def of protocolDefs) {
         const cell = data[def.key]?.[k];
-        if (cell?.hops?.mean != null && cell.hops.mean < minHops[k]) minHops[k] = cell.hops.mean;
-        if (cell?.time?.mean != null && cell.time.mean < minTime[k]) minTime[k] = cell.time.mean;
+        if (s.type === 'pubsub') {
+          // pub/sub cells use msgHops (left) and bcastHops (right) instead of hops/time
+          if (cell?.msgHops?.mean  != null && cell.msgHops.mean  < minHops[k]) minHops[k] = cell.msgHops.mean;
+          if (cell?.bcastHops?.mean != null && cell.bcastHops.mean < minTime[k]) minTime[k] = cell.bcastHops.mean;
+        } else {
+          if (cell?.hops?.mean != null && cell.hops.mean < minHops[k]) minHops[k] = cell.hops.mean;
+          if (cell?.time?.mean != null && cell.time.mean < minTime[k]) minTime[k] = cell.time.mean;
+        }
       }
     }
 
@@ -1154,7 +1170,26 @@ export class Results {
         const isSrcDest   = s.type === 'srcdest';
         const isChurn     = s.type === 'churn';
         const isContinent = s.type === 'continent';
-        const specCls     = isSrc ? ' src-cell' : isDest ? ' dest-cell' : isSrcDest ? ' srcdest-cell' : isChurn ? ' churn-cell' : isContinent ? ' continent-cell' : '';
+        const isPubSub    = s.type === 'pubsub';
+        const specCls     = isSrc ? ' src-cell' : isDest ? ' dest-cell' : isSrcDest ? ' srcdest-cell' : isChurn ? ' churn-cell' : isContinent ? ' continent-cell' : isPubSub ? ' pubsub-cell' : '';
+
+        // Pub/Sub cells store msgHops + bcastHops rather than hops + time
+        if (isPubSub) {
+          if (!cell || !cell.msgHops) {
+            html += `<td class="no-data${specCls}" colspan="2">—</td>`;
+            continue;
+          }
+          const msgH    = cell.msgHops.mean.toFixed(2);
+          const bcastH  = cell.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(2) : '—';
+          const p95msg  = cell.msgHops.p95  != null ? cell.msgHops.p95.toFixed(1)  : null;
+          const p95bcst = cell.bcastHops?.p95 != null ? cell.bcastHops.p95.toFixed(1) : null;
+          const msgWin   = cell.msgHops.mean   <= minHops[k] + 0.005;
+          const bcastWin = cell.bcastHops?.mean != null && cell.bcastHops.mean <= minTime[k] + 0.005;
+          html += `<td class="hops-cell${msgWin ? ' win' : ''}${specCls}">${msgH}${p95msg ? `<span class="p95">${p95msg}</span>` : ''}</td>`;
+          html += `<td class="hops-cell${bcastWin ? ' win' : ''}${specCls}">${bcastH}${p95bcst ? `<span class="p95">${p95bcst}</span>` : ''}</td>`;
+          continue;
+        }
+
         if (!cell || !cell.hops) {
           html += `<td class="no-data${specCls}" colspan="2">—</td>`;
           continue;
@@ -1205,35 +1240,50 @@ export class Results {
   _benchmarkCSV(benchResult, nodeCount) {
     if (!benchResult) return '';
     const { protocolDefs, testSpecs, data } = benchResult;
-    const specLabel = s => s.type === 'regional'  ? `${s.radius}km`
-                         : s.type === 'dest'       ? `${s.pct}%dest`
-                         : s.type === 'source'     ? `${s.pct}%src`
-                         : s.type === 'srcdest'    ? `${s.srcPct}%→${s.destPct}%`
-                         : s.type === 'churn'      ? `${s.rate}%churn`
-                         : s.type === 'continent'  ? `${s.src}→${s.dst}`
-                         : 'global';
-    // Build header: Protocol, then hops+ms per spec
+    const csvSpecLabel = s => s.type === 'regional'  ? `${s.radius}km`
+                            : s.type === 'dest'       ? `${s.pct}%dest`
+                            : s.type === 'source'     ? `${s.pct}%src`
+                            : s.type === 'srcdest'    ? `${s.srcPct}%→${s.destPct}%`
+                            : s.type === 'churn'      ? `${s.rate}%churn`
+                            : s.type === 'continent'  ? `${s.src}→${s.dst}`
+                            : s.type === 'pubsub'     ? 'pubsub'
+                            : 'global';
+    const csvSpecKey   = s => s.type === 'regional'  ? `r${s.radius}`
+                            : s.type === 'dest'       ? `dest_${s.pct}`
+                            : s.type === 'source'     ? `src_${s.pct}`
+                            : s.type === 'srcdest'    ? `srcdest_${s.srcPct}_${s.destPct}`
+                            : s.type === 'churn'      ? `churn_${s.rate}`
+                            : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
+                            : s.type === 'pubsub'     ? 'pubsub'
+                            : 'global';
+    // Build header: Protocol, then two columns per spec
+    // (pub/sub uses →relay hops + bcast hops; all others use hops + ms)
     const headerCols = ['Protocol'];
     for (const s of testSpecs) {
-      const lbl = specLabel(s);
-      headerCols.push(`${lbl} hops`, `${lbl} ms`);
+      const lbl = csvSpecLabel(s);
+      if (s.type === 'pubsub') {
+        headerCols.push(`${lbl} →relay hops`, `${lbl} bcast hops`);
+      } else {
+        headerCols.push(`${lbl} hops`, `${lbl} ms`);
+      }
     }
     const rows = [headerCols.join(',')];
     for (const proto of protocolDefs) {
       const cols = [proto.label ?? proto.key];
       for (const s of testSpecs) {
-        const key = s.type === 'regional'  ? `r${s.radius}`
-                  : s.type === 'dest'       ? `dest_${s.pct}`
-                  : s.type === 'source'     ? `src_${s.pct}`
-                  : s.type === 'srcdest'    ? `srcdest_${s.srcPct}_${s.destPct}`
-                  : s.type === 'churn'      ? `churn_${s.rate}`
-                  : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
-                  : 'global';
+        const key  = csvSpecKey(s);
         const cell = data?.[proto.key]?.[key];
-        cols.push(
-          cell?.hops?.mean  != null ? cell.hops.mean.toFixed(3)  : '',
-          cell?.time?.mean  != null ? cell.time.mean.toFixed(2)  : '',
-        );
+        if (s.type === 'pubsub') {
+          cols.push(
+            cell?.msgHops?.mean   != null ? cell.msgHops.mean.toFixed(3)   : '',
+            cell?.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(3) : '',
+          );
+        } else {
+          cols.push(
+            cell?.hops?.mean  != null ? cell.hops.mean.toFixed(3)  : '',
+            cell?.time?.mean  != null ? cell.time.mean.toFixed(2)  : '',
+          );
+        }
       }
       rows.push(cols.join(','));
     }

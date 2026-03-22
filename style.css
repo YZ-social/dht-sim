@@ -455,6 +455,12 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
 .bench-table .hops-cell.win.continent-cell { color: #cc88ff; background: #220044; font-weight: 700; }
 .bench-table .time-cell.win.continent-cell { color: #eeddff; background: #180033; font-weight: 700; }
 
+/* Pub/Sub column — teal/cyan accent for multi-group relay broadcast tests */
+.bench-table thead th.pubsub-col { color: #44ddcc; border-top: 1px solid #104040; }
+.bench-table th.pubsub-sub, .bench-table td.pubsub-cell { background: #03100f; }
+.bench-table .hops-cell.pubsub-cell { color: #44ddcc; }
+.bench-table .hops-cell.win.pubsub-cell { color: #44ddcc; background: #083030; font-weight: 700; }
+
 /* p95 tail-latency sub-line within benchmark cells */
 .bench-table .p95 {
   display: block;

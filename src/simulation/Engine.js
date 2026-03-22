@@ -315,6 +315,7 @@ export class SimulationEngine {
                          : s.type === 'srcdest'   ? `srcdest_${s.srcPct}_${s.destPct}`
                          : s.type === 'churn'     ? `churn_${s.rate}`
                          : s.type === 'continent' ? `cont_${s.src}_${s.dst}`
+                         : s.type === 'pubsub'    ? 'pubsub'
                          : 'global';
     const specLabel = s => s.type === 'regional'  ? `${s.radius} km`
                          : s.type === 'dest'      ? `${s.pct}% dest`
@@ -322,6 +323,7 @@ export class SimulationEngine {
                          : s.type === 'srcdest'   ? `${s.srcPct}%→${s.destPct}%`
                          : s.type === 'churn'     ? `${s.rate}% churn`
                          : s.type === 'continent' ? `${s.src}→${s.dst}`
+                         : s.type === 'pubsub'    ? 'Pub/Sub'
                          : 'Global';
 
     this.running = true;
@@ -482,6 +484,66 @@ export class SimulationEngine {
             }
             await this._yield();
           }
+        }
+
+        // ── Pub/Sub measurement ─────────────────────────────────────────────
+        // Pub/sub is handled entirely here; skip the normal runLookupTest path.
+        if (spec.type === 'pubsub') {
+          const groupSize = spec.groupSize ?? 32;
+          const coverage  = spec.coverage  ?? 10;
+
+          // Build concordance groups using the same staggered-stride strategy
+          // as the interactive pub/sub test so routing patterns are consistent.
+          const aliveNodes  = dht.getNodes().filter(n => n.alive);
+          const targetNodes = Math.ceil(aliveNodes.length * coverage / 100);
+          const numGroups   = Math.max(1, Math.ceil(targetNodes / groupSize));
+          const shuffled    = [...aliveNodes].sort(() => Math.random() - 0.5);
+          const stride      = Math.max(1, Math.floor(shuffled.length / numGroups));
+
+          const groups = [];
+          for (let i = 0; i < numGroups; i++) {
+            const base         = (i * stride) % shuffled.length;
+            const relay        = shuffled[base];
+            const participants = [];
+            for (let j = 1; j <= groupSize; j++) {
+              participants.push(shuffled[(base + j) % shuffled.length]);
+            }
+            groups.push({ id: i, relay, participants });
+          }
+
+          // Pub/sub warmup: 2× the standard warmup budget, using actual pub/sub
+          // ticks so the synaptome learns relay→participant routes specifically.
+          if (def.warmupLookups > 0) {
+            const warmupTicks = Math.ceil((def.warmupLookups * 2) / (groupSize + 1));
+            onStart(`${tag} · pub/sub warmup (${warmupTicks} ticks)…`);
+            for (let t = 0; t < warmupTicks; t++) {
+              if (!this.running) break;
+              await this.runPubSubTick(dht, groups);
+            }
+          }
+
+          // Measurement: enough ticks to match the lookup count of other cells.
+          const measTicks = Math.max(10, Math.ceil(numMessages / (groupSize + 1)));
+          onStart(`${tag} · Pub/Sub (${measTicks} ticks)…`);
+
+          const allMsgHops   = [];
+          const allBcastHops = [];
+          for (let t = 0; t < measTicks; t++) {
+            if (!this.running) break;
+            const tick = await this.runPubSubTick(dht, groups);
+            if (!tick) continue;
+            allMsgHops.push(tick.msgHops);
+            allBcastHops.push(...tick.bcastHops);
+          }
+
+          data[def.key]['pubsub'] = {
+            msgHops:    computeStats(allMsgHops),
+            bcastHops:  computeStats(allBcastHops),
+            numGroups,
+            totalTicks: measTicks,
+          };
+          onStep(`${tag} · Pub/Sub ✓`);
+          continue; // skip the normal runLookupTest path
         }
 
         const cellLabel = `${tag} · ${specLabel(spec)}`;

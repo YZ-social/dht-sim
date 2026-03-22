@@ -858,6 +858,7 @@ async function onBenchmark() {
     { type: 'dest',    pct: params.destPct },
     { type: 'srcdest', srcPct: params.sourcePct, destPct: params.destPct },
     { type: 'continent', src: 'NA', dst: 'AS' },       // hardest trans-oceanic pair — tests long-range stratum preservation
+    { type: 'pubsub',  groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
     { type: 'churn',   rate: params.benchChurnPct },  // always last — modifies DHT state
   ];
 

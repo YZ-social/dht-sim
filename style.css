@@ -460,6 +460,7 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
 .bench-table th.pubsub-sub, .bench-table td.pubsub-cell { background: #03100f; }
 .bench-table .hops-cell.pubsub-cell { color: #44ddcc; }
 .bench-table .hops-cell.win.pubsub-cell { color: #44ddcc; background: #083030; font-weight: 700; }
+.pubsub-ms { display: block; font-size: 0.75em; color: #ffcc44; margin-top: 1px; letter-spacing: 0; }
 
 /* p95 tail-latency sub-line within benchmark cells */
 .bench-table .p95 {

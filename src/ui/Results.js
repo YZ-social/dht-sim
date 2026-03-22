@@ -1179,14 +1179,17 @@ export class Results {
             html += `<td class="no-data${specCls}" colspan="2">—</td>`;
             continue;
           }
+          const HOP_MS  = 20;
           const msgH    = cell.msgHops.mean.toFixed(2);
           const bcastH  = cell.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(2) : '—';
+          const msgMs   = Math.round(cell.msgHops.mean * HOP_MS);
+          const bcastMs = cell.bcastHops?.mean != null ? Math.round(cell.bcastHops.mean * HOP_MS) : null;
           const p95msg  = cell.msgHops.p95  != null ? cell.msgHops.p95.toFixed(1)  : null;
           const p95bcst = cell.bcastHops?.p95 != null ? cell.bcastHops.p95.toFixed(1) : null;
           const msgWin   = cell.msgHops.mean   <= minHops[k] + 0.005;
           const bcastWin = cell.bcastHops?.mean != null && cell.bcastHops.mean <= minTime[k] + 0.005;
-          html += `<td class="hops-cell${msgWin ? ' win' : ''}${specCls}">${msgH}${p95msg ? `<span class="p95">${p95msg}</span>` : ''}</td>`;
-          html += `<td class="hops-cell${bcastWin ? ' win' : ''}${specCls}">${bcastH}${p95bcst ? `<span class="p95">${p95bcst}</span>` : ''}</td>`;
+          html += `<td class="hops-cell${msgWin ? ' win' : ''}${specCls}">${msgH}${p95msg ? `<span class="p95">${p95msg}</span>` : ''}<span class="pubsub-ms">${msgMs} ms</span></td>`;
+          html += `<td class="hops-cell${bcastWin ? ' win' : ''}${specCls}">${bcastH}${p95bcst ? `<span class="p95">${p95bcst}</span>` : ''}${bcastMs != null ? `<span class="pubsub-ms">${bcastMs} ms</span>` : ''}</td>`;
           continue;
         }
 
@@ -1262,7 +1265,7 @@ export class Results {
     for (const s of testSpecs) {
       const lbl = csvSpecLabel(s);
       if (s.type === 'pubsub') {
-        headerCols.push(`${lbl} →relay hops`, `${lbl} bcast hops`);
+        headerCols.push(`${lbl} →relay hops`, `${lbl} →relay ms`, `${lbl} bcast hops`, `${lbl} bcast ms`);
       } else {
         headerCols.push(`${lbl} hops`, `${lbl} ms`);
       }
@@ -1274,9 +1277,14 @@ export class Results {
         const key  = csvSpecKey(s);
         const cell = data?.[proto.key]?.[key];
         if (s.type === 'pubsub') {
+          const HOP_MS = 20;
+          const mH = cell?.msgHops?.mean;
+          const bH = cell?.bcastHops?.mean;
           cols.push(
-            cell?.msgHops?.mean   != null ? cell.msgHops.mean.toFixed(3)   : '',
-            cell?.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(3) : '',
+            mH != null ? mH.toFixed(3)                  : '',
+            mH != null ? Math.round(mH * HOP_MS) + ''   : '',
+            bH != null ? bH.toFixed(3)                  : '',
+            bH != null ? Math.round(bH * HOP_MS) + ''   : '',
           );
         } else {
           cols.push(

@@ -665,6 +665,11 @@ async function onPubSub() {
     if (!pubsubActive) break;
     if (!result) continue;
 
+    // Move the globe ring to the relay used in this session
+    if (result.lastRelayNode) {
+      globe.drawRegionalBoundary(result.lastRelayNode.lat, result.lastRelayNode.lng, ringRadius);
+    }
+
     history.push({
       tick,
       groups:    numGroups,

@@ -782,6 +782,7 @@ export class SimulationEngine {
       groupId:     group.id,
       senderId:    sender.id,
       relayId:     relay.id,
+      relayNode:   relay,        // full node object (lat/lng) for globe ring positioning
       msgHops,
       msgMs,
       bcastStats,
@@ -818,6 +819,7 @@ export class SimulationEngine {
     const allRelayMs   = [];
     const allBcastHops = [];
     const allBcastMs   = [];
+    let   lastRelayNode = null;
 
     for (let m = 0; m < messagesPerSession; m++) {
       const tick = await this.runPubSubTick(dht, groups);
@@ -826,6 +828,7 @@ export class SimulationEngine {
       allRelayMs.push(tick.msgMs);
       allBcastHops.push(...tick.bcastHops);
       allBcastMs.push(...tick.bcastMsArr);
+      lastRelayNode = tick.relayNode;
     }
 
     if (!allRelayHops.length) return null;
@@ -837,6 +840,7 @@ export class SimulationEngine {
       relayMs:           Math.round(mean(allRelayMs)),
       bcastHops:         allBcastHops.length ? mean(allBcastHops) : 0,
       bcastMs:           allBcastMs.length   ? Math.round(mean(allBcastMs)) : 0,
+      lastRelayNode,
       messagesPerSession,
       totalBcasts:       allBcastHops.length,
     };

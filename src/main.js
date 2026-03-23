@@ -572,24 +572,62 @@ async function onPubSub() {
     return;
   }
 
-  // ── Build concordance groups ──────────────────────────────────────────────
+  // ── Build pub/sub groups ──────────────────────────────────────────────────
   // Target: pubsubCoverage% of nodes in ≥1 group.
-  // Nodes stride through the shuffled array so every region of the ID/geo
-  // space is represented, and adjacent groups naturally share nodes (overlap).
+  // In regional mode, participants in each group are drawn only from nodes
+  // within regionalRadius km of that group's relay.
   const targetNodes = Math.ceil(aliveNodes.length * params.pubsubCoverage / 100);
   const numGroups   = Math.max(1, Math.ceil(targetNodes / groupSize));
   const shuffled    = [...aliveNodes].sort(() => Math.random() - 0.5);
   const stride      = Math.max(1, Math.floor(shuffled.length / numGroups));
 
+  if (params.regional) {
+    // Verify at least one node has enough regional neighbours to form a group
+    const minNeeded = Math.min(groupSize, 2);
+    const hasRegion = aliveNodes.some(n =>
+      aliveNodes.filter(m => m.id !== n.id &&
+        haversine(n.lat, n.lng, m.lat, m.lng) <= params.regionalRadius).length >= minNeeded
+    );
+    if (!hasRegion) {
+      controls.setStatus(
+        `No node has ${minNeeded}+ neighbours within ${params.regionalRadius} km — try a larger radius or more nodes.`, 'warn'
+      );
+      return;
+    }
+  }
+
   const groups = [];
   for (let i = 0; i < numGroups; i++) {
-    const base         = (i * stride) % shuffled.length;
-    const relay        = shuffled[base];
-    const participants = [];
-    for (let j = 1; j <= groupSize; j++) {
-      participants.push(shuffled[(base + j) % shuffled.length]);
+    const base  = (i * stride) % shuffled.length;
+    const relay = shuffled[base];
+
+    let pool;
+    if (params.regional) {
+      // Participants must be within regionalRadius km of the relay
+      pool = aliveNodes.filter(n =>
+        n.id !== relay.id &&
+        haversine(relay.lat, relay.lng, n.lat, n.lng) <= params.regionalRadius
+      );
+    } else {
+      // Global mode: stride through the full shuffled array
+      pool = [];
+      for (let j = 1; j <= groupSize; j++) {
+        pool.push(shuffled[(base + j) % shuffled.length]);
+      }
     }
-    groups.push({ id: i, relay, participants });
+
+    // Shuffle the pool and take up to groupSize participants
+    pool = pool.sort(() => Math.random() - 0.5).slice(0, groupSize);
+    if (!pool.length) continue;   // no neighbours in range — skip this relay
+
+    groups.push({ id: i, relay, participants: pool });
+  }
+
+  if (!groups.length) {
+    controls.setStatus(
+      `Could not form any groups within ${params.regionalRadius} km — try a larger radius.`, 'warn'
+    );
+    return;
   }
 
   // Actual coverage (unique nodes across all groups)
@@ -606,15 +644,17 @@ async function onPubSub() {
   globe.clearConnections();
   globe.clearRegionalBoundary();
 
-  // Mark the first group's relay on the globe
-  globe.drawRegionalBoundary(groups[0].relay.lat, groups[0].relay.lng, 800);
+  // Draw the regional boundary ring on the globe
+  const ringRadius = params.regional ? params.regionalRadius : 800;
+  globe.drawRegionalBoundary(groups[0].relay.lat, groups[0].relay.lng, ringRadius);
 
   const history = [];
   let tick = 0;
 
   results.clearPubSub();
   controls.setStatus(
-    `Pub/Sub: ${numGroups} groups · ${actualCoverage}% coverage · ${aliveNodes.length} nodes`,
+    `Pub/Sub: ${groups.length} groups · ${actualCoverage}% coverage · ${aliveNodes.length} nodes` +
+    (params.regional ? ` · regional ≤${params.regionalRadius} km` : ''),
     'info'
   );
 

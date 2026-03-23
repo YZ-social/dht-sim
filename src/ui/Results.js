@@ -653,7 +653,7 @@ export class Results {
     this._setText('psMessages', `${s.tick}`);
     this._setText('psGroups',   `${numGroups}`);
     this._setText('psCoverage', `${coverage}%`);
-    this._setText('psMsgHops',   s.msgHops  != null ? `${s.msgHops}`              : '—');
+    this._setText('psMsgHops',   s.msgHops  != null ? s.msgHops.toFixed(1)        : '—');
     this._setText('psRelayMs',   s.relayMs  != null ? `${s.relayMs} ms`           : '—');
     this._setText('psBcastHops', s.bcastAvg != null ? s.bcastAvg.toFixed(2)       : '—');
     this._setText('psBcastMs',   s.bcastMs  != null ? `${s.bcastMs} ms`           : '—');
@@ -665,7 +665,7 @@ export class Results {
       row.className = 'concordance-log-row';
       row.innerHTML =
         `<span class="cl-session">#${s.tick}</span>` +
-        `<span class="cl-to">relay ${s.msgHops ?? '—'} hops · ${s.relayMs ?? '—'} ms</span>` +
+        `<span class="cl-to">relay ${s.msgHops != null ? s.msgHops.toFixed(1) : '—'} hops · ${s.relayMs ?? '—'} ms</span>` +
         `<span class="cl-from">bcast ${s.bcastAvg != null ? s.bcastAvg.toFixed(1) : '—'} hops · ${s.bcastMs ?? '—'} ms</span>`;
       log.appendChild(row);
       log.scrollTop = log.scrollHeight;

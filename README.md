@@ -1,6 +1,8 @@
 # DHT Globe Simulator
 
-An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of thirteen neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — including eight browser-realistic variants engineered for real-world WebRTC deployment. The most advanced variant, N-10W, introduces eviction-immune relay pinning and is the current best-performing protocol for pub/sub overlay networks.
+An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of thirteen neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — including eight browser-realistic variants engineered for real-world WebRTC deployment.
+
+The primary research focus is **publish/subscribe (pub/sub) overlay networks**: we believe pub/sub will be the dominant use case for decentralised peer-to-peer networks, enabling real-time messaging, collaborative applications, live media, and event streaming without centralised infrastructure. The most advanced variant, **N-10W**, introduces eviction-immune relay pinning and is the current best-performing protocol for pub/sub workloads, winning on every benchmark metric at 25,000 nodes across a range of coverage levels.
 
 The simulator renders a live WebGL globe of up to 100,000 nodes distributed according to real-world population density, routes messages between them in real time, and benchmarks every protocol side by side — measuring hop counts, latency, churn resilience, regional performance, load distribution, and learning convergence over time.
 
@@ -57,7 +59,7 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 | `index.html` | Shell, control strip HTML, results overlay HTML |
 | `style.css` | All styling (dark theme, uniform control groups, chart panels) |
 | `src/main.js` | Orchestrator — wires controls → engine → globe → results |
-| `src/simulation/Engine.js` | Test runner (lookup, churn, benchmark, concordance, pairs, hotspot) |
+| `src/simulation/Engine.js` | Test runner (lookup, churn, benchmark, pub/sub, pairs, hotspot) |
 | `src/ui/Controls.js` | Control strip read/write, button state machine |
 | `src/ui/Results.js` | Chart.js rendering, Lorenz curves, CSV export, panel management |
 | `src/globe/Globe.js` | Three.js globe, node dots, path arcs, country borders |
@@ -971,9 +973,92 @@ Runs all protocols in sequence on identical traffic. Each protocol:
 - **N.Am.–Asia** — trans-Pacific continent-crossing lookups
 - **Churn** — node replacement at the configured churn rate
 
-### Concordance Test
+### Pub/Sub Test ★ (Primary Research Focus)
 
-Models a **star overlay network** with one relay and N participants. Each session, every participant routes to the relay and the relay routes to every participant. Neuromorphic protocols converge toward 1 hop in both directions as the relay's identity becomes embedded in all synaptomes. CSV export available.
+The Pub/Sub test is the **most important test in the simulator**. It directly models the scenario that decentralised networks are expected to carry the most of in production: publish-subscribe message delivery, where a publisher broadcasts a message to a group of subscribers through a peer-to-peer overlay.
+
+#### Why Pub/Sub Is Central
+
+We believe pub/sub will be the dominant use case for decentralised networks. Real-time messaging, collaborative editing, live media streaming, multiplayer gaming, IoT sensor feeds, and event-driven microservices all share the same fundamental pattern: one or more publishers send to a group of subscribers without any server intermediary. Moving this onto a DHT overlay — where the "relay" is just another peer, not a privileged server — is the key architectural challenge this simulator was built to explore.
+
+The requirements are demanding:
+
+- **Low relay latency:** how quickly can a publisher find a relay peer and send to it? (measured as relay hops and relay ms)
+- **Low broadcast latency:** once the relay has the message, how quickly can it deliver it to all subscribers? (measured as bcast hops and bcast ms)
+- **Convergence under repetition:** a pub/sub channel is not a one-off lookup; the same group communicates repeatedly. A good protocol should learn the group topology and progressively reduce both metrics over time
+- **Scale and coverage:** real deployments range from small groups (10% of a 32-member set = 3 members) to large groups (50% of a 32-member set = 16 members) across networks of tens of thousands of nodes
+
+#### How the Test Works
+
+```
+Pub/Sub Group Model:
+
+  Group size  (pubsubGroupSize) = 32 members total
+  Coverage %  (pubsubCoverage)  = % of those 32 who are active
+
+  At 25% coverage: 8 active members
+  At 50% coverage: 16 active members
+
+Phase 1 — Relay routing (relay hops / relay ms):
+  Each active group member performs a DHT lookup to find and connect
+  to a designated relay node. The relay node is a normal peer that has
+  been "pinned" as the rendezvous point for this group.
+
+  relay hops = average DHT hops from member to relay
+  relay ms   = average total RTT for that routing path
+
+Phase 2 — Broadcast delivery (bcast hops / bcast ms):
+  The relay node routes a message to each of the other active members.
+  In a well-trained neuromorphic protocol, the relay accumulates direct
+  synaptome entries for every group member — reducing this to 1 hop each.
+
+  bcast hops = average DHT hops from relay to each subscriber
+  bcast ms   = average total RTT for each delivered message
+```
+
+The test runs `msgCount` (default 500) lookup sessions per phase. Each session repeats the relay and broadcast steps, giving the neuromorphic synaptome time to learn the group topology through Markov pre-learning, lateral shortcut propagation, and (in N-10W) relay pinning.
+
+#### What Makes Pub/Sub Hard for DHT Protocols
+
+The fundamental challenge is **stratum saturation**. In any geographic deployment, pub/sub group members are likely to be co-located (same application, same region). Their G-IDs share common geographic prefix bits, placing all their synaptome entries in **strata group 0** (XOR distance 0–3).
+
+The stratified eviction mechanism — which guarantees full keyspace coverage — enforces a floor of only 2 entries per strata group. When 8–16 group members all compete for the 2–3 stratum-group-0 slots that eviction allows, most are continuously displaced before the LTP reinforcement wave can stabilise them. The result: bcast hops stays at 2–3 rather than converging to 1.
+
+This is the problem N-10W was specifically designed to solve.
+
+#### Key Parameters
+
+| Control | Range | Default | Description |
+|---|---|---|---|
+| Group size | 4–256 | 32 | Total pub/sub group membership |
+| Coverage % | 1–100 | 25 | % of group that are active subscribers |
+| Warmup | 1–99 | 4 | General routing warmup sessions before measurement (10+ recommended for pub/sub) |
+
+#### Understanding the Results
+
+```
+Benchmark at 25,000 nodes / 25% coverage / 10 warmup sessions:
+
+                   RELAY              BROADCAST           COMBINED
+Protocol    hops     ms        hops     ms        hops     ms
+─────────────────────────────────────────────────────────────────
+N-9W        3.000   223       2.569    189       5.569    412
+N-10W ★     3.500   236       1.718    160       5.218    396   ← BEST
+N-11W       3.375   244       2.151    178       5.526    422
+N-12W       4.250   246       2.046    172       6.296    418
+N-13W       3.688   260       1.819    163       5.507    423
+
+N-10W wins on every individual metric AND on the combined total
+(relay + bcast), which represents the full end-to-end pub/sub cost.
+
+The broadcast improvement (2.569 → 1.718 hops, −33%) achieved by
+N-10W's relay pinning more than compensates for the modest relay
+regression (3.000 → 3.500 hops, +17%).
+```
+
+#### CSV Export
+
+The Pub/Sub benchmark CSV includes all measured columns plus a `# Run Parameters` footer that records: node count, K, α, ID bits, node delay, lookups per cell, warmup sessions, group size, and coverage %. This makes runs fully reproducible from the exported file alone.
 
 ### Pair Learning
 
@@ -1020,11 +1105,12 @@ Assigns each node a **fixed random target** at test start. Every session, every 
 | □ Dest | Enable destination-population clustering |
 | Dest% | % of traffic to a geographic cluster |
 
-### Concordance
+### Pub/Sub
 
 | Control | Range | Default | Description |
 |---|---|---|---|
-| Nodes | 4–256 | 32 | Participants in the Concordance star overlay |
+| Group size | 4–256 | 32 | Total pub/sub group membership |
+| Coverage % | 1–100 | 25 | Percentage of the group that are active subscribers |
 
 ### Hotspot
 

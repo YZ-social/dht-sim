@@ -677,8 +677,8 @@ export class Results {
     const canvas = this._el('pubsubLineChart');
     if (!canvas || typeof Chart === 'undefined' || history.length < 1) return;
 
-    // Keep a rolling window of the last 100 ticks for readability
-    const WIN  = 100;
+    // Keep a rolling window of the last 60 sessions for readability
+    const WIN  = 60;
     const view = history.length > WIN ? history.slice(-WIN) : history;
 
     const labels      = view.map(s => `#${s.tick}`);
@@ -715,7 +715,7 @@ export class Results {
         labels,
         datasets: [
           {
-            label: 'Msg → Relay (hops)',
+            label: 'Relay avg (hops)',
             data: msgData,
             borderColor: '#44ddff',
             backgroundColor: '#44ddff18',

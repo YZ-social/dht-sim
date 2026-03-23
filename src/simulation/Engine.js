@@ -786,9 +786,59 @@ export class SimulationEngine {
       msgMs,
       bcastStats,
       bcastHops,
+      bcastMsArr,    // raw per-participant ms values (used by runPubSubSession)
       bcastMsStats,
       totalHops,
       simMs: msgMs + Math.round((bcastMsStats?.mean ?? 0)),
+    };
+  }
+
+  // ── Pub/Sub Session ───────────────────────────────────────────────────────
+
+  /**
+   * Run one pub/sub SESSION consisting of `messagesPerSession` independent
+   * message/broadcast cycles. Each cycle picks a random sender from a random
+   * group, routes sender → relay, then broadcasts relay → all participants.
+   *
+   * Returns the grand average across all cycles so callers get a stable,
+   * low-noise measurement per session:
+   *
+   *   relayHops  = mean of messagesPerSession relay hop counts
+   *   relayMs    = mean of messagesPerSession relay RTTs
+   *   bcastHops  = mean over all (messagesPerSession × groupSize) bcast hops
+   *   bcastMs    = mean over all (messagesPerSession × groupSize) bcast RTTs
+   *
+   * @param {object}   dht               – active DHT instance
+   * @param {object[]} groups            – array of { id, relay, participants[] }
+   * @param {number}   [messagesPerSession=100]
+   * @returns {Promise<object|null>}
+   */
+  async runPubSubSession(dht, groups, messagesPerSession = 100) {
+    const allRelayHops = [];
+    const allRelayMs   = [];
+    const allBcastHops = [];
+    const allBcastMs   = [];
+
+    for (let m = 0; m < messagesPerSession; m++) {
+      const tick = await this.runPubSubTick(dht, groups);
+      if (!tick) continue;
+      allRelayHops.push(tick.msgHops);
+      allRelayMs.push(tick.msgMs);
+      allBcastHops.push(...tick.bcastHops);
+      allBcastMs.push(...tick.bcastMsArr);
+    }
+
+    if (!allRelayHops.length) return null;
+
+    const mean = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+
+    return {
+      relayHops:         mean(allRelayHops),
+      relayMs:           Math.round(mean(allRelayMs)),
+      bcastHops:         allBcastHops.length ? mean(allBcastHops) : 0,
+      bcastMs:           allBcastMs.length   ? Math.round(mean(allBcastMs)) : 0,
+      messagesPerSession,
+      totalBcasts:       allBcastHops.length,
     };
   }
 

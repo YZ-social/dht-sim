@@ -308,13 +308,13 @@
 
       <div id="pubsubResults" style="display:none">
         <div class="stat-row">
-          <div class="stat" data-tip="Total pub/sub messages sent this run."><span class="sl">Messages</span><span class="sv" id="psMessages">&#8212;</span></div>
-          <div class="stat" data-tip="Number of active concordance groups."><span class="sl">Groups</span><span class="sv" id="psGroups">&#8212;</span></div>
-          <div class="stat" data-tip="Percentage of network nodes in at least one concordance group."><span class="sl">Coverage</span><span class="sv" id="psCoverage">&#8212;</span></div>
-          <div class="stat" data-tip="Hops from the sender to its relay node for the last message."><span class="sl">&#x2192; Relay</span><span class="sv" style="color:#44ddff" id="psMsgHops">&#8212;</span></div>
-          <div class="stat" data-tip="Simulated latency from sender to relay (geographic RTT per hop)."><span class="sl">Relay ms</span><span class="sv" style="color:#44ddff" id="psRelayMs">&#8212;</span></div>
-          <div class="stat" data-tip="Average hops from relay to each participant in the last broadcast."><span class="sl">Bcast</span><span class="sv" style="color:#aa66ff" id="psBcastHops">&#8212;</span></div>
-          <div class="stat" data-tip="Average simulated latency from relay to each participant (geographic RTT per hop)."><span class="sl">Bcast ms</span><span class="sv" style="color:#aa66ff" id="psBcastMs">&#8212;</span></div>
+          <div class="stat" data-tip="Number of sessions completed. Each session runs 100 message/broadcast cycles and reports their average."><span class="sl">Sessions</span><span class="sv" id="psMessages">&#8212;</span></div>
+          <div class="stat" data-tip="Number of active pub/sub groups."><span class="sl">Groups</span><span class="sv" id="psGroups">&#8212;</span></div>
+          <div class="stat" data-tip="Percentage of network nodes in at least one pub/sub group."><span class="sl">Coverage</span><span class="sv" id="psCoverage">&#8212;</span></div>
+          <div class="stat" data-tip="Average hops from sender to relay, over 100 messages this session."><span class="sl">&#x2192; Relay</span><span class="sv" style="color:#44ddff" id="psMsgHops">&#8212;</span></div>
+          <div class="stat" data-tip="Average relay latency over 100 messages this session (geographic RTT per hop)."><span class="sl">Relay ms</span><span class="sv" style="color:#44ddff" id="psRelayMs">&#8212;</span></div>
+          <div class="stat" data-tip="Average broadcast hops from relay to each subscriber, over 100 × group-size deliveries this session."><span class="sl">Bcast</span><span class="sv" style="color:#aa66ff" id="psBcastHops">&#8212;</span></div>
+          <div class="stat" data-tip="Average broadcast latency over 100 × group-size deliveries this session (geographic RTT per hop)."><span class="sl">Bcast ms</span><span class="sv" style="color:#aa66ff" id="psBcastMs">&#8212;</span></div>
         </div>
         <div class="chart-strip">
           <div class="concordance-chart-box" id="pubsubChartBox"><canvas id="pubsubLineChart"></canvas></div>

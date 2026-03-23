@@ -620,7 +620,7 @@ async function onPubSub() {
 
   while (pubsubActive) {
     tick++;
-    const result = await engine.runPubSubTick(dht, groups);
+    const result = await engine.runPubSubSession(dht, groups);
 
     if (!pubsubActive) break;
     if (!result) continue;
@@ -629,18 +629,19 @@ async function onPubSub() {
       tick,
       groups:    numGroups,
       coverage:  actualCoverage,
-      msgHops:   result.msgHops,
-      bcastAvg:  result.bcastStats?.mean ?? 0,
-      totalHops: result.totalHops,
-      relayMs:   result.msgMs,
-      bcastMs:   Math.round(result.bcastMsStats?.mean ?? 0),
+      msgHops:   result.relayHops,
+      bcastAvg:  result.bcastHops,
+      totalHops: result.relayHops + result.bcastHops,
+      relayMs:   result.relayMs,
+      bcastMs:   result.bcastMs,
     });
 
     results.showPubSubResults(history, numGroups, actualCoverage);
 
     controls.setStatus(
-      `Pub/Sub #${tick} — msg: ${result.msgHops} hops · bcast avg: ` +
-      `${result.bcastStats?.mean?.toFixed(1) ?? '—'} hops · relay ${result.msgMs} ms · bcast ${Math.round(result.bcastMsStats?.mean ?? 0)} ms`,
+      `Pub/Sub session #${tick} — relay: ${result.relayHops.toFixed(1)} hops · bcast avg: ` +
+      `${result.bcastHops.toFixed(1)} hops · relay ${result.relayMs} ms · bcast ${result.bcastMs} ms` +
+      ` (${result.messagesPerSession} msgs/session)`,
       'info'
     );
 
@@ -649,7 +650,7 @@ async function onPubSub() {
 
   pubsubActive = false;
   controls.setPubSub(false);
-  controls.setStatus(`Pub/Sub stopped after ${tick} message(s).`, 'success');
+  controls.setStatus(`Pub/Sub stopped after ${tick} session(s).`, 'success');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

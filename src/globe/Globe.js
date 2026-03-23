@@ -718,6 +718,19 @@ export class Globe {
     return new THREE.Vector3(x, y, z);
   }
 
+  /**
+   * Smoothly pan the camera to centre on a geographic coordinate.
+   * Convenience wrapper around panToDir that handles the lat/lng → 3-D
+   * direction conversion so callers don't need to import latLngToXYZ.
+   *
+   * @param {number} lat  – latitude  in degrees
+   * @param {number} lng  – longitude in degrees
+   * @param {number} [ms=600] – transition duration in milliseconds
+   */
+  panToLatLng(lat, lng, ms = 600) {
+    this.panToDir(this._v3(lat, lng, 1), ms);
+  }
+
   // ── Render loop ───────────────────────────────────────────────────────────
 
   _startRenderLoop() {

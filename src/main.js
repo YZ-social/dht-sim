@@ -644,9 +644,11 @@ async function onPubSub() {
   globe.clearConnections();
   globe.clearRegionalBoundary();
 
-  // Draw the regional boundary ring and pan the globe to the first relay
-  const ringRadius = params.regional ? params.regionalRadius : 800;
-  globe.drawRegionalBoundary(groups[0].relay.lat, groups[0].relay.lng, ringRadius);
+  // Pan the globe to the first relay; ring only shown in regional mode
+  const ringRadius = params.regional ? params.regionalRadius : 0;
+  if (params.regional) {
+    globe.drawRegionalBoundary(groups[0].relay.lat, groups[0].relay.lng, ringRadius);
+  }
   globe.panToLatLng(groups[0].relay.lat, groups[0].relay.lng);
 
   const history = [];
@@ -666,10 +668,12 @@ async function onPubSub() {
     if (!pubsubActive) break;
     if (!result) continue;
 
-    // Move the globe ring, pan the camera, and highlight relay + participants
+    // Move the globe ring (regional only), pan the camera, and highlight relay + participants
     if (result.lastRelayNode) {
       const { lat, lng } = result.lastRelayNode;
-      globe.drawRegionalBoundary(lat, lng, ringRadius);
+      if (params.regional) {
+        globe.drawRegionalBoundary(lat, lng, ringRadius);
+      }
       globe.panToLatLng(lat, lng);
       const participantIds = result.lastParticipantNodes
         ? result.lastParticipantNodes.map(n => n.id)

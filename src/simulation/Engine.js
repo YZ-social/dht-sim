@@ -779,10 +779,11 @@ export class SimulationEngine {
     const totalHops   = msgHops + bcastHops.reduce((a, b) => a + b, 0);
 
     return {
-      groupId:     group.id,
-      senderId:    sender.id,
-      relayId:     relay.id,
-      relayNode:   relay,        // full node object (lat/lng) for globe ring positioning
+      groupId:        group.id,
+      senderId:       sender.id,
+      relayId:        relay.id,
+      relayNode:      relay,          // full node object (lat/lng) for globe positioning
+      participantNodes: alive,        // alive participants for globe highlighting
       msgHops,
       msgMs,
       bcastStats,
@@ -819,7 +820,8 @@ export class SimulationEngine {
     const allRelayMs   = [];
     const allBcastHops = [];
     const allBcastMs   = [];
-    let   lastRelayNode = null;
+    let lastRelayNode        = null;
+    let lastParticipantNodes = null;
 
     for (let m = 0; m < messagesPerSession; m++) {
       const tick = await this.runPubSubTick(dht, groups);
@@ -828,7 +830,8 @@ export class SimulationEngine {
       allRelayMs.push(tick.msgMs);
       allBcastHops.push(...tick.bcastHops);
       allBcastMs.push(...tick.bcastMsArr);
-      lastRelayNode = tick.relayNode;
+      lastRelayNode        = tick.relayNode;
+      lastParticipantNodes = tick.participantNodes;
     }
 
     if (!allRelayHops.length) return null;
@@ -841,6 +844,7 @@ export class SimulationEngine {
       bcastHops:         allBcastHops.length ? mean(allBcastHops) : 0,
       bcastMs:           allBcastMs.length   ? Math.round(mean(allBcastMs)) : 0,
       lastRelayNode,
+      lastParticipantNodes,
       messagesPerSession,
       totalBcasts:       allBcastHops.length,
     };

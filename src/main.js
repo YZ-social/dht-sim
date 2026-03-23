@@ -666,11 +666,15 @@ async function onPubSub() {
     if (!pubsubActive) break;
     if (!result) continue;
 
-    // Move the globe ring and pan the camera to the relay used in this session
+    // Move the globe ring, pan the camera, and highlight relay + participants
     if (result.lastRelayNode) {
       const { lat, lng } = result.lastRelayNode;
       globe.drawRegionalBoundary(lat, lng, ringRadius);
       globe.panToLatLng(lat, lng);
+      const participantIds = result.lastParticipantNodes
+        ? result.lastParticipantNodes.map(n => n.id)
+        : [];
+      globe.highlightPubSubGroup(result.lastRelayNode.id, participantIds);
     }
 
     history.push({
@@ -698,6 +702,7 @@ async function onPubSub() {
 
   pubsubActive = false;
   controls.setPubSub(false);
+  globe.clearPubSubHighlights();
   controls.setStatus(`Pub/Sub stopped after ${tick} session(s).`, 'success');
 }
 

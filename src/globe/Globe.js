@@ -25,6 +25,9 @@ const C = {
   nodeSelected:    0xffff00,
   connLine:        0xff8800,   // orange connection lines
   connNodeHighlight: 0xffaa44, // tinted orange for connected nodes
+  // Pub/Sub group highlights
+  pubsubRelay:       0xffcc00, // gold  — relay node
+  pubsubParticipant: 0x00ccff, // cyan  — subscriber nodes
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,6 +199,7 @@ export class Globe {
     this._selectedId   = null;
     this._animFrame    = null;
     this._pointerMoved = false; // distinguish click vs drag
+    this._pubsubHighlighted = new Set(); // nodeIds currently pub/sub highlighted
 
     // Smooth camera pan state
     this._panStart    = new THREE.Vector3(0, 0, 1); // camera dir at pan start
@@ -716,6 +720,47 @@ export class Globe {
   _v3(lat, lng, r) {
     const { x, y, z } = latLngToXYZ(lat, lng, r);
     return new THREE.Vector3(x, y, z);
+  }
+
+  /**
+   * Highlight the relay node (gold) and participant nodes (cyan) for the
+   * current pub/sub group.  Clears any previous pub/sub highlights first.
+   *
+   * @param {bigint}   relayId        – node ID of the relay
+   * @param {bigint[]} participantIds – node IDs of the subscribers
+   */
+  highlightPubSubGroup(relayId, participantIds) {
+    this.clearPubSubHighlights();
+
+    const setHighlight = (id, color, intensity, scale) => {
+      const mesh = this._nodeObjects.get(id);
+      if (!mesh) return;
+      mesh.material.color.setHex(color);
+      mesh.material.emissive.setHex(color);
+      mesh.material.emissiveIntensity = intensity;
+      mesh.scale.setScalar(scale);
+      this._pubsubHighlighted.add(id);
+    };
+
+    setHighlight(relayId, C.pubsubRelay, 2.5, 2.8);
+    for (const id of participantIds) {
+      setHighlight(id, C.pubsubParticipant, 1.8, 2.0);
+    }
+  }
+
+  /** Restore all pub/sub-highlighted nodes to their normal alive colour. */
+  clearPubSubHighlights() {
+    for (const id of this._pubsubHighlighted) {
+      const mesh = this._nodeObjects.get(id);
+      const data = this._nodeDataMap.get(id);
+      if (!mesh || !data) continue;
+      const col = data.alive ? C.nodeAlive : C.nodeDead;
+      mesh.material.color.setHex(col);
+      mesh.material.emissive.setHex(col);
+      mesh.material.emissiveIntensity = 0.7;
+      mesh.scale.setScalar(1);
+    }
+    this._pubsubHighlighted.clear();
   }
 
   /**

@@ -265,6 +265,31 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
 .btn-danger:disabled { border-color: var(--border); color: var(--dim); }
 .btn-danger:hover:not(:disabled) { background: #3a1010; box-shadow: 0 0 7px var(--err); }
 
+/* ── Action / test buttons — amber theme ────────────────────────────────── */
+/* Enabled: warm amber border + text so test buttons stand out from controls */
+.btn-action {
+  background: #1c1100;
+  border-color: #7a5200;
+  color: #cc8a00;
+  font-weight: 600;
+}
+.btn-action:hover:not(:disabled) {
+  background: #2b1a00;
+  border-color: #ffaa00;
+  color: #ffd050;
+  box-shadow: 0 0 9px #aa770055;
+}
+/* Disabled: faded amber — visible but clearly unavailable.
+   Override the default opacity:0.52 so the colour reads as
+   intentionally muted rather than almost-invisible. */
+.btn-action:disabled {
+  background: #0e0900;
+  border-color: #3c2400;
+  color: #5c3c00;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
 /* ── Progress + status ──────────────────────────────────────────────────── */
 .progress-wrap {
   flex: 0 0 180px;

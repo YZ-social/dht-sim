@@ -77,8 +77,8 @@
         <span class="sb-lbl">ms</span>
       </div>
       <div class="sb-btns">
-        <button class="btn btn-primary" id="btnInit" data-tip="Build the network: place nodes on land, assign random IDs, and populate all routing tables. Re-clicking resets everything.">&#9632; Init Network</button>
-        <button class="btn" id="btnDemoLookup" disabled data-tip="Animate random lookups continuously on the globe: each hop is traced with arcs. Loops automatically with a 1-second pause between lookups. Press again to stop.">&#9654; Demo</button>
+        <button class="btn btn-primary btn-action" id="btnInit" data-tip="Build the network: place nodes on land, assign random IDs, and populate all routing tables. Re-clicking resets everything.">&#9632; Init Network</button>
+        <button class="btn btn-action" id="btnDemoLookup" disabled data-tip="Animate random lookups continuously on the globe: each hop is traced with arcs. Loops automatically with a 1-second pause between lookups. Press again to stop.">&#9654; Demo</button>
       </div>
     </div>
 
@@ -106,8 +106,8 @@
         <span class="sb-lbl">%</span>
       </div>
       <div class="sb-btns">
-        <button class="btn" id="btnLookupTest" disabled data-tip="Run many random key lookups and display hop-count and latency statistics.">&#9654; Lookup Test</button>
-        <button class="btn btn-train" id="btnTrainNetwork" disabled data-tip="Run repeated lookup sessions in a loop. Neuromorphic protocols build synaptic shortcuts and show large hop-count reductions over time. Press again to stop.">&#10227; Train</button>
+        <button class="btn btn-action" id="btnLookupTest" disabled data-tip="Run many random key lookups and display hop-count and latency statistics.">&#9654; Lookup Test</button>
+        <button class="btn btn-train btn-action" id="btnTrainNetwork" disabled data-tip="Run repeated lookup sessions in a loop. Neuromorphic protocols build synaptic shortcuts and show large hop-count reductions over time. Press again to stop.">&#10227; Train</button>
       </div>
     </div>
 
@@ -124,7 +124,7 @@
         <input type="number" id="lookupsPerInterval" class="sb-num" value="100" min="20" max="500" step="10" style="width:46px">
       </div>
       <div class="sb-btns">
-        <button class="btn" id="btnChurnTest" disabled data-tip="Simulate node turnover over multiple intervals, measuring how routing success rate and hop count change as nodes join and leave.">&#8635; Churn Test</button>
+        <button class="btn btn-action" id="btnChurnTest" disabled data-tip="Simulate node turnover over multiple intervals, measuring how routing success rate and hop count change as nodes join and leave.">&#8635; Churn Test</button>
       </div>
     </div>
 
@@ -139,8 +139,8 @@
         <span class="sb-lbl">%</span>
       </div>
       <div class="sb-btns">
-        <button class="btn btn-conc" id="btnPubSub" disabled data-tip="Run a pub/sub overlay network test. Nodes form concordance groups (one relay + participants). A random participant sends to its relay; the relay broadcasts back to all participants. Runs continuously. Press again to stop.">&#x2295; Pub/Sub</button>
-        <button class="btn btn-pair" id="btnPairLearning" disabled data-tip="Assign every node a fixed random target. Each session routes all nodes to their fixed targets and records average hops. Neuromorphic protocols converge toward 1 hop per pair as synaptic shortcuts form.">&#x21D4; Pair</button>
+        <button class="btn btn-conc btn-action" id="btnPubSub" disabled data-tip="Run a pub/sub overlay network test. Nodes form concordance groups (one relay + participants). A random participant sends to its relay; the relay broadcasts back to all participants. Runs continuously. Press again to stop.">&#x2295; Pub/Sub</button>
+        <button class="btn btn-pair btn-action" id="btnPairLearning" disabled data-tip="Assign every node a fixed random target. Each session routes all nodes to their fixed targets and records average hops. Neuromorphic protocols converge toward 1 hop per pair as synaptic shortcuts form.">&#x21D4; Pair</button>
       </div>
     </div>
 
@@ -156,7 +156,7 @@
         <input type="number" id="zipfExponent" class="sb-num" value="1.0" min="0.1" max="3.0" step="0.1" style="width:42px">
       </div>
       <div class="sb-btns">
-        <button class="btn btn-hot" id="btnHotspotTest" disabled data-tip="Two-phase hotspot test: (1) Highway — measures routing-load concentration across many lookups; (2) Storage — queries content items with a Zipf distribution. Both produce Lorenz curves and a Gini coefficient.">&#x1F321; Hotspot</button>
+        <button class="btn btn-hot btn-action" id="btnHotspotTest" disabled data-tip="Two-phase hotspot test: (1) Highway — measures routing-load concentration across many lookups; (2) Storage — queries content items with a Zipf distribution. Both produce Lorenz curves and a Gini coefficient.">&#x1F321; Hotspot</button>
       </div>
     </div>
 
@@ -218,7 +218,7 @@
         </div>
       </div>
       <div class="sb-btns">
-        <button class="btn btn-bench" id="btnBenchmark" data-tip="Run selected protocols across selected test conditions. Builds a fresh DHT per protocol; no Init required.">&#9654;&#9654; Benchmark</button>
+        <button class="btn btn-bench btn-action" id="btnBenchmark" data-tip="Run selected protocols across selected test conditions. Builds a fresh DHT per protocol; no Init required.">&#9654;&#9654; Benchmark</button>
       </div>
     </div>
 

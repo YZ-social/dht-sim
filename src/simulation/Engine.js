@@ -810,10 +810,10 @@ export class SimulationEngine {
    *
    * @param {object}   dht               – active DHT instance
    * @param {object[]} groups            – array of { id, relay, participants[] }
-   * @param {number}   [messagesPerSession=100]
+   * @param {number}   [messagesPerSession=10]
    * @returns {Promise<object|null>}
    */
-  async runPubSubSession(dht, groups, messagesPerSession = 100) {
+  async runPubSubSession(dht, groups, messagesPerSession = 10) {
     const allRelayHops = [];
     const allRelayMs   = [];
     const allBcastHops = [];

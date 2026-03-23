@@ -19,36 +19,201 @@
 html, body { height: 100%; background: var(--bg); color: var(--text);
              font-family: var(--font); font-size: 12px; overflow: hidden; }
 
-/* ── App layout: strip + globe ──────────────────────────────────────────── */
-#app { display: flex; flex-direction: column; height: 100vh; }
+/* ── App layout: main row (sidebar + globe) stacked above full-width status bar */
+#app     { display: flex; flex-direction: column; height: 100vh; }
+#mainRow { display: flex; flex-direction: row;    flex: 1 1 auto; min-height: 0; }
 
-/* ── Control strip ─────────────────────────────────────────────────────── */
-#ctrlStrip {
-  flex: 0 0 auto;
+/* ── Sidebar ────────────────────────────────────────────────────────────── */
+#sidebar {
+  flex: 0 0 275px;
   background: var(--panel);
-  border-bottom: 1px solid var(--border);
-  padding: 4px 10px 4px;
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #1a3a60 transparent;
+}
+#sidebar::-webkit-scrollbar { width: 3px; }
+#sidebar::-webkit-scrollbar-thumb { background: #2a5a8a; border-radius: 2px; }
+
+/* Header: title button */
+.sb-hdr {
+  padding: 7px 10px 6px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
-/* Each ctrl-line is one horizontal row */
-.ctrl-line {
+/* Each section: one test type + its params + its button(s) */
+.sb-sec {
+  padding: 5px 8px 6px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Section label — small caps tab */
+.sb-sec-lbl {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #6a8fba;
+  margin-bottom: 4px;
+}
+
+/* Row of controls within a section */
+.sb-row {
   display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 3px;
+  flex-wrap: wrap;
+}
+
+/* Inline label text */
+.sb-lbl {
+  color: var(--dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Checkbox + text label */
+.sb-check {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--dim);
+  font-size: 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Compact number inputs */
+.sb-num {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: #77ccff;
+  font: 600 11px var(--font);
+  text-align: center;
+  padding: 0 1px;
+  outline: none;
+  -moz-appearance: textfield;
+}
+.sb-num:focus { border-bottom-color: var(--glow); color: #aaddff; }
+.sb-num::-webkit-inner-spin-button,
+.sb-num::-webkit-outer-spin-button { opacity: 0; }
+
+/* Protocol dropdown — full sidebar width */
+.sb-select-full {
+  width: 100%;
+  background: var(--in-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 3px;
+  font-family: var(--font);
+  font-size: 10px;
+  padding: 2px 4px;
+  outline: none;
+  margin-bottom: 4px;
+  cursor: pointer;
+}
+.sb-select-full:focus { border-color: var(--glow); }
+
+/* Small inline select (Bits) */
+.sb-select-sm {
+  background: var(--in-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 3px;
+  font-family: var(--font);
+  font-size: 10px;
+  padding: 1px 3px;
+  outline: none;
+  cursor: pointer;
+}
+.sb-select-sm:focus { border-color: var(--glow); }
+
+/* Button row at the bottom of each section */
+.sb-btns {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.sb-btns .btn {
+  flex: 1;
+  padding: 4px 6px;
+  font-size: 10px;
+  min-width: 48px;
+  text-align: center;
+}
+
+/* Benchmark multi-select pair */
+.sb-multisel-row {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 4px;
+  align-items: flex-start;
+}
+.sb-multisel {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sb-multisel-hd {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   flex-wrap: nowrap;
+}
+.sb-multisel-title {
+  font-size: 8px;
+  font-weight: 700;
+  color: #8aafd0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  flex: 1;
+}
+.sb-sel-btn {
+  font-size: 8px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: #0e2040;
+  border: 1px solid #2a5a8a;
+  color: #8aafd0;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.sb-sel-btn:hover { background: #1a3a60; color: #cce0ff; }
+.sb-multisel select {
+  width: 100%;
+  background: #061020;
+  color: #b8d0ee;
+  border: 1px solid #2a5a8a;
+  border-radius: 3px;
+  font-size: 9px;
+  font-family: inherit;
+  padding: 1px 2px;
+  outline: none;
+  cursor: pointer;
+}
+.sb-multisel select option { padding: 1px 3px; }
+.sb-multisel select option:checked { background: #1a4a80; color: #cce0ff; }
+
+/* Full-width status bar pinned to the bottom of the page */
+#statusBar {
+  flex: 0 0 auto;
+  display: flex;
   align-items: center;
   gap: 10px;
-  white-space: nowrap;
-  overflow-x: auto;
-  scrollbar-width: none;
+  padding: 5px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
 }
-.ctrl-line::-webkit-scrollbar { display: none; }
-
-.ctrl-line-top    { gap: 7px; }
-.ctrl-line-params { gap: 5px; }
-.ctrl-line-btns   { gap: 5px; }
-.ctrl-line-status { gap: 8px; padding-top: 1px; }
 
 .app-title {
   font-size: 12px;
@@ -56,98 +221,8 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
   letter-spacing: 0.08em;
   color: var(--glow);
   text-shadow: 0 0 10px #2288dd88;
-  margin-right: 6px;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-/* ── Parameter group panels ─────────────────────────────────────────────── */
-/* Each logical section (Network, Lookup, Churn, Filters, Benchmark) lives  */
-/* inside a bordered box with a small colored label on the left.            */
-.ctrl-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 8px 3px 0;
-  border: 1px solid #1a3a60;
-  border-radius: 4px;
-  background: #040e1c;
-  flex-shrink: 0;
-}
-
-/* Colored tab label — sits flush against the left border */
-.cg-label {
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  align-self: stretch;
-  display: flex;
-  align-items: center;
-  padding: 0 6px;
-  border-radius: 3px 0 0 3px;
-  margin-right: 2px;
-  border-right: 1px solid;
-}
-
-/* Uniform group theme — all groups share the same neutral border and label */
-.cg-net, .cg-lookup, .cg-churn, .cg-filters, .cg-bench, .cg-conc, .cg-hot {
-  border-color: #2a5a8a;
-}
-.cg-net .cg-label, .cg-lookup .cg-label, .cg-churn .cg-label,
-.cg-filters .cg-label, .cg-bench .cg-label, .cg-conc .cg-label, .cg-hot .cg-label {
-  color: #8aafd0; background: #081628; border-right-color: #2a5a8a;
-}
-
-
-/* Cluster: label + control side by side */
-.ctrl-cluster {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex-shrink: 0;
-}
-
-.ctrl-cluster label {
-  color: var(--dim);
-  font-size: 11px;
-  display: flex;
-  align-items: center;
-  gap: 3px;
   white-space: nowrap;
 }
-
-.ctrl-cluster label b { color: #77ccff; font-weight: 600; min-width: 2em; }
-
-/* Editable number field inside a ctrl-cluster label */
-.ctrl-cluster label input[type="number"] {
-  width: 4.8em; background: transparent; border: none;
-  border-bottom: 1px solid var(--border); color: #77ccff;
-  font: 600 11px var(--font); text-align: center;
-  padding: 0 1px; outline: none; -moz-appearance: textfield;
-}
-.ctrl-cluster label input[type="number"]::-webkit-inner-spin-button,
-.ctrl-cluster label input[type="number"]::-webkit-outer-spin-button { opacity: 0; }
-.ctrl-cluster label input[type="number"]:focus {
-  border-bottom-color: var(--glow); color: #aaddff;
-}
-
-/* Standalone number inputs directly in a ctrl-cluster (not inside label) */
-.ctrl-cluster > input[type="number"] {
-  background: transparent; border: none;
-  border-bottom: 1px solid var(--border); color: #77ccff;
-  font: 600 11px var(--font); text-align: center;
-  padding: 0 1px; outline: none; -moz-appearance: textfield;
-}
-.ctrl-cluster > input[type="number"]::-webkit-inner-spin-button,
-.ctrl-cluster > input[type="number"]::-webkit-outer-spin-button { opacity: 0; }
-.ctrl-cluster > input[type="number"]:focus {
-  border-bottom-color: var(--glow); color: #aaddff;
-}
-
-/* Separator */
-.sep { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; margin: 0 2px; }
 
 /* ── Form controls ──────────────────────────────────────────────────────── */
 select {
@@ -192,7 +267,8 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
 
 /* ── Progress + status ──────────────────────────────────────────────────── */
 .progress-wrap {
-  flex: 0 0 160px; height: 6px;
+  flex: 0 0 180px;
+  height: 6px;
   background: var(--in-bg); border-radius: 3px; overflow: hidden;
 }
 #progressBar {
@@ -373,14 +449,16 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
 .btn-train, .btn-bench, .btn-conc, .btn-pair { font-weight: 600; }
 
 /* Active/stop state: turns red when the button becomes a Stop control */
-.btn-train.active, .btn-bench.active, .btn-conc.active, .btn-pair.active, .btn-hot.active {
+.btn-train.active, .btn-bench.active, .btn-conc.active, .btn-pair.active, .btn-hot.active,
+#btnDemoLookup.active {
   background: #2e0a0a; border-color: var(--err); color: var(--err);
 }
 .btn-train.active:hover:not(:disabled),
 .btn-bench.active:hover:not(:disabled),
 .btn-conc.active:hover:not(:disabled),
 .btn-pair.active:hover:not(:disabled),
-.btn-hot.active:hover:not(:disabled) {
+.btn-hot.active:hover:not(:disabled),
+#btnDemoLookup.active:hover:not(:disabled) {
   background: #4a1010; box-shadow: 0 0 10px #cc333388;
 }
 

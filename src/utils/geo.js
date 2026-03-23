@@ -7,7 +7,9 @@ export const EARTH_RADIUS_KM = 6371;
 export const MAX_GREAT_CIRCLE_KM = Math.PI * EARTH_RADIUS_KM; // ~20,015 km
 
 // Propagation delay constants (configurable via setLatencyParams)
-let MAX_PROPAGATION_MS = 300;  // ms for antipodal nodes
+let MAX_PROPAGATION_MS = 150;  // one-way propagation ms for antipodal nodes (~20,015 km)
+                                // Real antipodal RTT ≈ 300 ms; divide by 2 for one-way.
+                                // roundTripLatency() doubles this, so antipodal RTT = 2*(150+10) = 320 ms.
 let HOP_COST_MS = 10;          // ms processing overhead per one-way message
 
 export function setLatencyParams(maxProp, hopCost) {

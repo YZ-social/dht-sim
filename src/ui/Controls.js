@@ -27,6 +27,87 @@ export class Controls {
     this._bindNumber('churnRate',          1,       30);
     this._bindNumber('churnIntervals',     2,       30);
     this._bindNumber('lookupsPerInterval', 20,     500);
+
+    // Benchmark multi-selects: restore from localStorage, then wire buttons + persistence
+    this._restoreMultiSelect('benchProtocols', 'dht-bench-protocols');
+    this._restoreMultiSelect('benchTests',     'dht-bench-tests');
+
+    this._bindMultiSelectAll ('benchProtoAll',  'benchProtocols', 'dht-bench-protocols');
+    this._bindMultiSelectNone('benchProtoNone', 'benchProtocols', 'dht-bench-protocols');
+    this._bindMultiSelectAll ('benchTestAll',   'benchTests',     'dht-bench-tests');
+    this._bindMultiSelectNone('benchTestNone',  'benchTests',     'dht-bench-tests');
+
+    // Save on every change
+    this._bindMultiSelectSave('benchProtocols', 'dht-bench-protocols');
+    this._bindMultiSelectSave('benchTests',     'dht-bench-tests');
+  }
+
+  /** Restore a <select multiple> from a stored JSON array of selected values. */
+  _restoreMultiSelect(selectId, storageKey) {
+    const el = this._el(selectId);
+    if (!el) return;
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (!saved) return;
+      const parsed = JSON.parse(saved);
+
+      if (parsed && !Array.isArray(parsed) && parsed.v === 2) {
+        // New format {v:2, sel:[…], known:[…]}: only update options that were
+        // present when the state was saved.  New options (not in `known`) keep
+        // their HTML default so freshly-added protocols appear selected.
+        const selSet   = new Set(parsed.sel   ?? []);
+        const knownSet = new Set(parsed.known ?? []);
+        [...el.options].forEach(o => {
+          if (knownSet.has(o.value)) o.selected = selSet.has(o.value);
+          // else: option is new since last save → leave HTML default untouched
+        });
+      } else {
+        // Legacy plain-array format: treat saved values as explicitly selected;
+        // options absent from the array keep their HTML default rather than
+        // being forced to deselected.  This means newly-added protocols (like
+        // N-11W) automatically appear selected on first load after the upgrade.
+        const vals = new Set(Array.isArray(parsed) ? parsed : []);
+        [...el.options].forEach(o => { if (vals.has(o.value)) o.selected = true; });
+      }
+    } catch (_) { /* ignore parse errors */ }
+  }
+
+  /** Wire a "Select All" button for a multi-select. */
+  _bindMultiSelectAll(btnId, selectId, storageKey) {
+    const btn = this._el(btnId);
+    const sel = this._el(selectId);
+    if (!btn || !sel) return;
+    btn.addEventListener('click', () => {
+      [...sel.options].forEach(o => { o.selected = true; });
+      this._saveMultiSelect(sel, storageKey);
+    });
+  }
+
+  /** Wire a "Deselect All" button for a multi-select. */
+  _bindMultiSelectNone(btnId, selectId, storageKey) {
+    const btn = this._el(btnId);
+    const sel = this._el(selectId);
+    if (!btn || !sel) return;
+    btn.addEventListener('click', () => {
+      [...sel.options].forEach(o => { o.selected = false; });
+      this._saveMultiSelect(sel, storageKey);
+    });
+  }
+
+  /** Save selection to localStorage whenever the select changes. */
+  _bindMultiSelectSave(selectId, storageKey) {
+    const sel = this._el(selectId);
+    if (!sel) return;
+    sel.addEventListener('change', () => this._saveMultiSelect(sel, storageKey));
+  }
+
+  /** Persist current selection of a <select multiple> to localStorage. */
+  _saveMultiSelect(sel, storageKey) {
+    try {
+      const sel_  = [...sel.options].filter(o =>  o.selected).map(o => o.value);
+      const known = [...sel.options].map(o => o.value);
+      localStorage.setItem(storageKey, JSON.stringify({ v: 2, sel: sel_, known }));
+    } catch (_) { /* quota / private browsing */ }
   }
 
   _bindSlider(sliderId, displayId, fmt = v => v) {
@@ -89,8 +170,18 @@ export class Controls {
   get destPct()           { return parseInt(this._el('destPct')?.value ?? 10); }
   get benchChurnPct()        { return parseInt(this._el('churnRate')?.value ?? 5); }
   get benchWarmupSessions()  { return Math.max(1, Math.min(99, parseInt(this._el('benchWarmupSessions')?.value ?? 4))); }
-  get benchFast()            { return this._el('benchFast')?.checked ?? false; }
-  get benchCompare()         { return this._el('benchCompare')?.value ?? 'ngdht6w'; }
+  get benchProtocols() {
+    const el = this._el('benchProtocols');
+    if (!el) return null;   // null = all
+    const sel = [...el.options].filter(o => o.selected).map(o => o.value);
+    return sel.length ? new Set(sel) : null;
+  }
+  get benchTests() {
+    const el = this._el('benchTests');
+    if (!el) return null;   // null = all
+    const sel = [...el.options].filter(o => o.selected).map(o => o.value);
+    return sel.length ? new Set(sel) : null;
+  }
   get showAnimation() { return this._el('showAnimation')?.checked ?? true; }
   get autoRotate()  { return this._el('autoRotate')?.checked ?? false; }
   get pubsubGroupSize() { return Math.max(4, Math.min(256, parseInt(this._el('pubsubGroupSize')?.value ?? 32))); }
@@ -118,8 +209,8 @@ export class Controls {
       destPct:        this.destPct,
       benchChurnPct:       this.benchChurnPct,
       benchWarmupSessions: this.benchWarmupSessions,
-      benchFast:           this.benchFast,
-      benchCompare:        this.benchCompare,
+      benchProtocols:      this.benchProtocols,
+      benchTests:          this.benchTests,
       pubsubGroupSize: this.pubsubGroupSize,
       pubsubCoverage:  this.pubsubCoverage,
       hotspotLookups: this.hotspotLookups,
@@ -135,7 +226,7 @@ export class Controls {
   _updateLookupLabel() {
     const btn = this._el('btnLookupTest');
     if (btn) {
-      const isNeuro = this.dhtProtocol === 'ngdht' || this.dhtProtocol === 'ngdht2' || this.dhtProtocol === 'ngdht2bp' || this.dhtProtocol === 'ngdht2shc' || this.dhtProtocol === 'ngdht3' || this.dhtProtocol === 'ngdht4' || this.dhtProtocol === 'ngdht5' || this.dhtProtocol === 'ngdht5w' || this.dhtProtocol === 'ngdht6w' || this.dhtProtocol === 'ngdht7w' || this.dhtProtocol === 'ngdht8w';
+      const isNeuro = this.dhtProtocol === 'ngdht' || this.dhtProtocol === 'ngdht2' || this.dhtProtocol === 'ngdht2bp' || this.dhtProtocol === 'ngdht2shc' || this.dhtProtocol === 'ngdht3' || this.dhtProtocol === 'ngdht4' || this.dhtProtocol === 'ngdht5' || this.dhtProtocol === 'ngdht5w' || this.dhtProtocol === 'ngdht6w' || this.dhtProtocol === 'ngdht7w' || this.dhtProtocol === 'ngdht8w' || this.dhtProtocol === 'ngdht9w' || this.dhtProtocol === 'ngdht10w' || this.dhtProtocol === 'ngdht11w' || this.dhtProtocol === 'ngdht12w' || this.dhtProtocol === 'ngdht13w';
       btn.textContent = isNeuro ? '▶ Lookup Training' : '▶ Lookup Test';
     }
   }
@@ -144,22 +235,26 @@ export class Controls {
 
   setRunning(running) {
     // btnBenchmark is managed independently by setBenchmarking(); exclude it here.
-    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest'];
-    btns.forEach(id => {
-      const el = this._el(id);
-      if (el) el.disabled = running;
-    });
-    // Disable Benchmark, Train, and Pub/Sub during normal tests
-    const benchBtn = this._el('btnBenchmark');
-    if (benchBtn) benchBtn.disabled = running;
-    const trainBtn = this._el('btnTrainNetwork');
-    if (trainBtn) trainBtn.disabled = running;
-    const concBtn = this._el('btnPubSub');
-    if (concBtn) concBtn.disabled = running;
-    const pairBtn = this._el('btnPairLearning');
-    if (pairBtn) pairBtn.disabled = running;
-    const hotBtn = this._el('btnHotspotTest');
-    if (hotBtn) hotBtn.disabled = running;
+    ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup',
+     'btnBenchmark', 'btnTrainNetwork', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest']
+      .forEach(id => { const el = this._el(id); if (el) el.disabled = running; });
+  }
+
+  setDemo(active) {
+    const demoBtn = this._el('btnDemoLookup');
+    if (demoBtn) {
+      demoBtn.disabled = false;   // always clickable — it's the stop control when active
+      if (active) {
+        demoBtn.textContent = '⏹ Stop Demo';
+        demoBtn.classList.add('active');
+      } else {
+        demoBtn.textContent = '▶ Demo';
+        demoBtn.classList.remove('active');
+      }
+    }
+    ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnBenchmark',
+     'btnTrainNetwork', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest']
+      .forEach(id => { const b = this._el(id); if (b) b.disabled = active; });
   }
 
   setBenchmarking(active) {

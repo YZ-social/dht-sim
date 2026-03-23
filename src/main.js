@@ -23,6 +23,10 @@ import { NeuromorphicDHT6W }   from './dht/neuromorphic/NeuromorphicDHT6W.js';
 import { NeuromorphicDHT7W }   from './dht/neuromorphic/NeuromorphicDHT7W.js';
 import { NeuromorphicDHT8W }   from './dht/neuromorphic/NeuromorphicDHT8W.js';
 import { NeuromorphicDHT9W }   from './dht/neuromorphic/NeuromorphicDHT9W.js';
+import { NeuromorphicDHT10W }  from './dht/neuromorphic/NeuromorphicDHT10W.js';
+import { NeuromorphicDHT11W }  from './dht/neuromorphic/NeuromorphicDHT11W.js';
+import { NeuromorphicDHT12W }  from './dht/neuromorphic/NeuromorphicDHT12W.js';
+import { NeuromorphicDHT13W }  from './dht/neuromorphic/NeuromorphicDHT13W.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -241,109 +245,122 @@ async function onLookupTest() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Demo (single animated lookup)
+// Demo (looping animated lookup — toggle start / stop)
 // ─────────────────────────────────────────────────────────────────────────────
 
+let _demoRunning = false;
+
 async function onDemoLookup() {
+  // Second click → stop the loop
+  if (_demoRunning) {
+    _demoRunning = false;
+    return;
+  }
+
   if (!dht) {
     controls.setStatus('Initialise the network first.', 'warn');
     return;
   }
-  controls.setRunning(true);
-  globe.clearArcs();
-  globe.clearConnections();
-  globe.clearRegionalBoundary();  // remove any ring from the previous demo
 
-  const nodes = dht.getNodes().filter(n => n.alive);
-  if (nodes.length < 2) {
-    controls.setStatus('Not enough nodes for a demo lookup.', 'warn');
-    controls.setRunning(false);
-    return;
-  }
-  const params = controls.snapshot();
+  _demoRunning = true;
+  controls.setDemo(true);
 
-  // ── Select sender (and build nearby list for regional mode) ───────────────
-  // In regional mode, only consider senders that already have at least one
-  // other live node within the radius — this guarantees nearby is never empty
-  // and eliminates all "no nodes within X km" failures.
-  let source, nearby = [];
-  if (params.regional) {
-    const eligible = nodes.filter(n =>
-      nodes.some(m => m.id !== n.id &&
-        haversine(n.lat, n.lng, m.lat, m.lng) <= params.regionalRadius)
-    );
-    if (!eligible.length) {
-      controls.setStatus(
-        `No node pairs within ${params.regionalRadius} km — try a larger radius or more nodes.`, 'warn'
-      );
-      controls.setRunning(false);
-      return;
+  const { randomU64 } = await import('./utils/geo.js');
+
+  while (_demoRunning) {
+    globe.clearArcs();
+    globe.clearConnections();
+    globe.clearRegionalBoundary();
+
+    const nodes = dht.getNodes().filter(n => n.alive);
+    if (nodes.length < 2) {
+      controls.setStatus('Not enough nodes for a demo lookup.', 'warn');
+      break;
     }
-    source = eligible[Math.floor(Math.random() * eligible.length)];
-    nearby = nodes.filter(n =>
-      n.id !== source.id &&
-      haversine(source.lat, source.lng, n.lat, n.lng) <= params.regionalRadius
-    );
-    // Draw the ring now so it's visible while the lookup runs
-    globe.drawRegionalBoundary(source.lat, source.lng, params.regionalRadius);
-  } else {
-    source = nodes[Math.floor(Math.random() * nodes.length)];
-  }
+    const params = controls.snapshot();
 
-  controls.setStatus(
-    `Demo lookup from node 0x${source.id.toString(16).padStart(16,'0').toUpperCase().slice(0,8)}…` +
-    `${params.regional ? ` (regional ≤${params.regionalRadius} km)` : ''}…`,
-    'info'
-  );
-
-  // ── Choose target and run lookup ───────────────────────────────────────────
-  const nodeMap = new Map(dht.getNodes().map(n => [n.id, n]));
-  let result = null;
-
-  if (params.regional) {
-    // Pick a random node within the ring as the receiver and route to its
-    // actual node ID using each protocol's native XOR routing.
-    //   – Geographic DHT: IDs are geo-prefixed, so the XOR path is naturally
-    //     geographic and tends to stay within the region.
-    //   – Kademlia: IDs are random, so the XOR path wanders geographically
-    //     even though it converges to the correct receiver ID.
-    // This is the honest comparison: no geographic routing assist for Kademlia.
-    const receiver = nearby[Math.floor(Math.random() * nearby.length)];
-    result = await dht.lookup(source.id, receiver.id);
-  } else {
-    const { randomU64 } = await import('./utils/geo.js');
-    result = await dht.lookup(source.id, randomU64());
-  }
-
-  // Sanity-check: destination should be within the regional ring.
-  if (params.regional && result?.path?.length > 1) {
-    const destNode = nodeMap.get(result.path.at(-1));
-    if (!destNode ||
-        haversine(source.lat, source.lng, destNode.lat, destNode.lng) > params.regionalRadius) {
-      controls.setStatus(
-        'Regional path ended outside the ring — no nearby nodes reachable. Try more nodes or a larger radius.',
-        'warn'
+    // ── Select sender ────────────────────────────────────────────────────────
+    // In regional mode, only consider senders that have at least one other
+    // live node within the radius — guarantees nearby is never empty.
+    let source, nearby = [];
+    if (params.regional) {
+      const eligible = nodes.filter(n =>
+        nodes.some(m => m.id !== n.id &&
+          haversine(n.lat, n.lng, m.lat, m.lng) <= params.regionalRadius)
       );
-      controls.setRunning(false);
-      return;
+      if (!eligible.length) {
+        controls.setStatus(
+          `No node pairs within ${params.regionalRadius} km — try a larger radius or more nodes.`, 'warn'
+        );
+        break;
+      }
+      source = eligible[Math.floor(Math.random() * eligible.length)];
+      nearby = nodes.filter(n =>
+        n.id !== source.id &&
+        haversine(source.lat, source.lng, n.lat, n.lng) <= params.regionalRadius
+      );
+      globe.drawRegionalBoundary(source.lat, source.lng, params.regionalRadius);
+    } else {
+      source = nodes[Math.floor(Math.random() * nodes.length)];
     }
-  }
 
-  if (result?.path?.length > 1) {
     controls.setStatus(
-      `Path: ${result.path.length} nodes, ${result.hops} hops, ${result.time.toFixed(1)} ms — animating…`,
+      `Demo lookup from node 0x${source.id.toString(16).padStart(16,'0').toUpperCase().slice(0,8)}` +
+      `${params.regional ? ` (regional ≤${params.regionalRadius} km)` : ''}…`,
       'info'
     );
-    await globe.animatePath(result.path, nodeMap, 800);
-    results.showDemoResults(result);
-    controls.setStatus(
-      `Demo complete: ${result.hops} hops, ${result.time.toFixed(1)} ms total`,
-      'success'
-    );
-  } else {
-    controls.setStatus('Lookup returned no path.', 'warn');
+
+    // ── Run lookup ───────────────────────────────────────────────────────────
+    const nodeMap = new Map(dht.getNodes().map(n => [n.id, n]));
+    let result = null;
+
+    if (params.regional) {
+      const receiver = nearby[Math.floor(Math.random() * nearby.length)];
+      result = await dht.lookup(source.id, receiver.id);
+    } else {
+      result = await dht.lookup(source.id, randomU64());
+    }
+
+    if (!_demoRunning) break;
+
+    // Sanity-check: destination should be within the regional ring.
+    if (params.regional && result?.path?.length > 1) {
+      const destNode = nodeMap.get(result.path.at(-1));
+      if (!destNode ||
+          haversine(source.lat, source.lng, destNode.lat, destNode.lng) > params.regionalRadius) {
+        controls.setStatus(
+          'Regional path ended outside the ring — no nearby nodes reachable. Try more nodes or a larger radius.',
+          'warn'
+        );
+        break;
+      }
+    }
+
+    if (result?.path?.length > 1) {
+      controls.setStatus(
+        `Demo: ${result.hops} hops, ${result.time.toFixed(1)} ms — animating…`,
+        'info'
+      );
+      await globe.animatePath(result.path, nodeMap, 800);
+      if (!_demoRunning) break;
+      results.showDemoResults(result);
+      controls.setStatus(
+        `Demo: ${result.hops} hops, ${result.time.toFixed(1)} ms — next in 1 s…`,
+        'success'
+      );
+    } else {
+      controls.setStatus('Demo: lookup returned no path — retrying…', 'warn');
+    }
+
+    // 1-second pause before next demo
+    await new Promise(r => setTimeout(r, 1000));
   }
-  controls.setRunning(false);
+
+  _demoRunning = false;
+  controls.setDemo(false);
+  globe.clearArcs();
+  globe.clearRegionalBoundary();
+  controls.setStatus('Demo stopped.', 'info');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -615,14 +632,15 @@ async function onPubSub() {
       msgHops:   result.msgHops,
       bcastAvg:  result.bcastStats?.mean ?? 0,
       totalHops: result.totalHops,
-      simMs:     result.simMs,
+      relayMs:   result.msgMs,
+      bcastMs:   Math.round(result.bcastMsStats?.mean ?? 0),
     });
 
     results.showPubSubResults(history, numGroups, actualCoverage);
 
     controls.setStatus(
       `Pub/Sub #${tick} — msg: ${result.msgHops} hops · bcast avg: ` +
-      `${result.bcastStats?.mean?.toFixed(1) ?? '—'} hops · ${result.simMs} ms`,
+      `${result.bcastStats?.mean?.toFixed(1) ?? '—'} hops · relay ${result.msgMs} ms · bcast ${Math.round(result.bcastMsStats?.mean ?? 0)} ms`,
       'info'
     );
 
@@ -838,29 +856,30 @@ async function onBenchmark() {
     { key: 'ngdht7w',   label: 'N-7W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht8w',   label: 'N-8W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht9w',   label: 'N-9W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-  ].filter(def => {
-    if (!params.benchFast) return true;
-    // Fast mode: always include baselines + compare pick + N-8W
-    const FAST_ALWAYS = new Set(['kademlia', 'geo8', 'ngdht8w', 'ngdht9w']);
-    return FAST_ALWAYS.has(def.key) || def.key === params.benchCompare;
-  });
+    { key: 'ngdht10w',  label: 'N-10W',   warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht11w',  label: 'N-11W',   warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht12w',  label: 'N-12W',   warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht13w',  label: 'N-13W',   warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+  ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
-  // Benchmark always tests 4 regional radii, a dest-restricted column, and global.
-  // The dest percentage is taken from the Dest input (default 10%); the Dest
-  // checkbox only affects individual Lookup Tests, not the benchmark.
-  const testSpecs = [
-    { type: 'global' },                                // measured first — pre-specialisation baseline
-    { type: 'regional', radius: 500  },
-    { type: 'regional', radius: 1000 },
-    { type: 'regional', radius: 2000 },
-    { type: 'regional', radius: 5000 },
-    { type: 'source',  pct: params.sourcePct },
-    { type: 'dest',    pct: params.destPct },
-    { type: 'srcdest', srcPct: params.sourcePct, destPct: params.destPct },
-    { type: 'continent', src: 'NA', dst: 'AS' },       // hardest trans-oceanic pair — tests long-range stratum preservation
-    { type: 'pubsub',  groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
-    { type: 'churn',   rate: params.benchChurnPct },  // always last — modifies DHT state
+  // Build the full ordered test list, then filter by user selection.
+  // 'churn' is always kept last if selected (it modifies DHT state).
+  const ALL_TEST_SPECS = [
+    { key: 'global',    type: 'global' },
+    { key: 'r500',      type: 'regional', radius: 500  },
+    { key: 'r1000',     type: 'regional', radius: 1000 },
+    { key: 'r2000',     type: 'regional', radius: 2000 },
+    { key: 'r5000',     type: 'regional', radius: 5000 },
+    { key: 'src',       type: 'source',   pct: params.sourcePct },
+    { key: 'dest',      type: 'dest',     pct: params.destPct },
+    { key: 'srcdest',   type: 'srcdest',  srcPct: params.sourcePct, destPct: params.destPct },
+    { key: 'continent', type: 'continent', src: 'NA', dst: 'AS' },
+    { key: 'pubsub',    type: 'pubsub',   groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
+    { key: 'churn',     type: 'churn',    rate: params.benchChurnPct },
   ];
+  const testSpecs = ALL_TEST_SPECS
+    .filter(s => !params.benchTests || params.benchTests.has(s.key))
+    .map(({ key: _key, ...rest }) => rest);  // strip the key before passing to engine
 
   const N           = params.nodeCount;
   const NUM_LOOKUPS = params.msgCount;
@@ -941,7 +960,7 @@ async function onBenchmark() {
   if (stopped) {
     controls.setStatus('Benchmark stopped.', 'warn');
   } else {
-    results.showBenchmarkResults(benchResult, N);
+    results.showBenchmarkResults(benchResult, N, params);
     controls.setStatus('Benchmark complete.', 'success');
   }
 }
@@ -1034,6 +1053,30 @@ function createDHT(params) {
       });
     case 'ngdht9w':
       return new NeuromorphicDHT9W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht10w':
+      return new NeuromorphicDHT10W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht11w':
+      return new NeuromorphicDHT11W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht12w':
+      return new NeuromorphicDHT12W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht13w':
+      return new NeuromorphicDHT13W({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,

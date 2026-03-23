@@ -1,4 +1,4 @@
-import { randomU64, computeStats, haversine, propagationDelay, continentOf, buildXorRoutingTable } from '../utils/geo.js';
+import { randomU64, computeStats, haversine, continentOf, buildXorRoutingTable } from '../utils/geo.js';
 
 /**
  * SimulationEngine – orchestrates lookup tests and churn tests on a DHT.
@@ -734,12 +734,6 @@ export class SimulationEngine {
    * @returns {Promise<object|null>} tick stats, or null if no alive nodes found
    */
   async runPubSubTick(dht, groups) {
-    // Per-hop processing overhead (matches geo.js HOP_COST_MS default).
-    // Propagation is computed from the actual great-circle distance between
-    // the two endpoints of each leg (sender→relay, relay→participant) so that
-    // globally distributed nodes produce realistic latency (~150 ms for an
-    // average random hop vs the ~50 ms best-case speed-of-light floor).
-    const HOP_COST_MS = 10;
     const YIELD_EVERY = 8;
 
     // Pick a random group with a live relay
@@ -760,8 +754,7 @@ export class SimulationEngine {
       const r = await dht.lookup(sender.id, relay.id);
       if (r?.found) {
         msgHops = r.hops;
-        // Geographic propagation for this leg + per-hop processing cost
-        msgMs = Math.round(propagationDelay(sender, relay) + msgHops * HOP_COST_MS);
+        msgMs   = Math.round(r.time);   // per-hop geographic RTT, same as all other tests
       }
     } catch { /* skip */ }
 
@@ -775,7 +768,7 @@ export class SimulationEngine {
         const r = await dht.lookup(relay.id, p.id);
         if (r?.found) {
           bcastHops.push(r.hops);
-          bcastMsArr.push(Math.round(propagationDelay(relay, p) + r.hops * HOP_COST_MS));
+          bcastMsArr.push(Math.round(r.time));  // per-hop geographic RTT
         }
       } catch { /* skip */ }
       if ((i + 1) % YIELD_EVERY === 0) await this._yield();

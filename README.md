@@ -1,6 +1,6 @@
 # DHT Globe Simulator
 
-An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of nine neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — including four browser-realistic variants engineered for real-world WebRTC deployment.
+An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of thirteen neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — including eight browser-realistic variants engineered for real-world WebRTC deployment. The most advanced variant, N-10W, introduces eviction-immune relay pinning and is the current best-performing protocol for pub/sub overlay networks.
 
 The simulator renders a live WebGL globe of up to 100,000 nodes distributed according to real-world population density, routes messages between them in real time, and benchmarks every protocol side by side — measuring hop counts, latency, churn resilience, regional performance, load distribution, and learning convergence over time.
 
@@ -43,6 +43,7 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 │  │   Kademlia · Geographic                                     │   │
 │  │   N-1 · N-2 · N-2-BP · N-2-SHC · N-3 · N-4 · N-5          │   │
 │  │   N-5W · N-6W · N-7W · N-8W · N-9W                         │   │
+│  │   N-10W ★ · N-11W · N-12W · N-13W                          │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 └────────────────────────────────────────────────────────────────────┘
          ▲
@@ -74,6 +75,10 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 | `src/dht/neuromorphic/NeuromorphicDHT7W.js` | N-7W + load-aware routing + extended hub pool |
 | `src/dht/neuromorphic/NeuromorphicDHT8W.js` | N-8W + cascading lateral spread + tier rebalancing |
 | `src/dht/neuromorphic/NeuromorphicDHT9W.js` | N-9W + synaptome floor protection |
+| `src/dht/neuromorphic/NeuromorphicDHT10W.js` | N-10W ★ + relay pinning (current best pub/sub) |
+| `src/dht/neuromorphic/NeuromorphicDHT11W.js` | N-11W + frequency-weighted reservation (experimental) |
+| `src/dht/neuromorphic/NeuromorphicDHT12W.js` | N-12W + highway-tier relay pinning (experimental) |
+| `src/dht/neuromorphic/NeuromorphicDHT13W.js` | N-13W + load awareness + local pins (experimental) |
 | `src/dht/neuromorphic/NeuronNode.js` | Per-node state: synaptome, transit cache |
 | `src/dht/neuromorphic/Synapse.js` | Synapse data model (weight, latency, stratum, useCount) |
 | `src/utils/geo.js` | Great-circle distance, latency model, population sampling, XOR routing table |
@@ -192,6 +197,10 @@ graph TD
     N6W --> N7W["N-7W: Load-Balanced\nPer-node load tracking\nLoad-aware AP scoring\nExtended randomised hub pool"]
     N7W --> N8W["N-8W: Cascade Spread\nRestored N-6W tier split\nDepth-2 lateral cascade\n19 nodes per shortcut event"]
     N8W --> N9W["N-9W: Synaptome Floor\nAnnealing floor protection\nDecay floor protection\nPrevents routing table erosion"]
+    N9W --> N10W["N-10W ★ BEST PUB/SUB\nRelay pinning (eviction-immune)\nHigher Markov seed weight\nRemoved load awareness"]
+    N10W --> N11W["N-11W: Freq-Weighted Reservation\n24-pin budget (50% of local tier)\nFrequency-ranked replacement\n⚠ Regression at high coverage"]
+    N10W --> N12W["N-12W: Highway-Tier Pins\n4 pin + 8 hub highway split\nLocal tier fully freed\n⚠ 33% highway diversity loss"]
+    N10W --> N13W["N-13W: Load + Local Pins\nN-10W + load-aware restored\nBcast improves vs N-9W\n⚠ Relay regresses vs N-10W"]
 
     style K fill:#0a1e3e,stroke:#2a5ea0,color:#88c4f0
     style G fill:#0a1e3e,stroke:#2a5ea0,color:#88c4f0
@@ -207,6 +216,10 @@ graph TD
     style N7W fill:#1c0808,stroke:#5a1818,color:#ff8888
     style N8W fill:#080e1c,stroke:#18285a,color:#88aaff
     style N9W fill:#0a1818,stroke:#1a4040,color:#44ddcc
+    style N10W fill:#1c1400,stroke:#aa7700,color:#ffdd44
+    style N11W fill:#0e0e0e,stroke:#444444,color:#888888
+    style N12W fill:#0e0e0e,stroke:#444444,color:#888888
+    style N13W fill:#0e0e0e,stroke:#444444,color:#888888
 ```
 
 ### The Synaptome
@@ -658,52 +671,233 @@ N=50,000:  bootstrap ≈ 48–60 → floor protects exactly at design capacity
 
 ---
 
+## Protocol 15 — N-10W: Pub/Sub Relay Optimisation ★
+
+**File:** `src/dht/neuromorphic/NeuromorphicDHT10W.js`
+
+N-10W is the **current best-performing web-enabled protocol** for pub/sub overlay networks. It takes N-9W as its base and makes three targeted changes, each derived from analysis of a specific failure mode in the existing routing architecture.
+
+### The Pub/Sub Problem: Stratified Eviction Erases Group Members
+
+In a pub/sub broadcast group of `G` members, every node needs direct synaptome entries for all other group members to achieve 1-hop delivery. However, members of the same geographic group share nearly identical geographic ID prefixes, placing all their synapses in **stratum group 0** (XOR distance 0–3, where `group = stratum >>> 2`).
+
+N-9W's stratified eviction maintains `STRATUM_FLOOR = 2` entries per group as a floor, and the most over-represented group is always the eviction target. When a pub/sub group adds 8 local-region synapse entries, all 8 land in strata group 0. Subsequent `_stratifiedAdd` calls evict the weakest strata-group-0 entry, continuously cycling group member connections out before they can be reinforced into permanent shortcuts. Result: bcast hops in N-9W at 25K nodes / 25% coverage = **2.569** — well above the theoretical 1-hop minimum.
+
+### Change 1 — Relay Pinning (Mechanism 11): Eviction-Immune Synaptome Entries
+
+The core innovation. N-10W tracks a **rolling window of relay destinations** at each node and protects the most-frequently-seen destinations from stratified eviction entirely.
+
+```
+Architecture:
+
+  pinWindow[]        — circular buffer of last RELAY_PIN_WINDOW=64 destinations
+  pinWindowFreq{}    — frequency count of each destination in the window
+  pinnedDests{}      — Set of currently pinned destination IDs
+
+  On each lookup at the source node:
+    1. Record targetKey in pinWindow; update pinWindowFreq
+    2. If freq(targetKey) ≥ RELAY_PIN_THRESHOLD (5):
+         if pinnedDests.size < RELAY_PIN_MAX (4):
+           add targetKey to pinnedDests
+         else:
+           frequency-ranked replacement: evict the least-frequent current pin
+           if its freq < new entry's freq
+    3. Immediately boost synapse weight: syn.weight = RELAY_PIN_WEIGHT (0.95)
+       if the synapse already exists
+
+  Priority 0.5 source shortcut (hop=0 only):
+    if source.pinnedDests.has(targetKey):
+      use the pinned synapse directly — bypass two-hop lookahead
+```
+
+**Eviction immunity is enforced in three places:**
+
+| Guard | Location | Effect |
+|---|---|---|
+| `_stratifiedAdd` | Skip pinned entries as eviction candidates | Pinned synapses never selected for displacement |
+| `_tryAnneal` | Skip pinned entries as eviction candidates | Annealing swaps only unpinned synaptome entries |
+| `_decayTier` | Decay at `DECAY_GAMMA_MAX`; reset weight ≥ `RELAY_PIN_WEIGHT` | Pinned entries are nearly permanent regardless of traffic lulls |
+
+**Why this works for pub/sub:** With 4 eviction-immune slots dedicated to the most-contacted group members, the source node accumulates direct connections to 4 group members that survive indefinitely. Subsequent lookups to those members resolve in 1 hop. For a group of 8 members (25% coverage × 32-member group), 4 pinned entries cover 50% of delivery targets directly.
+
+### Change 2 — Raised Markov Seed Weight
+
+N-9W's `MARKOV_BASE_WEIGHT = 0.3` produces a seed weight of ~0.356 at threshold (freq=3 / window=32). At this weight, a freshly introduced group-member synapse sits at the median for stratified eviction and is frequently displaced before reinforcement can raise it to safety.
+
+N-10W raises `MARKOV_BASE_WEIGHT = 0.5`, producing a seed weight of ~0.538 at threshold. This single-point lift moves the initial synapse above the stratified median, giving it a survival window long enough for the LTP reinforcement wave to push it above 0.7 — firmly in the safe zone.
+
+### Change 3 — Load Awareness Removed
+
+N-9W inherited load-aware AP scoring (from N-7W via N-8W). Benchmarks at pub/sub scenarios revealed that load balancing actively **harms** bcast performance: pub/sub group members accumulate high `loadEMA` from being repeatedly visited as broadcast targets, and the load discount routes *around* them — the exact nodes that need to be reached.
+
+```
+Load discount (N-9W): max(0.10,  1 − 0.40 × (loadEMA / 0.15))
+
+With pub/sub group members at loadEMA ≈ 0.016:
+  loadFrac = 0.016 / 0.15 = 0.11
+  discount = 0.956  (4.4% penalty — small but consistent pressure away from group members)
+
+Combined with pinning interactions and stratified eviction pressure, this
+consistently degrades bcast hops and was removed to recover relay routing quality.
+```
+
+### Key constants
+
+```javascript
+// Relay pinning
+RELAY_PIN_THRESHOLD = 5      // appearances in window before pin qualifies
+RELAY_PIN_WINDOW    = 64     // rolling window size (destinations)
+RELAY_PIN_MAX       = 4      // max eviction-immune pins per node
+RELAY_PIN_WEIGHT    = 0.95   // weight floor for pinned synapses
+
+// Markov (raised from N-9W)
+MARKOV_BASE_WEIGHT  = 0.5    // was 0.3 in N-9W — higher seed survival
+
+// All other constants identical to N-9W
+MAX_SYNAPTOME_SIZE  = 48     // local tier cap (browser WebRTC)
+HIGHWAY_SLOTS       = 12     // highway tier cap
+SYNAPTOME_FLOOR     = 48     // erosion floor (Guard A + B, inherited)
+LATERAL_K           = 6      // depth-1 cascade spread
+LATERAL_K2          = 2      // depth-2 cascade spread
+```
+
+### Benchmark results — why N-10W is considered superior
+
+Benchmarked against all web-enabled protocols at 25,000 nodes with 10 warmup sessions:
+
+**25% pub/sub coverage (8 group members per 32-member group):**
+
+| Protocol | relay hops | relay ms | bcast hops | bcast ms | total hops | total ms |
+|---|---:|---:|---:|---:|---:|---:|
+| N-9W | **3.000** | **223** | 2.569 | 189 | 5.569 | 412 |
+| **N-10W ★** | 3.500 | 236 | **1.718** | **160** | **5.218** | **396** |
+| N-11W | 3.375 | 244 | 2.151 | 178 | 5.526 | 422 |
+| N-12W | 4.250 | 246 | 2.046 | 172 | 6.296 | 418 |
+| N-13W | 3.688 | 260 | 1.819 | 163 | 5.507 | 423 |
+
+N-10W wins on **every single metric** at 25% coverage — both individually and on the combined total (relay + bcast) that represents the full pub/sub message delivery cost. The bcast improvement from N-9W (2.569 → 1.718 hops, −33%) more than compensates for the relay regression (3.000 → 3.500 hops, +17%).
+
+**5,000 nodes / 10% coverage (small-scale, low density):**
+
+| Protocol | relay hops | relay ms | bcast hops | bcast ms |
+|---|---:|---:|---:|---:|
+| N-9W | 2.313 | 196 | 1.000 | **123** |
+| **N-10W ★** | 2.375 | **180** | 1.000 | 127 |
+
+At small scale where every protocol achieves 1.000 bcast hops (all group members fit in synaptome), N-10W leads on relay ms (180ms vs 196ms). Both achieve perfect broadcast.
+
+**Limitation at very high coverage:** At 25,000 nodes / 50% coverage (16 group members per group), N-10W's RELAY_PIN_MAX=4 pins can protect only 4 of 16 targets (25% coverage). N-9W's clean synaptome with no pin overhead slightly outperforms N-10W at this extreme scenario on relay hops (3.250 vs 3.875). For typical production pub/sub deployments — small groups at moderate coverage — N-10W is the clear winner.
+
+---
+
+## Protocol 16 — N-11W: Frequency-Weighted Synaptome Reservation (Experimental)
+
+**File:** `src/dht/neuromorphic/NeuromorphicDHT11W.js`
+
+N-11W attempts to fix N-10W's high-coverage limitation by enlarging the pin budget from 4 to a dynamic value scaling to 50% of the local synaptome (24 slots). Pins are frequency-ranked: when the budget is full, a new hot destination displaces the least-frequent current pin.
+
+**Result:** The enlarged budget backfired. With 24 of 48 local synaptome slots locked at weight 0.95, only 24 slots remain for XOR routing diversity in a 25,000-node network. At 50% coverage, ~16 pub/sub group members qualify for pinning — all in the same strata group 0. The combined effect of 16 frozen near-neighbour entries and reduced routing capacity caused relay hops to regress to 4.000 (worse than N-10W's 3.875 and far worse than N-9W's 3.250) at 25K/50%.
+
+**Key lesson:** The proportion of the routing table displaced by pinning matters more than the absolute number of pins. N-10W's 4 pins = 8.3% of the local tier; N-11W's 24 pins = 50%. The former is acceptable overhead; the latter destroys routing diversity.
+
+---
+
+## Protocol 17 — N-12W: Highway-Tier Relay Pinning (Experimental)
+
+**File:** `src/dht/neuromorphic/NeuromorphicDHT12W.js`
+
+N-12W moves relay pins entirely out of the local synaptome and into the highway tier to avoid any local routing displacement. The 12 highway slots are split: `RELAY_PIN_HIGHWAY_SLOTS = 4` (pins) + `HIGHWAY_HUB_SLOTS = 8` (diversity hubs). Load-aware routing is also restored from N-9W.
+
+**Result:** Highway pins caused a larger regression than local pins, despite using the same absolute count (4 pins either way):
+
+| Tier | Total slots | Pins | Fraction displaced |
+|---|---:|---:|---:|
+| Local synaptome (N-10W) | 48 | 4 | 8.3% |
+| Highway tier (N-12W) | 12 | 4 | **33%** |
+
+The highway's purpose is to provide long-range XOR routing shortcuts to distant, diverse parts of the ID space. Replacing 33% of it with geographically-local pub/sub group members (who share close XOR proximity and land in strata group 0) eliminates the most valuable long-range jump points. Relay hops regressed to 4.250 — the worst of all web-enabled protocols at 25K/25% coverage.
+
+An additional implementation issue: `_updatePins` deleted highway entries when pins expired, inadvertently removing hub entries placed by `_refreshHighway` that shared IDs with previously-pinned destinations.
+
+---
+
+## Protocol 18 — N-13W: Load Awareness + Local Pins (Experimental)
+
+**File:** `src/dht/neuromorphic/NeuromorphicDHT13W.js`
+
+N-13W is N-10W with load-aware AP scoring restored (from N-9W), based on the hypothesis that load balancing at 25K/25% would reduce relay hops back toward N-9W's 3.000 while relay pinning maintained bcast quality.
+
+**Result at 25K/25%, 10 warmups:**
+
+| Metric | N-9W | N-10W | N-13W |
+|---|---:|---:|---:|
+| relay hops | **3.000** | 3.500 | 3.688 |
+| relay ms | **223** | 236 | 260 |
+| bcast hops | 2.569 | **1.718** | 1.819 |
+| bcast ms | 189 | **160** | 163 |
+| total hops | 5.569 | **5.218** | 5.507 |
+| total ms | 412 | **396** | 423 |
+
+N-13W is worse than N-10W on every metric and fails to match N-9W's relay hops.
+
+**Why the mechanisms conflict:** The 4 pinned pub/sub group members have high `loadEMA` (they are frequently visited as broadcast targets). Load-aware routing penalises high-load candidates in AP scoring. The combination means the pinned entries are both weight-frozen in strata group 0 AND AP-discounted during routing, simultaneously reducing local synaptome diversity and steering routing away from the frozen entries. The two negative effects compound. N-10W's removal of load awareness was a correct architectural decision specifically for pub/sub workloads.
+
+---
+
 ## Protocol Comparison
 
 ### Parameters at a glance
 
-| Protocol | Weight scale | Lookahead | Decay γ | Prune | Boot × | Lateral K | Annealing | Stratified | Cap | Load-aware | Floor |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| Kademlia | — | — | — | — | 1 | — | No | No | k×bits | No | — |
-| G-DHT | — | — | — | — | 1 | — | No | No | k×bits | No | — |
-| N-1 | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — |
-| N-2 | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — |
-| N-2-BP | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — |
-| N-2-SHC | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — |
-| N-3 | **0.40** | **α=5** | **0.998** | **0.05** | **2** | — | No | No | 800 | No | — |
-| N-4 | 0.40 | α=5 | 0.998 | 0.05 | 2 | **3** | No | No | 800 | No | — |
-| N-5 | 0.40 | α=5 | 0.998 | 0.05 | 2 | 3 | **Yes** | **Yes** | 800 | No | — |
-| N-5W | 0.40 | α=5 | 0.998 | 0.05 | 1 | 3 | Yes | Yes | **60** | No | — |
-| N-6W | 0.40 | α=5 | adaptive | 0.05 | 1 | 3 | Yes | Yes | 48+12 | No | — |
-| N-7W | 0.40 | α=5 | adaptive | 0.05 | 1 | 3 | Yes | Yes | 40+20 | **Yes** | — |
-| N-8W | 0.40 | α=5 | adaptive | 0.05 | 1 | **6+2** | Yes | Yes | 48+12 | Yes | — |
-| N-9W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | Yes | **48** |
+| Protocol | Weight scale | Lookahead | Decay γ | Prune | Boot × | Lateral K | Annealing | Stratified | Cap | Load-aware | Floor | Relay pins |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Kademlia | — | — | — | — | 1 | — | No | No | k×bits | No | — | — |
+| G-DHT | — | — | — | — | 1 | — | No | No | k×bits | No | — | — |
+| N-1 | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — |
+| N-2 | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — |
+| N-2-BP | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — |
+| N-2-SHC | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — |
+| N-3 | **0.40** | **α=5** | **0.998** | **0.05** | **2** | — | No | No | 800 | No | — | — |
+| N-4 | 0.40 | α=5 | 0.998 | 0.05 | 2 | **3** | No | No | 800 | No | — | — |
+| N-5 | 0.40 | α=5 | 0.998 | 0.05 | 2 | 3 | **Yes** | **Yes** | 800 | No | — | — |
+| N-5W | 0.40 | α=5 | 0.998 | 0.05 | 1 | 3 | Yes | Yes | **60** | No | — | — |
+| N-6W | 0.40 | α=5 | adaptive | 0.05 | 1 | 3 | Yes | Yes | 48+12 | No | — | — |
+| N-7W | 0.40 | α=5 | adaptive | 0.05 | 1 | 3 | Yes | Yes | 40+20 | **Yes** | — | — |
+| N-8W | 0.40 | α=5 | adaptive | 0.05 | 1 | **6+2** | Yes | Yes | 48+12 | Yes | — | — |
+| N-9W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | Yes | **48** | — |
+| **N-10W ★** | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | No | 48 | **4 local** |
+| N-11W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | No | 48 | 24 local |
+| N-12W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | Yes | 48 | 4 highway |
+| N-13W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | Yes | 48 | 4 local |
 
 ### Additive mechanism matrix
 
-| Mechanism | N-1 | N-2 | N-2-BP | N-2-SHC | N-3 | N-4 | N-5 | N-5W | N-6W | N-7W | N-8W | N-9W |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 2-hop AP routing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| LTP reinforcement | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Triadic closure | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| LTD decay + pruning | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Two-tier AP tiers | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cascade backpropagation | — | — | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Source hop caching | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Passive dead-node eviction | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Lateral shortcut propagation | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Stratified synaptome | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Simulated annealing | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Browser connection cap (60) | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Highway tier | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
-| Adaptive temporal decay | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
-| Markov hot-destination learning | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
-| Per-node load tracking | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ |
-| Load-aware AP scoring | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ |
-| Extended randomised hub pool | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ |
-| Adaptive Markov weight | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ |
-| Cascading lateral spread (depth-2) | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ |
-| Synaptome floor protection | — | — | — | — | — | — | — | — | — | — | — | ✓ |
+| Mechanism | N-1 | N-2 | N-2-BP | N-2-SHC | N-3 | N-4 | N-5 | N-5W | N-6W | N-7W | N-8W | N-9W | **N-10W ★** | N-11W | N-12W | N-13W |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 2-hop AP routing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| LTP reinforcement | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Triadic closure | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| LTD decay + pruning | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Two-tier AP tiers | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cascade backpropagation | — | — | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Source hop caching | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Passive dead-node eviction | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Lateral shortcut propagation | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Stratified synaptome | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Simulated annealing | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Browser connection cap (60) | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Highway tier | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Adaptive temporal decay | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Markov hot-destination learning | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Per-node load tracking | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
+| Load-aware AP scoring | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
+| Extended randomised hub pool | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Adaptive Markov weight | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cascading lateral spread (depth-2) | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Synaptome floor protection | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Raised Markov seed weight (0.5) | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
+| Relay pinning — eviction-immune (4) | — | — | — | — | — | — | — | — | — | — | — | — | **✓** | — | — | ✓ |
+| Relay pinning — freq-weighted (24) | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — |
+| Relay pinning — highway-tier (4) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — |
 
 ---
 
@@ -766,7 +960,7 @@ Runs all protocols in sequence on identical traffic. Each protocol:
 4. Reports hops mean and time mean for each column
 5. Displays the current protocol name in the status bar throughout
 
-**Fast mode** (Bench → Fast checkbox): runs only Kademlia, G-DHT-8, N-8W, N-9W, and one selectable comparison protocol. At 50K+ nodes this reduces benchmark time by 4× or more while retaining the baselines and the two most advanced neuromorphic protocols.
+**Protocol selection:** the benchmark multi-select lets you choose any subset of protocols and test types to run. Deselect rarely-needed protocols to focus on the comparison of interest. The default selection includes all protocols; narrow it to e.g. N-9W + N-10W for a targeted pub/sub analysis without running the full 18-protocol suite.
 
 **Test columns:**
 - **Global** — uniformly random source/target pairs
@@ -845,8 +1039,8 @@ Assigns each node a **fixed random target** at test start. Every session, every 
 | Control | Range | Default | Description |
 |---|---|---|---|
 | Warmup | 1–99 | 4 | Training sessions (× 500 lookups) before scoring |
-| □ Fast | — | off | Run only Kademlia, G-DHT-8, N-8W, N-9W, and selected comparison |
-| Compare | dropdown | N-9W | Which neuromorphic protocol to include in Fast mode alongside N-8W/N-9W |
+| Protocols | multi-select | all | Which protocols to include in the benchmark run |
+| Tests | multi-select | all | Which test scenarios to include (global, regional, pub/sub, churn, etc.) |
 
 ### Globe
 

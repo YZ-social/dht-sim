@@ -653,9 +653,10 @@ export class Results {
     this._setText('psMessages', `${s.tick}`);
     this._setText('psGroups',   `${numGroups}`);
     this._setText('psCoverage', `${coverage}%`);
-    this._setText('psMsgHops',  s.msgHops != null ? `${s.msgHops}` : '—');
-    this._setText('psBcastHops', s.bcastAvg != null ? s.bcastAvg.toFixed(2) : '—');
-    this._setText('psSimMs',    s.simMs != null ? `${s.simMs}` : '—');
+    this._setText('psMsgHops',   s.msgHops  != null ? `${s.msgHops}`              : '—');
+    this._setText('psRelayMs',   s.relayMs  != null ? `${s.relayMs} ms`           : '—');
+    this._setText('psBcastHops', s.bcastAvg != null ? s.bcastAvg.toFixed(2)       : '—');
+    this._setText('psBcastMs',   s.bcastMs  != null ? `${s.bcastMs} ms`           : '—');
 
     // Rolling log
     const log = this._el('pubsubLog');
@@ -664,9 +665,8 @@ export class Results {
       row.className = 'concordance-log-row';
       row.innerHTML =
         `<span class="cl-session">#${s.tick}</span>` +
-        `<span class="cl-to">msg ${s.msgHops ?? '—'} hops</span>` +
-        `<span class="cl-from">bcast ${s.bcastAvg != null ? s.bcastAvg.toFixed(1) : '—'}</span>` +
-        `<span class="cl-ms">${s.simMs ?? '—'} ms</span>`;
+        `<span class="cl-to">relay ${s.msgHops ?? '—'} hops · ${s.relayMs ?? '—'} ms</span>` +
+        `<span class="cl-from">bcast ${s.bcastAvg != null ? s.bcastAvg.toFixed(1) : '—'} hops · ${s.bcastMs ?? '—'} ms</span>`;
       log.appendChild(row);
       log.scrollTop = log.scrollHeight;
     }
@@ -681,16 +681,17 @@ export class Results {
     const WIN  = 100;
     const view = history.length > WIN ? history.slice(-WIN) : history;
 
-    const labels    = view.map(s => `#${s.tick}`);
-    const msgData   = view.map(s => s.msgHops   ?? null);
-    const bcastData = view.map(s => s.bcastAvg  != null ? +s.bcastAvg.toFixed(2) : null);
-    const msData    = view.map(s => s.simMs      ?? null);
+    const labels      = view.map(s => `#${s.tick}`);
+    const msgData     = view.map(s => s.msgHops   ?? null);
+    const bcastData   = view.map(s => s.bcastAvg  != null ? +s.bcastAvg.toFixed(2) : null);
+    const relayMsData = view.map(s => s.relayMs   ?? null);
+    const bcastMsData = view.map(s => s.bcastMs   ?? null);
 
     const allHops = [...msgData, ...bcastData].filter(v => v != null);
     const yHopMin = 1;
     const yHopMax = allHops.length ? Math.ceil(Math.max(...allHops) + 0.5) : 6;
-    const allMs   = msData.filter(v => v != null);
-    const yMsMax  = allMs.length ? Math.ceil(Math.max(...allMs) / 50) * 50 + 50 : 500;
+    const allMs   = [...relayMsData, ...bcastMsData].filter(v => v != null);
+    const yMsMax  = allMs.length ? Math.ceil(Math.max(...allMs) / 50) * 50 + 50 : 1000;
 
     const small = { size: 10, family: "'JetBrains Mono','Fira Mono','Consolas',monospace" };
 
@@ -699,7 +700,8 @@ export class Results {
       chart.data.labels            = labels;
       chart.data.datasets[0].data  = msgData;
       chart.data.datasets[1].data  = bcastData;
-      chart.data.datasets[2].data  = msData;
+      chart.data.datasets[2].data  = relayMsData;
+      chart.data.datasets[3].data  = bcastMsData;
       chart.options.scales.yHops.min = yHopMin;
       chart.options.scales.yHops.max = yHopMax;
       chart.options.scales.yMs.max   = yMsMax;
@@ -733,10 +735,21 @@ export class Results {
             borderWidth: 2,
           },
           {
-            label: 'Sim latency (ms)',
-            data: msData,
-            borderColor: '#ffcc44',
-            backgroundColor: '#ffcc4418',
+            label: 'Relay ms',
+            data: relayMsData,
+            borderColor: '#44ddff99',
+            backgroundColor: '#44ddff0a',
+            yAxisID: 'yMs',
+            tension: 0.3,
+            pointRadius: 2,
+            borderWidth: 1.5,
+            borderDash: [3, 3],
+          },
+          {
+            label: 'Bcast ms',
+            data: bcastMsData,
+            borderColor: '#aa66ff99',
+            backgroundColor: '#aa66ff0a',
             yAxisID: 'yMs',
             tension: 0.3,
             pointRadius: 2,
@@ -790,7 +803,7 @@ export class Results {
   _pubsubCSV() {
     if (!this._pubsubHistory?.length) return '';
     const rows = [
-      ['Tick', 'Groups', 'Coverage%', 'Msg Hops', 'Bcast Avg Hops', 'Total Hops', 'Sim ms'].join(','),
+      ['Tick', 'Groups', 'Coverage%', 'Relay Hops', 'Relay ms', 'Bcast Avg Hops', 'Bcast ms', 'Total Hops'].join(','),
     ];
     for (const s of this._pubsubHistory) {
       rows.push([
@@ -798,9 +811,10 @@ export class Results {
         s.groups    ?? '',
         s.coverage  ?? '',
         s.msgHops   ?? '',
+        s.relayMs   ?? '',
         s.bcastAvg  != null ? s.bcastAvg.toFixed(3) : '',
+        s.bcastMs   ?? '',
         s.totalHops ?? '',
-        s.simMs     ?? '',
       ].join(','));
     }
     return rows.join('\r\n');
@@ -1038,7 +1052,7 @@ export class Results {
    * @param {object} benchResult  Return value from Engine.runBenchmark().
    * @param {number} nodeCount    Node count for the header.
    */
-  showBenchmarkResults(benchResult, nodeCount) {
+  showBenchmarkResults(benchResult, nodeCount, params) {
     const { protocolDefs, testSpecs, data } = benchResult;
 
     const container = this._el('benchmarkResults');
@@ -1095,6 +1109,11 @@ export class Results {
       ngdht6w:   'Neuromorphic-6W (N-6W): Browser-realistic next-generation protocol with four mechanisms beyond N-5W. (1) Two-tier synaptome: 48 local (stratified/annealing) + 12 highway slots = 60 total WebRTC connections. Highway reserved for globally well-connected hub nodes, collapsing inter-continental routes to 1–2 hops. (2) Hub discovery: every 300 lookup participations, scan the 2-hop neighbourhood and fill highway with the nodes covering the most distinct stratum groups — simulates the gossip protocol a real deployment would use. (3) Adaptive temporal decay: each synapse tracks a use-count; frequently reinforced synapses decay near-zero (gamma≈0.9998) while unused bootstrap entries die quickly (gamma≈0.990), self-pruning the synaptome toward actually useful routes. (4) Markov hot-destination learning: source tracks its last 32 destinations; after a target appears 3 times, a direct synapse is eagerly pre-built before routing begins — fires even on failed lookups where hop-caching would never trigger.',
       ngdht7w:   'Neuromorphic-7W (N-7W): N-6W + load-balancing mechanisms targeting highway hotspot concentration (Gini 0.85 vs Kademlia\'s 0.84). (5) Per-node load EMA: each node tracks relay traffic via a lazy exponential moving average (LOAD_DECAY=0.995), updated only when visited. (6) Load-aware AP scoring: both 1-hop and 2-hop AP scores are discounted by a load penalty (up to 40% reduction at saturation), naturally steering lookups away from overloaded hubs. (7) Extended hub pool: highway widened to 20 slots, scan cap raised to 120 candidates, random noise (HUB_NOISE=1.0) added to diversity scores to prevent deterministic re-selection of the same hubs. (8) Adaptive Markov weight: Markov-triggered shortcuts get an initial weight proportional to destination frequency (0.3–0.9) rather than a fixed value.',
       ngdht8w:   'Neuromorphic-8W (N-8W): N-7W + cascading lateral spread (Mechanism 9). Tier split restored to N-6W values (48 local + 12 highway). Lateral spread deepened to depth 2: when node A learns a shortcut to target C, it tells its top-6 regional neighbours (depth-1); each of those tells their own top-2 regional neighbours (depth-2). Coverage per discovery: 1 + 6 + 12 = 19 nodes in the geographic cluster, vs 4 in N-7W. Addresses the scaling degradation seen at 50K nodes where synaptome-based annealing covers only 0.12% of the network; cascade spread propagates shortcuts through graph topology rather than random sampling, maintaining sub-logarithmic scaling.',
+      ngdht9w:   'Neuromorphic-9W (N-9W): N-8W + synaptome floor protection (Mechanism 10). Two guards prevent the local routing table from eroding below its 48-slot design capacity under random global traffic. Guard A suspends annealing when the local tier is at or below the floor — annealed-in synapses start cold and decay quickly, so halting them stops the bleed. Guard B resets below-threshold weights to PRUNE_THRESHOLD rather than deleting them when the tier is at floor level, keeping the routing table intact regardless of traffic pattern.',
+      ngdht10w:  'Neuromorphic-10W (N-10W): N-9W + relay pinning (Mechanism 11) for optimised pub/sub performance. Three changes derived from systematic pub/sub benchmark analysis: (1) Load-aware AP scoring removed — load balancing raised per-hop relay latency from 72.7ms/hop (N-6W) to 84.8ms/hop (N-9W) by routing around pub/sub relay nodes, adding gratuitous latency. (2) MARKOV_BASE_WEIGHT raised 0.3→0.5 — restores N-6W\'s fast participant-entry stabilisation (bcast ms 123ms vs 141ms in N-9W). (3) Relay pinning: a separate 64-entry rolling window tracks destination frequency; destinations appearing ≥5 times enter a protected set (≤4 per node) that is immune to stratified eviction and adaptive decay, and is routed to with priority at the source node — achieving near-N-1 relay hops while preserving N-9W\'s global routing quality.',
+      ngdht13w:  'Neuromorphic-13W (N-13W): N-10W + load-aware AP scoring restored from N-9W. N-12W demonstrated that highway-tier relay pinning is counterproductive: displacing 4 of 12 highway slots (33%) with geographically clustered pub/sub group members removes long-range XOR shortcuts that are critical for relay routing, raising relay hops from 3.500 (N-10W) to 4.250 (N-12W). N-13W keeps N-10W\'s correct local-tier relay pinning (4 eviction-immune pins in the 48-slot synaptome = 8.3% displacement) and simply adds back the load-aware scoring that N-10W dropped. The load penalty (LOAD_PENALTY=0.40) steers routing away from saturated relay nodes without excluding them, recovering N-9W\'s 3.000-hop relay performance at large scale while retaining N-10W\'s 1.718 bcast hops from eviction-immune relay pins.',
+      ngdht12w:  'Neuromorphic-12W (N-12W): Based on N-9W with two targeted fixes derived from N-10W/N-11W regression analysis. (1) Load-aware AP scoring restored — removing it in N-10W caused relay hop count to rise from 3.250 (N-9W) to 3.875 (N-10W) at 25K nodes / 50% pub/sub coverage; the load discount steers traffic away from saturated relay nodes, maintaining sub-4-hop routing at scale. (2) Highway-tier relay pinning — relay pins are moved from the local 48-slot synaptome into the 12-slot highway tier (4 dedicated pin slots + 8 hub slots). The local synaptome is fully freed for XOR routing diversity, eliminating the crowding that caused N-10W and N-11W to regress at high coverage and large scale. The priority source shortcut and frequency-ranked replacement from N-10W are both retained.',
+      ngdht11w:  'Neuromorphic-11W (N-11W): N-10W + frequency-weighted synaptome reservation (Mechanism 12). N-10W\'s hard RELAY_PIN_MAX=4 cap fails at high pub/sub coverage and large scale — at 50% coverage with a 32-member group, only 4 of ~16 active group-member synapses were protected from eviction. N-11W replaces the fixed cap with a dynamic budget of up to 50% of the local synaptome (24 slots out of 48). Within that budget, pins are frequency-ranked: when the budget is full, a new hot destination (freq ≥ 5 in the 64-entry window) displaces the currently pinned entry with the lowest frequency. Additionally, any synapse whose rolling-window frequency meets the threshold is treated as eviction-immune even before it is formally registered as a pin, closing the gap between first qualification and first registration.',
     };
 
     // Header row
@@ -1196,16 +1215,18 @@ export class Results {
           const msgMs   = cell.msgMs?.mean   != null ? Math.round(cell.msgMs.mean)   : '—';
           const bcastH  = cell.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(2) : '—';
           const bcastMs = cell.bcastMs?.mean   != null ? Math.round(cell.bcastMs.mean)  : '—';
-          const p95msg   = cell.msgHops.p95    != null ? cell.msgHops.p95.toFixed(1)    : null;
-          const p95bcast = cell.bcastHops?.p95 != null ? cell.bcastHops.p95.toFixed(1)  : null;
+          const p95msg    = cell.msgHops.p95    != null ? cell.msgHops.p95.toFixed(1)    : null;
+          const p95bcast  = cell.bcastHops?.p95 != null ? cell.bcastHops.p95.toFixed(1)  : null;
+          const p95msgMs  = cell.msgMs?.p95     != null ? Math.round(cell.msgMs.p95)      : null;
+          const p95bcastMs= cell.bcastMs?.p95   != null ? Math.round(cell.bcastMs.p95)    : null;
           const msgHWin   = cell.msgHops.mean  <= minPS.msgH  + 0.005;
           const msgMsWin  = cell.msgMs?.mean   != null && cell.msgMs.mean   <= minPS.msgMs  + 1;
           const bcastHWin = cell.bcastHops?.mean != null && cell.bcastHops.mean <= minPS.bcastH  + 0.005;
           const bcastMsWin= cell.bcastMs?.mean   != null && cell.bcastMs.mean   <= minPS.bcastMs + 1;
           html += `<td class="hops-cell${msgHWin  ? ' win' : ''} pubsub-cell">${msgH}${p95msg ? `<span class="p95">${p95msg}</span>` : ''}</td>`;
-          html += `<td class="time-cell${msgMsWin ? ' win' : ''} pubsub-cell">${msgMs}</td>`;
+          html += `<td class="time-cell${msgMsWin ? ' win' : ''} pubsub-cell">${msgMs}${p95msgMs ? `<span class="p95">${p95msgMs}</span>` : ''}</td>`;
           html += `<td class="hops-cell${bcastHWin  ? ' win' : ''} pubsub-bcell">${bcastH}${p95bcast ? `<span class="p95">${p95bcast}</span>` : ''}</td>`;
-          html += `<td class="time-cell${bcastMsWin ? ' win' : ''} pubsub-bcell">${bcastMs}</td>`;
+          html += `<td class="time-cell${bcastMsWin ? ' win' : ''} pubsub-bcell">${bcastMs}${p95bcastMs ? `<span class="p95">${p95bcastMs}</span>` : ''}</td>`;
           continue;
         }
 
@@ -1240,7 +1261,7 @@ export class Results {
     if (benchCsvBtn) {
       benchCsvBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        const csv = this._benchmarkCSV(benchResult, nodeCount);
+        const csv = this._benchmarkCSV(benchResult, nodeCount, params);
         if (csv) this._downloadCSV(csv, `dht-benchmark-${Date.now()}.csv`);
       });
     }
@@ -1256,7 +1277,7 @@ export class Results {
     this.panel?.classList.add('bench-wide');
   }
 
-  _benchmarkCSV(benchResult, nodeCount) {
+  _benchmarkCSV(benchResult, nodeCount, params) {
     if (!benchResult) return '';
     const { protocolDefs, testSpecs, data } = benchResult;
     const csvSpecLabel = s => s.type === 'regional'  ? `${s.radius}km`
@@ -1275,8 +1296,9 @@ export class Results {
                             : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
                             : s.type === 'pubsub'     ? 'pubsub'
                             : 'global';
+
     // Build header: Protocol, then two columns per spec
-    // (pub/sub uses →relay hops + bcast hops; all others use hops + ms)
+    // (pub/sub expands to four columns; all others use hops + ms)
     const headerCols = ['Protocol'];
     for (const s of testSpecs) {
       const lbl = csvSpecLabel(s);
@@ -1286,6 +1308,8 @@ export class Results {
         headerCols.push(`${lbl} hops`, `${lbl} ms`);
       }
     }
+
+    // Data rows — one per protocol
     const rows = [headerCols.join(',')];
     for (const proto of protocolDefs) {
       const cols = [proto.label ?? proto.key];
@@ -1308,6 +1332,32 @@ export class Results {
       }
       rows.push(cols.join(','));
     }
+
+    // ── Parameter section at the bottom ────────────────────────────────────
+    const hasType = t => testSpecs.some(s => s.type === t);
+    rows.push('');
+    rows.push('# Run Parameters');
+    rows.push('Parameter,Value');
+    rows.push(`Nodes,${nodeCount ?? ''}`);
+    if (params) {
+      rows.push(`K (bucket size),${params.k}`);
+      rows.push(`Alpha (parallel queries),${params.alpha}`);
+      rows.push(`ID bits,${params.bits}`);
+      rows.push(`Node delay (ms),${params.nodeDelay}`);
+      rows.push(`Lookups per cell,${params.msgCount}`);
+      rows.push(`Warmup sessions (neuromorphic),${params.benchWarmupSessions}`);
+      if (hasType('source') || hasType('srcdest'))
+        rows.push(`Source pool %,${params.sourcePct}`);
+      if (hasType('dest') || hasType('srcdest'))
+        rows.push(`Dest pool %,${params.destPct}`);
+      if (hasType('pubsub')) {
+        rows.push(`Pub/Sub group size,${params.pubsubGroupSize}`);
+        rows.push(`Pub/Sub coverage %,${params.pubsubCoverage}`);
+      }
+      if (hasType('churn'))
+        rows.push(`Churn rate %,${params.benchChurnPct}`);
+    }
+
     rows.unshift(`# DHT Benchmark — ${nodeCount?.toLocaleString()} nodes · 500 lookups/cell`);
     return rows.join('\r\n');
   }

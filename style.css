@@ -623,9 +623,20 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
   position: relative; height: 160px; margin: 4px 8px 0;
 }
 
-/* ── Globe rotate control (top-right of globe panel) ────────────────────── */
-#globeRotateCtrl {
+/* ── Globe fullscreen button (top-right of globe panel) ─────────────────── */
+#globeFullscreenBtn {
   position: absolute; top: 8px; right: 14px;
+  background: rgba(8, 18, 36, 0.75);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 15px; line-height: 1; color: var(--dim);
+  cursor: pointer; pointer-events: auto; z-index: 10;
+}
+#globeFullscreenBtn:hover { color: var(--fg); border-color: var(--accent); }
+
+/* ── Globe rotate control (top-left of globe panel) ─────────────────────── */
+#globeRotateCtrl {
+  position: absolute; top: 8px; left: 14px;
   background: rgba(8, 18, 36, 0.75);
   border: 1px solid var(--border); border-radius: 4px;
   padding: 3px 8px;

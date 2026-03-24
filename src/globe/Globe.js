@@ -26,8 +26,8 @@ const C = {
   connLine:        0xff8800,   // orange connection lines
   connNodeHighlight: 0xffaa44, // tinted orange for connected nodes
   // Pub/Sub group highlights
-  pubsubRelay:       0xffcc00, // gold  — relay node
-  pubsubParticipant: 0x00ccff, // cyan  — subscriber nodes
+  pubsubRelay:       0xffcc00, // gold   — relay node
+  pubsubParticipant: 0xff44cc, // hot pink — subscriber nodes
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -742,7 +742,7 @@ export class Globe {
       this._pubsubHighlighted.add(id);
     };
 
-    setHighlight(relayId, C.pubsubRelay, 2.5, 2.8);
+    setHighlight(relayId, C.pubsubRelay, 2.5, 2.0);
     for (const id of participantIds) {
       setHighlight(id, C.pubsubParticipant, 1.8, 2.0);
     }

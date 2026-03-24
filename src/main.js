@@ -91,6 +91,19 @@ async function init() {
     globe?.setAutoRotate(e.target.checked);
   });
 
+  // Fullscreen button — fullscreens the whole page so the sidebar stays visible
+  const fsBtn = document.getElementById('globeFullscreenBtn');
+  fsBtn?.addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  });
+  document.addEventListener('fullscreenchange', () => {
+    if (fsBtn) fsBtn.textContent = document.fullscreenElement ? '✕' : '⛶';
+  });
+
   // Node click → show routing table connections
   canvas.addEventListener('nodeclicked', (e) => {
     const { nodeId } = e.detail;

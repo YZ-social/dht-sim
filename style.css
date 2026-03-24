@@ -43,7 +43,27 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
   padding: 7px 10px 6px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
+
+/* Notification bell button */
+.btn-notify {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: #666;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  line-height: 1;
+  transition: color 0.2s, border-color 0.2s;
+}
+.btn-notify:hover         { color: #aaa; border-color: #aaa; }
+.btn-notify.notify-on     { color: #ffcc44; border-color: #ffcc44; }
+.btn-notify.notify-off    { color: #555;    border-color: #555; }
+.btn-notify.notify-denied { color: #884444; border-color: #884444; }
 
 /* Each section: one test type + its params + its button(s) */
 .sb-sec {

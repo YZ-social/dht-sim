@@ -33,6 +33,25 @@ import { Results }            from './ui/Results.js';
 import { setLatencyParams,
          getLatencyParams,
          haversine }          from './utils/geo.js';
+import { requestNotifyPermission,
+         notifyEnabled,
+         notify }             from './utils/notify.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Result push — POST CSV + metadata to server so Claude can read it
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function pushResult(type, csv, meta = {}) {
+  try {
+    await fetch('/complete', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ type, csv, meta }),
+    });
+  } catch (e) {
+    console.warn('pushResult: server not reachable', e);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Module-level state
@@ -85,6 +104,34 @@ async function init() {
   document.getElementById('btnPairLearning')?.addEventListener('click', onPairLearning);
   document.getElementById('btnHotspotTest')?.addEventListener('click', onHotspotTest);
   document.getElementById('btnBenchmark')?.addEventListener('click', onBenchmark);
+
+  // Notification bell button
+  const btnNotify = document.getElementById('btnNotify');
+  function _refreshNotifyBtn() {
+    if (!btnNotify) return;
+    const perm = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
+    btnNotify.classList.remove('notify-on', 'notify-off', 'notify-denied');
+    if (perm === 'denied') {
+      btnNotify.classList.add('notify-denied');
+      btnNotify.setAttribute('data-tip', 'Notifications blocked — change in browser settings');
+    } else if (perm !== 'granted') {
+      btnNotify.classList.add('notify-off');
+      btnNotify.setAttribute('data-tip', 'Click to enable desktop notifications when tests complete');
+    } else {
+      btnNotify.classList.add('notify-on');
+      btnNotify.setAttribute('data-tip', 'Notifications enabled — click to send a test notification');
+    }
+  }
+  btnNotify?.addEventListener('click', async () => {
+    if (notifyEnabled()) {
+      notify('DHT Globe', 'Notifications are working ✓');
+    } else {
+      const granted = await requestNotifyPermission();
+      if (granted) notify('DHT Globe', 'Notifications enabled — you will be alerted when tests complete ✓');
+    }
+    _refreshNotifyBtn();
+  });
+  _refreshNotifyBtn();
 
   // Auto-rotate toggle
   document.getElementById('autoRotate')?.addEventListener('change', e => {
@@ -247,12 +294,12 @@ async function onLookupTest() {
   });
 
   results.showLookupResults(result);
-  controls.setStatus(
-    `Done. Avg hops: ${result.hops?.mean.toFixed(2)}, ` +
+  const _ltStatus = `Done. Avg hops: ${result.hops?.mean.toFixed(2)}, ` +
     `avg time: ${result.time?.mean.toFixed(1)} ms, ` +
-    `success: ${(result.successRate * 100).toFixed(1)}%`,
-    'success'
-  );
+    `success: ${(result.successRate * 100).toFixed(1)}%`;
+  controls.setStatus(_ltStatus, 'success');
+  notify('Lookup Test complete', _ltStatus);
+  await pushResult('lookup', results.getLookupCSV(), { avgHops: result.hops?.mean, avgMs: result.time?.mean, successRate: result.successRate });
   controls.setRunning(false);
   controls.setProgress(0);
 }
@@ -426,6 +473,8 @@ async function onChurnTest() {
   results.showChurnResults(result);
   globe.setNodes(dht.getNodes());
   controls.setStatus('Churn test complete.', 'success');
+  notify('Churn Test complete', `${params.churnIntervals} intervals · ${(params.churnRate * 100).toFixed(0)}% churn/interval`);
+  await pushResult('churn', results.getChurnCSV(), { intervals: params.churnIntervals, churnRate: params.churnRate });
   controls.setRunning(false);
   controls.setProgress(0);
 }
@@ -555,10 +604,10 @@ async function onTrainNetwork() {
   trainingActive = false;
   controls.setTraining(false);
   const trainedSessions = trainingHistory.filter(s => !s.isBaseline).length;
-  controls.setStatus(
-    `Training stopped after ${trainedSessions} session(s).`,
-    'success'
-  );
+  const _trainMsg = `Training stopped after ${trainedSessions} session(s).`;
+  controls.setStatus(_trainMsg, 'success');
+  notify('Train Network complete', _trainMsg);
+  await pushResult('training', results.getTrainingCSV(), { sessions: trainedSessions });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -720,7 +769,10 @@ async function onPubSub() {
   pubsubActive = false;
   controls.setPubSub(false);
   globe.clearPubSubHighlights();
-  controls.setStatus(`Pub/Sub stopped after ${tick} session(s).`, 'success');
+  const _psMsg = `Pub/Sub stopped after ${tick} session(s).`;
+  controls.setStatus(_psMsg, 'success');
+  notify('Pub/Sub Test stopped', _psMsg);
+  await pushResult('pubsub', results.getPubSubCSV(), { sessions: tick, groups: numGroups, coverage: actualCoverage });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -803,10 +855,10 @@ async function onPairLearning() {
   pairActive = false;
   controls.setPairLearning(false);
   controls.setProgress(0);
-  controls.setStatus(
-    `Pair Learning stopped after ${session} session(s) · ${pairs.length.toLocaleString()} pairs.`,
-    'success'
-  );
+  const _plMsg = `Pair Learning stopped after ${session} session(s) · ${pairs.length.toLocaleString()} pairs.`;
+  controls.setStatus(_plMsg, 'success');
+  notify('Pair Learning stopped', _plMsg);
+  await pushResult('pair-learning', results.getPairCSV(), { sessions: session, pairs: pairs.length });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -850,18 +902,18 @@ async function onHotspotTest() {
     }
   };
 
-  engine.onComplete = (result) => {
+  engine.onComplete = async (result) => {
     if (result?.type === 'hotspot') {
       results.showHotspotResults(result);
       const hw = result.highway;
       const st = result.storage;
-      controls.setStatus(
-        `Hotspot done — Highway Gini: ${hw.gini.toFixed(3)} ` +
+      const _hsMsg = `Hotspot done — Highway Gini: ${hw.gini.toFixed(3)} ` +
         `(top 1% = ${(hw.top1pctLoad*100).toFixed(1)}%),  ` +
         `Storage Gini: ${st.gini.toFixed(3)} ` +
-        `(top 10% items = ${(st.top10pctItemLoad*100).toFixed(1)}%)`,
-        'success'
-      );
+        `(top 10% items = ${(st.top10pctItemLoad*100).toFixed(1)}%)`;
+      controls.setStatus(_hsMsg, 'success');
+      notify('Hotspot Test complete', `Highway Gini: ${hw.gini.toFixed(3)} · Storage Gini: ${st.gini.toFixed(3)}`);
+      await pushResult('hotspot', results.getHotspotCSV(), { hwGini: hw.gini, stGini: st.gini });
     }
     hotspotActive = false;
     controls.setHotspotTesting(false);
@@ -1030,9 +1082,12 @@ async function onBenchmark() {
 
   if (stopped) {
     controls.setStatus('Benchmark stopped.', 'warn');
+    notify('Benchmark stopped', `Interrupted after partial run · ${N.toLocaleString()} nodes`);
   } else {
     results.showBenchmarkResults(benchResult, N, params);
     controls.setStatus('Benchmark complete.', 'success');
+    notify('Benchmark complete ✓', `${params.benchProtocols?.length ?? '?'} protocols · ${N.toLocaleString()} nodes`);
+    await pushResult('benchmark', results.getBenchmarkCSV(benchResult, N, params), { protocols: params.benchProtocols ?? [], nodeCount: N, warmupSessions: params.benchWarmupSessions, testSpecs: params.benchTests ?? [] });
   }
 }
 

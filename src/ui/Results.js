@@ -1546,4 +1546,13 @@ export class Results {
     ];
     return lines.join('\n');
   }
+
+  // ── Public CSV accessors for server push ─────────────────────────────────
+  getBenchmarkCSV(benchResult, nodeCount, params) { return this._benchmarkCSV(benchResult, nodeCount, params) ?? ''; }
+  getPubSubCSV()   { return this._pubsubCSV()    ?? ''; }
+  getLookupCSV()   { return this._lookupHopsCSV() ?? ''; }
+  getChurnCSV()    { return this._churnCSV()      ?? ''; }
+  getHotspotCSV()  { return this._hotspotCSV()    ?? ''; }
+  getPairCSV()     { return this._pairCSV()       ?? ''; }
+  getTrainingCSV() { return this._trainingCSV()   ?? ''; }
 }

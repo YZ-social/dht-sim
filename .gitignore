@@ -22,3 +22,7 @@ npm-debug.log*
 # Build output (none currently, but reserve)
 dist/
 build/
+
+# Generated test results (written by server at runtime)
+results/*.csv
+results/.ready

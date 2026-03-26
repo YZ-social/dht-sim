@@ -30,6 +30,7 @@ import { NeuromorphicDHT13W }  from './dht/neuromorphic/NeuromorphicDHT13W.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
+import { BenchmarkSweep }    from './ui/BenchmarkSweep.js';
 import { setLatencyParams,
          getLatencyParams,
          haversine }          from './utils/geo.js';
@@ -60,9 +61,14 @@ async function pushResult(type, csv, meta = {}) {
 let globe    = null;
 let dht      = null;
 let engine   = null;
+const sweep  = new BenchmarkSweep();
 
-// Expose for browser console debugging
-window.__sim = { get globe() { return globe; }, get dht() { return dht; } };
+// Expose for browser console / Claude debugging
+window.__sim = {
+  get globe()  { return globe;  },
+  get dht()    { return dht;    },
+  get sweep()  { return sweep;  },
+};
 const controls = new Controls();
 const results  = new Results('resultsOverlay');
 
@@ -104,6 +110,7 @@ async function init() {
   document.getElementById('btnPairLearning')?.addEventListener('click', onPairLearning);
   document.getElementById('btnHotspotTest')?.addEventListener('click', onHotspotTest);
   document.getElementById('btnBenchmark')?.addEventListener('click', onBenchmark);
+  document.getElementById('btnSweepStop')?.addEventListener('click', () => sweep.stop());
 
   // Notification bell button
   const btnNotify = document.getElementById('btnNotify');
@@ -237,6 +244,7 @@ async function onInit() {
   );
   controls.setRunning(false);
   controls.setProgress(0);
+  sweep.notifyInitComplete();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -967,22 +975,22 @@ async function onBenchmark() {
     { key: 'geo8',     label: 'G-DHT-8'  },
     // Neuromorphic protocols need a warmup burst so synaptic shortcuts form
     // before measurement.  Without warmup their weights are identical to G-DHT-8.
-    { key: 'ngdht',     label: 'N-1',     warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht2',    label: 'N-2',     warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht2bp',  label: 'N-2-BP',  warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht2shc', label: 'N-2-SHC', warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht3',    label: 'N-3',     warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht4',    label: 'N-4',     warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht5',    label: 'N-5',     warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht5w',   label: 'N-5W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht6w',   label: 'N-6W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht7w',   label: 'N-7W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht8w',   label: 'N-8W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht9w',   label: 'N-9W',    warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht10w',  label: 'N-10W',   warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht11w',  label: 'N-11W',   warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht12w',  label: 'N-12W',   warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht13w',  label: 'N-13W',   warmupLookups: params.benchWarmupSessions * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht',     label: 'N-1',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht2',    label: 'N-2',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht2bp',  label: 'N-2-BP',  warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht2shc', label: 'N-2-SHC', warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht3',    label: 'N-3',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht4',    label: 'N-4',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht5',    label: 'N-5',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht5w',   label: 'N-5W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht6w',   label: 'N-6W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht7w',   label: 'N-7W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht8w',   label: 'N-8W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht9w',   label: 'N-9W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht10w',  label: 'N-10W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht11w',  label: 'N-11W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht12w',  label: 'N-12W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht13w',  label: 'N-13W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1083,11 +1091,13 @@ async function onBenchmark() {
   if (stopped) {
     controls.setStatus('Benchmark stopped.', 'warn');
     notify('Benchmark stopped', `Interrupted after partial run · ${N.toLocaleString()} nodes`);
+    sweep.notifyBenchmarkStopped();
   } else {
     results.showBenchmarkResults(benchResult, N, params);
     controls.setStatus('Benchmark complete.', 'success');
     notify('Benchmark complete ✓', `${params.benchProtocols?.length ?? '?'} protocols · ${N.toLocaleString()} nodes`);
     await pushResult('benchmark', results.getBenchmarkCSV(benchResult, N, params), { protocols: params.benchProtocols ?? [], nodeCount: N, warmupSessions: params.benchWarmupSessions, testSpecs: params.benchTests ?? [] });
+    sweep.notifyBenchmarkComplete();
   }
 }
 

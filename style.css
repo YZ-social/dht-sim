@@ -802,3 +802,12 @@ button.app-title {
 }
 button.app-title:hover { color: #55bbff; text-shadow: 0 0 14px #2288ddcc; }
 .ldot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+
+/* ── Benchmark Sweep status ──────────────────────────────────────────────── */
+.sweep-status {
+  font-size: 11px; padding: 4px 8px; border-radius: 4px;
+  margin-top: 4px; text-align: center; font-weight: 600;
+}
+.sweep-running  { background: #1a3a1a; color: #66dd66; border: 1px solid #336633; }
+.sweep-done     { background: #1a2a3a; color: #66aaff; border: 1px solid #334466; }
+.sweep-stopped  { background: #3a2a1a; color: #ffaa55; border: 1px solid #664433; }

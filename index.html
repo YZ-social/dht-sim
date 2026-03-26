@@ -220,7 +220,9 @@
       </div>
       <div class="sb-btns">
         <button class="btn btn-bench btn-action" id="btnBenchmark" data-tip="Run selected protocols across selected test conditions. Builds a fresh DHT per protocol; no Init required.">&#9654;&#9654; Benchmark</button>
+        <button class="btn btn-bench" id="btnSweepStop" style="display:none" data-tip="Stop the running parameter sweep after the current benchmark completes.">&#9632; Stop Sweep</button>
       </div>
+      <div id="sweepStatus" class="sweep-status" style="display:none"></div>
     </div>
 
   </div><!-- /sidebar -->

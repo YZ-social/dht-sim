@@ -55,7 +55,6 @@
         <option value="ngdht11w">N-11W</option>
         <option value="ngdht12w">N-12W</option>
         <option value="ngdht13w">N-13W</option>
-        <option value="ngdht14w">N-14W</option>
         <option value="ngdht15w">N-15W</option>
       </select>
       <div class="sb-row" style="margin-top:4px;margin-bottom:2px">
@@ -203,7 +202,6 @@
             <option value="ngdht11w"  selected>N-11W</option>
             <option value="ngdht12w"  selected>N-12W</option>
             <option value="ngdht13w"  selected>N-13W</option>
-            <option value="ngdht14w"  selected>N-14W</option>
             <option value="ngdht15w"  selected>N-15W</option>
           </select>
         </div>
@@ -540,7 +538,6 @@
     ngdht11w:   'N-11W: N-11 with highway weighting. Extended synapse memory window for more stable long-lived networks.',
     ngdht12w:   'N-12W: N-12 with highway weighting. Dual-tier highway structure; experimental.',
     ngdht13w:   'N-13W: N-13 with highway weighting. Combines N-10W highway logic with N-3 local update rule.',
-    ngdht14w:   'N-14W: Highway Synapse Preservation. Fixes long-run decay: highway synapses use a protected decay rate (20× slower than cold local) and a floor of 8 slots, preventing the routing table collapse seen in N-10W after extended training.',
     ngdht15w:   'N-15W: Renewal-Based Highway Protection. Highway synapses decay slowly only when recently traversed (in either direction); idle synapses decay at the cold local rate and are pruned naturally. Fixes N-14W\'s zombie entry problem without bidirectional connections.',
   };
   (function () {

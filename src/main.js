@@ -215,6 +215,16 @@ async function onInit() {
   const { maxPropagation } = getLatencyParams();
   setLatencyParams(maxPropagation, params.nodeDelay);
 
+  // Dispose the previous DHT before allocating the new one.
+  // With large node counts the old network can hold hundreds of MB; releasing
+  // it explicitly (and yielding so the GC can reclaim it) prevents OOM during
+  // the double-allocation window that would otherwise occur.
+  if (dht) {
+    dht.dispose();
+    dht = null;
+    await yieldUI();  // let GC run before the new allocation
+  }
+
   // Instantiate the selected DHT protocol
   dht = createDHT(params);
 

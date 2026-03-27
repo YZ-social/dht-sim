@@ -84,9 +84,25 @@ export class DHT {
    * call super.dispose().
    */
   dispose() {
-    // Clear nodeMap if present (neuromorphic protocols).
-    // Doing it here means all subclasses get cleanup for free.
+    // Neuromorphic nodes carry multiple Maps per node plus a _nodeMapRef
+    // back-pointer, creating a circular reference graph that the GC must fully
+    // trace before it can reclaim anything.  Explicitly clearing every per-node
+    // collection before dropping the nodeMap breaks all cycles immediately so
+    // memory is freed on the next minor GC rather than waiting for a full cycle.
     if (this.nodeMap instanceof Map) {
+      for (const node of this.nodeMap.values()) {
+        node.synaptome?.clear();
+        node.incomingSynapses?.clear();
+        node.highway?.clear();
+        node.transitCache?.clear();
+        node.regionalBaselines?.clear();
+        node.recentDestFreq?.clear();
+        node.pinWindowFreq?.clear();
+        node.pinnedDests?.clear();
+        if (node.recentDests)  node.recentDests.length  = 0;
+        if (node.pinWindow)    node.pinWindow.length    = 0;
+        node._nodeMapRef = null;  // break the circular back-reference
+      }
       this.nodeMap.clear();
       this.nodeMap = null;
     }

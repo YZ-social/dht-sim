@@ -228,7 +228,7 @@ export class Controls {
   _updateLookupLabel() {
     const btn = this._el('btnLookupTest');
     if (btn) {
-      const isNeuro = this.dhtProtocol === 'ngdht' || this.dhtProtocol === 'ngdht2' || this.dhtProtocol === 'ngdht2bp' || this.dhtProtocol === 'ngdht2shc' || this.dhtProtocol === 'ngdht3' || this.dhtProtocol === 'ngdht4' || this.dhtProtocol === 'ngdht5' || this.dhtProtocol === 'ngdht5w' || this.dhtProtocol === 'ngdht6w' || this.dhtProtocol === 'ngdht7w' || this.dhtProtocol === 'ngdht8w' || this.dhtProtocol === 'ngdht9w' || this.dhtProtocol === 'ngdht10w' || this.dhtProtocol === 'ngdht11w' || this.dhtProtocol === 'ngdht12w' || this.dhtProtocol === 'ngdht13w';
+      const isNeuro = this.dhtProtocol.startsWith('ngdht');
       btn.textContent = isNeuro ? '▶ Lookup Training' : '▶ Lookup Test';
     }
   }

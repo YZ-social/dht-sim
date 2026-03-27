@@ -28,6 +28,7 @@ import { NeuromorphicDHT11W }  from './dht/neuromorphic/NeuromorphicDHT11W.js';
 import { NeuromorphicDHT12W }  from './dht/neuromorphic/NeuromorphicDHT12W.js';
 import { NeuromorphicDHT13W }  from './dht/neuromorphic/NeuromorphicDHT13W.js';
 import { NeuromorphicDHT14W }  from './dht/neuromorphic/NeuromorphicDHT14W.js';
+import { NeuromorphicDHT15W }  from './dht/neuromorphic/NeuromorphicDHT15W.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -1000,6 +1001,7 @@ async function onBenchmark() {
     { key: 'ngdht12w',  label: 'N-12W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht13w',  label: 'N-13W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht14w',  label: 'N-14W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht15w',  label: 'N-15W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1228,6 +1230,12 @@ function createDHT(params) {
       });
     case 'ngdht14w':
       return new NeuromorphicDHT14W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht15w':
+      return new NeuromorphicDHT15W({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,

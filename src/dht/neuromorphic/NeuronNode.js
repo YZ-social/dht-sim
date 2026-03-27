@@ -20,6 +20,17 @@ export class NeuronNode extends DHTNode {
     this.synaptome = new Map();
 
     /**
+     * Reverse connection index: nodes that have an outgoing synapse pointing
+     * TO this node.  Stored as lightweight objects so they can participate in
+     * AP routing without full Synapse lifecycle (no LTP/LTD/pruning).
+     * A fixed baseline weight of 0.1 lets them compete as routing candidates
+     * without dominating over trained outgoing synapses.
+     *
+     * @type {Map<bigint, {peerId: bigint, latency: number, weight: number, stratum: number}>}
+     */
+    this.incomingSynapses = new Map();
+
+    /**
      * Regional latency baselines: S2 prefix → historical average latency (ms).
      * Used by the neuromodulation wave to judge whether a route was "fast".
      */
@@ -39,6 +50,18 @@ export class NeuronNode extends DHTNode {
 
   addSynapse(synapse) {
     this.synaptome.set(synapse.peerId, synapse);
+  }
+
+  /**
+   * Register that `peerId` has an outgoing synapse pointing TO this node.
+   * Only stored if no outgoing synapse to that peer already exists (outgoing
+   * synapses are always preferred as they carry trained weights).
+   */
+  addIncomingSynapse(peerId, latency, stratum) {
+    if (this.synaptome.has(peerId)) return; // outgoing already covers this peer
+    if (!this.incomingSynapses.has(peerId)) {
+      this.incomingSynapses.set(peerId, { peerId, latency, weight: 0.1, stratum });
+    }
   }
 
   hasSynapse(peerId) {
@@ -69,6 +92,9 @@ export class NeuronNode extends DHTNode {
     const myDist = this.id ^ targetId;  // BigInt XOR
     const result = [];
     for (const s of this.synaptome.values()) {
+      if ((s.peerId ^ targetId) < myDist) result.push(s);
+    }
+    for (const s of this.incomingSynapses.values()) {
       if ((s.peerId ^ targetId) < myDist) result.push(s);
     }
     return result;

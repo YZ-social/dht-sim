@@ -146,7 +146,8 @@ export class NeuromorphicDHT5 extends DHT {
 
   // ── Neurogenesis ──────────────────────────────────────────────────────────
 
-  buildRoutingTables() {
+  buildRoutingTables({ bidirectional = true } = {}) {
+    super.buildRoutingTables({ bidirectional });
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     for (const node of sorted) {
       for (const peer of buildXorRoutingTable(node.id, sorted, this._k * K_BOOT_FACTOR)) {
@@ -155,6 +156,7 @@ export class NeuromorphicDHT5 extends DHT {
         // Bootstrap uses addSynapse directly — synaptome is empty at this point
         // (40 initial peers well under MAX_SYNAPTOME_SIZE) so no eviction needed.
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
+        if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
       node._nodeMapRef = this.nodeMap;
     }
@@ -203,6 +205,12 @@ export class NeuromorphicDHT5 extends DHT {
         }
         candidates.push(s);
       }
+      for (const s of current.incomingSynapses.values()) {
+        if ((s.peerId ^ targetKey) >= currentDist) continue; // no progress
+        const peer = this.nodeMap.get(s.peerId);
+        if (!peer?.alive) continue;
+        candidates.push(s);
+      }
       if (candidates.length === 0) break;
 
       // Two-tier region check.
@@ -211,7 +219,8 @@ export class NeuromorphicDHT5 extends DHT {
 
       // Priority 0 — Direct-to-target short-circuit.
       let nextSyn;
-      const directSyn = current.synaptome.get(targetKey);
+      const directSyn = current.synaptome.get(targetKey)
+                     ?? current.incomingSynapses.get(targetKey);
       if (directSyn && this.nodeMap.get(targetKey)?.alive) {
         nextSyn = directSyn;
       } else if (hop === 0 && Math.random() < EXPLORATION_EPSILON) {

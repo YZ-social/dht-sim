@@ -126,7 +126,8 @@ export class NeuromorphicDHT3 extends DHT {
 
   // ── Neurogenesis (bootstrap to 2×-dense G-DHT-8 synaptome) ───────────────
 
-  buildRoutingTables() {
+  buildRoutingTables({ bidirectional = true } = {}) {
+    super.buildRoutingTables({ bidirectional });
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     for (const node of sorted) {
       // Bootstrap with K_BOOT_FACTOR × k peers per XOR stratum.
@@ -136,6 +137,7 @@ export class NeuromorphicDHT3 extends DHT {
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
+        if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
       node._nodeMapRef = this.nodeMap;
     }
@@ -174,6 +176,12 @@ export class NeuromorphicDHT3 extends DHT {
         if (!peer?.alive) continue;
         candidates.push(s);
       }
+      for (const s of current.incomingSynapses.values()) {
+        if ((s.peerId ^ targetKey) >= currentDist) continue; // no progress
+        const peer = this.nodeMap.get(s.peerId);
+        if (!peer?.alive) continue;
+        candidates.push(s);
+      }
       if (candidates.length === 0) break;
 
       // Two-tier region check (inherited from N-2):
@@ -186,7 +194,8 @@ export class NeuromorphicDHT3 extends DHT {
       //   target, always take it — AP would penalise high-latency hops even
       //   though completing in 1 more hop is always optimal.
       let nextSyn;
-      const directSyn = current.synaptome.get(targetKey);
+      const directSyn = current.synaptome.get(targetKey)
+                     ?? current.incomingSynapses.get(targetKey);
       if (directSyn && this.nodeMap.get(targetKey)?.alive) {
         nextSyn = directSyn;
       } else if (hop === 0 && Math.random() < EXPLORATION_EPSILON) {
@@ -368,6 +377,7 @@ export class NeuromorphicDHT3 extends DHT {
     const syn     = new Synapse({ peerId: cId, latencyMs: latMs, stratum });
     syn.weight    = initialWeight; // direct shortcuts start at 0.5; cascade relays at 0.1
     nodeA.addSynapse(syn);
+    if (this.bidirectional) nodeC.addIncomingSynapse(aId, latMs, stratum);
   }
 
   // ── Synaptic decay (LTD) ──────────────────────────────────────────────────

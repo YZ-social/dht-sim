@@ -124,7 +124,8 @@ export class NeuromorphicDHT extends DHT {
    * each.  This reproduces the exact G-DHT-8 routing table as an initial
    * Synaptome — the neuron's starting state is on par with G-DHT-8.
    */
-  buildRoutingTables() {
+  buildRoutingTables({ bidirectional = true } = {}) {
+    super.buildRoutingTables({ bidirectional });
     const k      = this._k;
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
@@ -133,6 +134,8 @@ export class NeuromorphicDHT extends DHT {
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
+        // Register the reverse: peer now knows node has a route TO it.
+        if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
       node._nodeMapRef = this.nodeMap;
     }
@@ -181,8 +184,16 @@ export class NeuromorphicDHT extends DHT {
       // Phase 3, step 1: collect all alive synapses making strict XOR progress.
       // Strict progress (peerDist < currentDist) is the natural loop prevention:
       // XOR distance can only decrease each hop, so no node can be revisited.
+      // Both outgoing (synaptome) and incoming (reverse) synapses are considered;
+      // incoming ones carry a fixed baseline weight and never get LTP/LTD.
       const candidates = [];
       for (const s of current.synaptome.values()) {
+        if ((s.peerId ^ targetKey) >= currentDist) continue; // no progress
+        const peer = this.nodeMap.get(s.peerId);
+        if (!peer?.alive) continue;
+        candidates.push(s);
+      }
+      for (const s of current.incomingSynapses.values()) {
         if ((s.peerId ^ targetKey) >= currentDist) continue; // no progress
         const peer = this.nodeMap.get(s.peerId);
         if (!peer?.alive) continue;
@@ -206,7 +217,8 @@ export class NeuromorphicDHT extends DHT {
       // Priority 1 — ε-greedy first-hop exploration (encourages diversity).
       // Priority 2 — 2-hop lookahead AP for all other hops.
       let nextSyn;
-      const directSyn = current.synaptome.get(targetKey);
+      const directSyn = current.synaptome.get(targetKey)
+                     ?? current.incomingSynapses.get(targetKey);
       if (directSyn && this.nodeMap.get(targetKey)?.alive) {
         nextSyn = directSyn;
       } else if (hop === 0 && Math.random() < EXPLORATION_EPSILON) {
@@ -402,6 +414,8 @@ export class NeuromorphicDHT extends DHT {
     const syn     = new Synapse({ peerId: cId, latencyMs: latMs, stratum });
     syn.weight    = 0.5; // neutral weight — must earn AP priority through reinforcement
     nodeA.addSynapse(syn);
+    // Register the reverse so nodeC can route back to nodeA via this new edge.
+    if (this.bidirectional) nodeC.addIncomingSynapse(aId, latMs, stratum);
   }
 
   // ── Phase 6: Synaptic Decay (LTD) ────────────────────────────────────────

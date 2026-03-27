@@ -27,6 +27,7 @@ import { NeuromorphicDHT10W }  from './dht/neuromorphic/NeuromorphicDHT10W.js';
 import { NeuromorphicDHT11W }  from './dht/neuromorphic/NeuromorphicDHT11W.js';
 import { NeuromorphicDHT12W }  from './dht/neuromorphic/NeuromorphicDHT12W.js';
 import { NeuromorphicDHT13W }  from './dht/neuromorphic/NeuromorphicDHT13W.js';
+import { NeuromorphicDHT14W }  from './dht/neuromorphic/NeuromorphicDHT14W.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -233,7 +234,7 @@ async function onInit() {
   controls.setProgress(0.8);
   await yieldUI();
 
-  dht.buildRoutingTables();
+  dht.buildRoutingTables({ bidirectional: params.bidirectional });
 
   controls.setProgress(1);
   globe.setNodes(dht.getNodes());
@@ -263,6 +264,7 @@ async function onLookupTest() {
   globe.clearRegionalBoundary();
 
   const params = controls.snapshot();
+  results.setRunParams(params);
   controls.setStatus(`Running ${params.msgCount} random lookups…`, 'info');
 
   // Draw regional boundary ring so the user can see the constraint is active
@@ -446,6 +448,7 @@ async function onChurnTest() {
   globe.clearConnections();
 
   const params = controls.snapshot();
+  results.setRunParams(params);
   controls.setStatus(
     `Churn test: ${params.churnIntervals} intervals, ` +
     `${(params.churnRate * 100).toFixed(0)}% churn/interval, ` +
@@ -524,6 +527,7 @@ async function onTrainNetwork() {
   globe.clearRegionalBoundary();
 
   const params = controls.snapshot();
+  results.setRunParams(params);
 
   // Draw regional boundary ring once so user can see the constraint is active
   if (params.regional) {
@@ -634,6 +638,7 @@ async function onPubSub() {
   }
 
   const params     = controls.snapshot();
+  results.setRunParams(params);
   const aliveNodes = dht.getNodes().filter(n => n.alive);
   const groupSize  = params.pubsubGroupSize;
 
@@ -809,6 +814,7 @@ async function onPairLearning() {
   globe.clearArcs();
   globe.clearConnections();
   globe.clearRegionalBoundary();
+  results.setRunParams(controls.snapshot());
 
   // Assign each node a fixed random target (different from itself).
   // Targets are chosen once and stay fixed across all sessions so the
@@ -893,6 +899,7 @@ async function onHotspotTest() {
   globe.clearArcs();
 
   const params    = controls.snapshot();
+  results.setRunParams(params);
   const warmup    = params.benchWarmupSessions * 500;
 
   controls.setStatus('Hotspot test — warming up…', 'info');
@@ -969,6 +976,7 @@ async function onBenchmark() {
   globe.clearConnections();
 
   const params = controls.snapshot();
+  results.setRunParams(params);
 
   const PROTOCOL_DEFS = [
     { key: 'kademlia', label: 'Kademlia' },
@@ -991,6 +999,7 @@ async function onBenchmark() {
     { key: 'ngdht11w',  label: 'N-11W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht12w',  label: 'N-12W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht13w',  label: 'N-13W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdht14w',  label: 'N-14W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1049,7 +1058,7 @@ async function onBenchmark() {
 
       if (!benchmarkActive) return null;
       controls.setStatus(`${tag} — building routing tables…`, 'bench');
-      benchDHT.buildRoutingTables();
+      benchDHT.buildRoutingTables({ bidirectional: params.bidirectional });
       completedSteps++;
       controls.setProgress(stepFrac(completedSteps));
       await yieldUI();
@@ -1213,6 +1222,12 @@ function createDHT(params) {
       });
     case 'ngdht13w':
       return new NeuromorphicDHT13W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+      });
+    case 'ngdht14w':
+      return new NeuromorphicDHT14W({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,

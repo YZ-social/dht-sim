@@ -189,12 +189,15 @@ export class KademliaDHT extends DHT {
    * Populate routing tables for all nodes at once.
    * O(n log n) via binary search on contiguous XOR-bucket ID ranges.
    */
-  buildRoutingTables() {
+  buildRoutingTables({ bidirectional = true } = {}) {
+    super.buildRoutingTables({ bidirectional });
     const k      = this.k;
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     for (const node of sorted) {
       for (const peer of buildXorRoutingTable(node.id, sorted, k)) {
         node.addToBucket(peer);
+        // Bidirectional: also make peer aware of node (reverse edge).
+        if (bidirectional) peer.addToBucket(node);
       }
     }
   }

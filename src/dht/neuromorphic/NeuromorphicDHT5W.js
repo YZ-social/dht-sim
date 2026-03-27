@@ -135,13 +135,15 @@ export class NeuromorphicDHT5W extends DHT {
 
   // ── Neurogenesis ──────────────────────────────────────────────────────────
 
-  buildRoutingTables() {
+  buildRoutingTables({ bidirectional = true } = {}) {
+    super.buildRoutingTables({ bidirectional });
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     for (const node of sorted) {
       for (const peer of buildXorRoutingTable(node.id, sorted, this._k * K_BOOT_FACTOR)) {
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
+        if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
       node._nodeMapRef = this.nodeMap;
     }
@@ -187,13 +189,20 @@ export class NeuromorphicDHT5W extends DHT {
         }
         candidates.push(s);
       }
+      for (const s of current.incomingSynapses.values()) {
+        if ((s.peerId ^ targetKey) >= currentDist) continue; // no progress
+        const peer = this.nodeMap.get(s.peerId);
+        if (!peer?.alive) continue;
+        candidates.push(s);
+      }
       if (candidates.length === 0) break;
 
       const inTargetRegion =
         ((current.id ^ targetKey) >> BigInt(64 - GEO_REGION_BITS)) === 0n;
 
       let nextSyn;
-      const directSyn = current.synaptome.get(targetKey);
+      const directSyn = current.synaptome.get(targetKey)
+                     ?? current.incomingSynapses.get(targetKey);
       if (directSyn && this.nodeMap.get(targetKey)?.alive) {
         nextSyn = directSyn;
       } else if (hop === 0 && Math.random() < EXPLORATION_EPSILON) {

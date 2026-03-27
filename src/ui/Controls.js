@@ -182,6 +182,7 @@ export class Controls {
     const sel = [...el.options].filter(o => o.selected).map(o => o.value);
     return sel.length ? new Set(sel) : null;
   }
+  get bidirectional() { return this._el('bidirectional')?.checked ?? true; }
   get showAnimation() { return this._el('showAnimation')?.checked ?? true; }
   get autoRotate()  { return this._el('autoRotate')?.checked ?? false; }
   get pubsubGroupSize() { return Math.max(4, Math.min(256, parseInt(this._el('pubsubGroupSize')?.value ?? 32))); }
@@ -220,6 +221,7 @@ export class Controls {
       churnIntervals: this.churnIntervals,
       lookupsPerInterval: this.lookupsPerInterval,
       showAnimation: this.showAnimation,
+      bidirectional: this.bidirectional,
     };
   }
 

@@ -288,7 +288,8 @@ export class NeuromorphicDHT7W extends DHT {
 
   // ── Neurogenesis ──────────────────────────────────────────────────────────
 
-  buildRoutingTables() {
+  buildRoutingTables({ bidirectional = true } = {}) {
+    super.buildRoutingTables({ bidirectional });
     const sorted = [...this.nodeMap.values()].sort(
       (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0
     );
@@ -298,6 +299,7 @@ export class NeuromorphicDHT7W extends DHT {
         const stratum = clz64(node.id ^ peer.id);
         // Bootstrap fills local tier directly; 20 peers is well under the 40 cap.
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
+        if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
       node._nodeMapRef = this.nodeMap;
     }
@@ -364,6 +366,12 @@ export class NeuromorphicDHT7W extends DHT {
         if (!peer?.alive) { s.weight = 0; continue; }
         candidates.push(s);
       }
+      for (const s of current.incomingSynapses.values()) {
+        if ((s.peerId ^ targetKey) >= currentDist) continue; // no progress
+        const peer = this.nodeMap.get(s.peerId);
+        if (!peer?.alive) continue;
+        candidates.push(s);
+      }
       if (candidates.length === 0) break;
 
       const inTargetRegion =
@@ -371,7 +379,8 @@ export class NeuromorphicDHT7W extends DHT {
 
       let nextSyn;
       // Priority 0: direct-to-target short-circuit (checks both tiers).
-      const directSyn = current.synaptome.get(targetKey) ?? current.highway.get(targetKey);
+      const directSyn = current.synaptome.get(targetKey) ?? current.highway.get(targetKey)
+                     ?? current.incomingSynapses.get(targetKey);
       if (directSyn && this.nodeMap.get(targetKey)?.alive) {
         nextSyn = directSyn;
       } else if (hop === 0 && Math.random() < EXPLORATION_EPSILON) {

@@ -1,195 +1,78 @@
 /**
- * NeuromorphicDHT8W (N-G-DHT-8W) – Generation 8, Cascading Lateral Spread + Load-Aware Routing
+ * NeuromorphicDHT14W (N-G-DHT-14W) – Generation 14, Highway Synapse Preservation
  *
- * N-8W is a hybrid of N-4's lateral spread scaling insight and N-7W's load-aware
- * routing.  It takes N-7W as its direct base and introduces two targeted changes:
- * a tier rebalancing that restores the N-6W local/highway split, and a depth-aware
- * cascading lateral spread that replaces N-7W's single-hop broadcast.  Every other
- * mechanism — adaptive decay, Markov hot-destination learning, load-aware AP
- * scoring, the extended randomised hub pool, two-tier synaptome structure,
- * stratified eviction, and simulated annealing — is carried over unchanged.
+ * N-14W takes N-10W as its direct base and introduces two targeted fixes derived
+ * from analysis of long-run training data showing synaptic decay over time.
  *
- * ── Change 1 — Tier Rebalancing (restores N-6W split) ────────────────────────
+ * ── Observation ───────────────────────────────────────────────────────────────
  *
- * N-7W shifted budget from the local tier to the highway tier (40 + 20 = 60) to
- * give load-aware routing a larger hub fan-out.  Profiling showed that the extra
- * highway slots offer diminishing returns once the scan pool (HUB_SCAN_CAP=120)
- * is wide: hub diversity is already adequate at 12 highway connections.  The 8
- * reclaimed slots are returned to the local tier, which directly benefits lateral
- * spread: more room for learned geographic shortcuts means fewer evictions when
- * the cascade places new synapses.
+ * Training data (333 sessions, 5000 nodes) revealed a three-phase degradation:
  *
- *   MAX_SYNAPTOME_SIZE = 48   (was 40 in N-7W; restores N-6W value)
- *   HIGHWAY_SLOTS      = 12   (was 20 in N-7W; restores N-6W value)
- *   Total              = 60   (unchanged browser WebRTC budget)
+ *   1. Relay hops (1.875) are good but not optimal — N-1's simplicity achieves
+ *      1.813 because pure AP learning with no competing mechanisms maximally
+ *      specialises on relay routes during pub/sub warmup.
  *
- * ── Change 2 — Cascading Lateral Spread ──────────────────────────────────────
+ *   2. Bcast ms (141ms) lags behind N-6W (123ms) and N-2-BP (122ms).  Root cause:
+ *      N-9W's MARKOV_BASE_WEIGHT=0.3 seeds Markov-introduced participant entries
+ *      at ~0.356 (at freq=3/32 scaling), lower than N-6W's flat 0.5.  Weaker
+ *      initial weight = higher eviction risk before reinforcement accumulates.
  *
- * Background — why lateral spread outperforms annealing at scale:
+ *   3. No mechanism protects recurring relay/participant entries from stratified
+ *      eviction.  During relay-centric warmup, stratification can displace
+ *      participant entries to maintain stratum diversity, producing bcast hops
+ *      slightly above 1.000.
  *
- *   Simulated annealing (Mechanism 4 in N-5W+) discovers new synapses by
- *   randomly sampling the global node population or the 2-hop neighbourhood.
- *   At N = 50,000 nodes the synaptome covers only 60 / 50,000 = 0.12% of nodes,
- *   and the 2-hop neighbourhood covers roughly 60² = 3,600 / 50,000 = 7.2%.
- *   Most annealing trials miss the geographic cluster that contains the current
- *   routing target, so the shortcut acceptance rate drops sharply with network
- *   size.
+ * ── Change 1 — Remove Load-Aware AP Scoring ──────────────────────────────────
  *
- *   Lateral spread (introduced in N-4) sidesteps this problem entirely.  When
- *   node A discovers a shortcut to target C during a live lookup, A already knows
- *   which of its synaptome peers are in the same geographic region as C (they
- *   share the same top GEO_REGION_BITS of their ID).  A can therefore push the
- *   shortcut directly to those regional neighbours without any random sampling.
- *   This is O(LATERAL_K) work per discovery event and is guaranteed to reach
- *   peers that are topologically close to the target — exactly the nodes that
- *   will benefit most from the shortcut in future lookups.
+ * Load balancing (introduced in N-7W) consistently degrades pub/sub relay ms
+ * (N-7W: 188ms vs N-6W: 159ms) by routing around loaded relay nodes via longer
+ * geographic paths.  Per-hop relay cost rises from 72.7ms/hop (N-6W, no load
+ * balancing) to 84.8ms/hop (N-9W, with load balancing) — N-9W compensates with
+ * fewer hops, arriving at the same 159ms total, but the mechanism is fragile.
  *
- *   At N = 50,000 with GEO_REGION_BITS = 4 there are 16 geographic regions of
- *   ~3,125 nodes each.  A node's synaptome will on average contain
- *   48 × (3,125 / 50,000) ≈ 3 regional peers.  With LATERAL_K = 6, the spread
- *   comfortably covers all regional neighbours already in the synaptome.
+ * Removing load balancing eliminates gratuitous latency in pub/sub scenarios
+ * where the relay IS the optimal destination and should never be avoided.
  *
- * N-7W's lateral spread (LATERAL_K = 3):
+ * ── Change 2 — Raise MARKOV_BASE_WEIGHT 0.3 → 0.5 ───────────────────────────
  *
- *   When node A gains a shortcut to C, A tells its top-3 regional neighbours.
- *   Total nodes that learn the shortcut per discovery event: 1 (A) + 3 = 4.
+ * Restores N-6W's flat 0.5 initial weight for Markov-introduced synapses.
+ * At the hot threshold (freq=3/window=32), N-9W computed weight ≈ 0.356; N-10W
+ * computes weight ≈ 0.538.  The higher seed weight lets participant entries
+ * survive stratified eviction long enough for reinforcement to take hold,
+ * recovering N-6W's 123ms bcast ms without sacrificing N-9W's routing quality.
  *
- * N-8W's cascading lateral spread (LATERAL_K = 6, LATERAL_K2 = 2, depth = 2):
+ * ── Change 3 — Relay Pinning ──────────────────────────────────────────────────
  *
- *   When node A gains a shortcut to C (depth=1):
- *     A tells its top-6 regional neighbours (depth=1 spread, LATERAL_K = 6).
- *     Each of those 6 nodes, when they in turn gain the shortcut, tells their
- *     own top-2 regional neighbours (depth=2 spread, LATERAL_K2 = 2).
- *     Depth-3 calls do not recurse (LATERAL_MAX_DEPTH = 2 terminates at depth=2).
+ * A separate, longer rolling window (RELAY_PIN_WINDOW=64) tracks destination
+ * frequency independent of the Markov window.  When a destination appears
+ * ≥ RELAY_PIN_THRESHOLD (5) times, it joins the node's pinnedDests set (up to
+ * RELAY_PIN_MAX=4 entries).  Pinned destinations receive:
  *
- *   Total nodes that learn the shortcut per discovery event:
- *     1  (A itself)
- *   + 6  (depth-1 spread: LATERAL_K)
- *   + 12 (depth-2 spread: LATERAL_K × LATERAL_K2 = 6 × 2)
- *   = 19  nodes in the geographic cluster, up from 4 in N-7W.
+ *   • Eviction immunity in _stratifiedAdd and _tryAnneal — they are skipped
+ *     when selecting the weakest candidate for eviction.
+ *   • Decay protection — they decay at DECAY_GAMMA_MAX unconditionally, and
+ *     their weight is restored to RELAY_PIN_WEIGHT (0.95) if it falls below.
+ *   • AP priority at the source node — on hop=0, if a pinned destination makes
+ *     >50% XOR progress toward the target it is used directly, bypassing the
+ *     two-hop lookahead.  This captures the N-1 relay-specialisation advantage
+ *     without sacrificing general routing quality on non-pinned lookups.
  *
- *   The cascade terminates at depth=2 to contain message amplification.  Each
- *   recursive call is guarded by the same _hasAny check, so nodes that already
- *   hold the shortcut do not spread further, and the worst-case total is bounded
- *   at 1 + LATERAL_K + LATERAL_K × LATERAL_K2 regardless of graph density.
+ * Pins are self-managing: they are released when the destination's pin-window
+ * frequency drops below RELAY_PIN_THRESHOLD, i.e. after sustained absence.
  *
- * Interaction with load-aware AP scoring:
- *
- *   Within _introduceAndSpread, the depth-1 spread selects the top-LATERAL_K
- *   regional neighbours by synapse weight (b.weight − a.weight sort).  Synapse
- *   weights reflect past routing success, which is itself discounted by load via
- *   the AP-scoring mechanism (Mechanism 6).  As a result, shortcuts preferentially
- *   cascade toward the least-loaded well-connected regional nodes, reinforcing
- *   load balancing rather than undermining it.
- *
- * ── Mechanism 1 — Two-Tier Synaptome (inherited from N-6W / N-7W) ─────────────
- *
- * The 60-connection budget is split into two pools:
- *
- *   Local tier  (node.synaptome, 48 slots — restored from N-6W):
- *     Stratified + annealing management identical to N-7W.  Learns routes
- *     through direct experience (hop caching, backpropagation, lateral spread
- *     cascade, triadic closure).  The extra 8 slots vs N-7W give the cascade
- *     more room to place incoming shortcuts without evicting existing ones.
- *
- *   Highway tier  (node.highway, 12 slots — restored from N-6W):
- *     Reserved for globally well-connected "hub" nodes scored by stratum
- *     diversity.  HUB_SCAN_CAP=120 and HUB_NOISE=1.0 are retained from N-7W
- *     to keep selection wide and non-deterministic.
- *
- *   Total connections: 48 + 12 = 60 (unchanged browser WebRTC budget).
- *
- * ── Mechanism 2 — Adaptive Temporal Decay (inherited from N-7W) ──────────────
- *
- * Per-synapse use-count drives an effective gamma at decay time:
- *
- *   gamma = DECAY_GAMMA_MIN + (DECAY_GAMMA_MAX - DECAY_GAMMA_MIN)
- *                           × min(1, useCount / USE_SATURATION)
- *
- *   DECAY_GAMMA_MIN = 0.990  — cold synapse: loses ~10% weight/interval
- *   DECAY_GAMMA_MAX = 0.9998 — hot synapse:  loses ~0.02% weight/interval
- *   USE_SATURATION  = 20     — uses to reach maximum decay protection
- *
- * ── Mechanism 3 — Markov Hot-Destination Pre-learning (inherited from N-7W) ───
- *
- * Tracks the last MARKOV_WINDOW=32 destinations per source node and fires a
- * direct introduction when a target appears ≥ MARKOV_HOT_THRESHOLD=3 times and
- * no direct synapse exists yet.  Initial weight scales with destination frequency
- * (Mechanism 8).
- *
- * ── Mechanism 4 — Highway-Augmented Routing (inherited from N-7W) ─────────────
- *
- * Highway synapses are included alongside local-tier synapses when building the
- * per-hop candidate set.  The two-hop lookahead evaluates both tiers of the peer,
- * giving each node ~60 additional forward-progress candidates for free.
- *
- * ── Mechanism 5 — Per-Node Load Tracking with Lazy Decay (inherited from N-7W) ─
- *
- * Each node carries a load signal (node.loadEMA, node.loadLastEpoch).  Every
- * time a node is selected as the next relay hop during routing, its load is
- * incremented by (1 − LOAD_DECAY) after applying exponential decay over the
- * epochs elapsed since its last update:
- *
- *   decayedLoad = loadEMA × LOAD_DECAY^(simEpoch − loadLastEpoch)
- *   loadEMA     = decayedLoad + (1 − LOAD_DECAY)
- *
- * This is a lazy/amortised design: only nodes actually used in routing are ever
- * updated; all others accrue passive decay that is computed on demand.
- *
- *   LOAD_DECAY = 0.995 — contribution from a single relay participation decays
- *   to half its initial value after ~138 lookups, ~1% after ~920 lookups.
- *
- * ── Mechanism 6 — Load-Aware AP Scoring (inherited from N-7W) ────────────────
- *
- * In the two-hop lookahead (_bestByTwoHopAP), both ap1 and ap2 scores are
- * multiplied by a load discount factor:
- *
- *   loadDiscount = max(LOAD_FLOOR, 1 − LOAD_PENALTY × (load / LOAD_SATURATION))
- *
- *   LOAD_PENALTY    = 0.40  — at saturation the AP score is reduced by 40%
- *   LOAD_FLOOR      = 0.10  — even a saturated node retains 10% of its score
- *   LOAD_SATURATION = 0.15  — loadEMA value treated as "fully saturated"
- *
- * ── Mechanism 7 — Extended + Randomised Hub Pool (inherited from N-7W) ────────
- *
- *   HUB_SCAN_CAP      = 120  — wide 2-hop candidate scan
- *   HUB_MIN_DIVERSITY = 5    — lower qualifying bar for hub status
- *   HUB_NOISE         = 1.0  — random noise prevents deterministic re-selection
- *
- * ── Mechanism 8 — Adaptive Markov Weight (inherited from N-7W) ───────────────
- *
- * When a Markov hot-destination introduction fires, the initial weight of the new
- * synapse scales with destination frequency:
- *
- *   markovWeight = min(MARKOV_MAX_WEIGHT,
- *     MARKOV_BASE_WEIGHT + (MARKOV_MAX_WEIGHT − MARKOV_BASE_WEIGHT)
- *                        × (freq / MARKOV_WINDOW))
- *
- *   MARKOV_BASE_WEIGHT = 0.3   MARKOV_MAX_WEIGHT = 0.9
- *
- * ── Inherited from N-5W / N-6W / N-7W (unchanged) ────────────────────────────
- *   • Stratified synaptome eviction (STRATA_GROUPS=16, STRATUM_FLOOR=2)
+ * ── Everything else inherited unchanged from N-9W ─────────────────────────────
+ *   • Synaptome floor protection (Guard A + B, SYNAPTOME_FLOOR=48)
+ *   • Tier rebalancing: MAX_SYNAPTOME_SIZE=48, HIGHWAY_SLOTS=12
+ *   • Cascading lateral spread: LATERAL_K=6, LATERAL_K2=2, LATERAL_MAX_DEPTH=2
+ *   • Adaptive temporal decay (DECAY_GAMMA_MIN/MAX, USE_SATURATION)
+ *   • Markov hot-destination pre-learning (raised MARKOV_BASE_WEIGHT=0.5)
+ *   • Extended randomised hub pool (HUB_SCAN_CAP=120, HUB_NOISE=1.0)
+ *   • Stratified eviction (STRATA_GROUPS=16, STRATUM_FLOOR=2)
  *   • Simulated annealing (T_INIT, T_MIN, ANNEAL_COOLING, GLOBAL_BIAS)
- *   • Passive dead-node eviction
- *   • Source-inclusive hop caching
- *   • Shortcut cascade backpropagation
  *   • Two-hop lookahead with advance-per-latency scoring (α=5)
- *   • Triadic closure
- *   • Dense bootstrap (K_BOOT_FACTOR=1 for browser, 20 peers)
- *   • Inertia locks (INERTIA_DURATION=20)
- *   • Intra-regional weight bonus (WEIGHT_SCALE=0.40)
- *
- * ── Design rationale ──────────────────────────────────────────────────────────
- *
- * N-7W's three-front attack on hotspot concentration (signal, score, diversity)
- * is retained in full.  N-8W adds a fourth front: cluster saturation.  By
- * propagating each shortcut discovery to up to 19 nodes in the same geographic
- * cluster, the probability that any future lookup through that cluster already
- * has a direct synapse to the target rises dramatically, reducing the relay
- * burden on the handful of hubs that would otherwise carry all inter-cluster
- * traffic.  The depth-2 limit keeps total message amplification bounded and
- * the load-aware weight ordering ensures cascade priority flows to the least
- * congested nodes.
+ *   • Source-inclusive hop caching + shortcut cascade backpropagation
+ *   • Triadic closure, inertia locks, intra-regional weight bonus
+ *   • Dense bootstrap (K_BOOT_FACTOR=1, 20 peers/bucket)
  */
 
 import { DHT }               from '../DHT.js';
@@ -215,21 +98,25 @@ const WEIGHT_SCALE           = 0.40;
 const LOOKAHEAD_ALPHA        = 5;
 const GEO_REGION_BITS        = 4;
 
-// ── Change 2: Cascading lateral spread parameters ─────────────────────────────
+// ── Cascading lateral spread parameters ──────────────────────────────────────
 
-const LATERAL_K         = 6;   // was 3 in N-7W — wider first-hop spread
-const LATERAL_K2        = 2;   // NEW — second-hop spread (depth-2 cascade)
-const LATERAL_MAX_DEPTH = 2;   // NEW — cascade terminates at depth 2
+const LATERAL_K         = 6;   // wider first-hop spread
+const LATERAL_K2        = 2;   // second-hop spread (depth-2 cascade)
+const LATERAL_MAX_DEPTH = 2;   // cascade terminates at depth 2
 
-// ── Change 1: Tier sizes — total = 48 + 12 = 60 (browser WebRTC budget) ───────
+// ── Tier sizes — total = 48 + 12 = 60 (browser WebRTC budget) ────────────────
 
-const MAX_SYNAPTOME_SIZE = 48;   // local tier cap (was 40 in N-7W; restores N-6W)
-const HIGHWAY_SLOTS      = 12;   // highway tier cap (was 20 in N-7W; restores N-6W)
+const MAX_SYNAPTOME_SIZE = 48;   // local tier cap
+const HIGHWAY_SLOTS      = 12;   // highway tier cap
+
+// ── Synaptome floor — local tier never shrinks below this ─────────────────────
+
+const SYNAPTOME_FLOOR = MAX_SYNAPTOME_SIZE;   // 48
 
 // ── Local-tier stratification ─────────────────────────────────────────────────
 
 const STRATA_GROUPS  = 16;   // 64 strata ÷ 4 = 16 groups of 4
-const STRATUM_FLOOR  = 2;    // 16×2=32 guaranteed; 16 flexible (up from 8)
+const STRATUM_FLOOR  = 2;    // min entries per group before eviction is allowed
 
 // ── Simulated annealing ───────────────────────────────────────────────────────
 
@@ -240,39 +127,52 @@ const GLOBAL_BIAS         = 0.5;
 const ANNEAL_LOCAL_SAMPLE = 20;
 const ANNEAL_BUF_REBUILD  = 200;
 
-// ── Mechanism 2: Adaptive decay ───────────────────────────────────────────────
+// ── Adaptive decay ────────────────────────────────────────────────────────────
 
 const DECAY_GAMMA_MIN = 0.990;   // cold (useCount=0)   → ~10% loss/interval
 const DECAY_GAMMA_MAX = 0.9998;  // hot  (useCount≥20)  → ~0.02% loss/interval
 const USE_SATURATION  = 20;      // uses needed to reach full decay protection
 
-// ── Mechanism 3 + 8: Markov hot-destination learning ─────────────────────────
+// ── Markov hot-destination learning ──────────────────────────────────────────
 
-const MARKOV_WINDOW        = 32;   // rolling destination window per node
-const MARKOV_HOT_THRESHOLD = 3;    // appearances before eager introduction fires
-const MARKOV_BASE_WEIGHT   = 0.3;  // floor synapse weight for hot dest
-const MARKOV_MAX_WEIGHT    = 0.9;  // ceiling synapse weight for hot dest
+const MARKOV_WINDOW        = 32;
+const MARKOV_HOT_THRESHOLD = 3;
+const MARKOV_BASE_WEIGHT   = 0.5;  // Change 2: raised from 0.3 → restores N-6W seeding
+const MARKOV_MAX_WEIGHT    = 0.9;
 
-// ── Mechanism 1 + 7: Highway / hub management ─────────────────────────────────
+// ── Highway / hub management ──────────────────────────────────────────────────
 
-const HUB_REFRESH_INTERVAL = 300;  // lookup participations between refreshes
-const HUB_SCAN_CAP         = 120;  // max 2-hop candidates per refresh
-const HUB_MIN_DIVERSITY    = 5;    // min distinct strata groups to qualify
-const HUB_NOISE            = 1.0;  // random score perturbation per refresh
+const HUB_REFRESH_INTERVAL = 300;
+const HUB_SCAN_CAP         = 120;
+const HUB_MIN_DIVERSITY    = 5;
+const HUB_NOISE            = 1.0;
 
-// ── Mechanism 5 + 6: Load awareness ──────────────────────────────────────────
+// ── (from N-10W) Load-aware AP scoring REMOVED ────────────────────────────────
+// Load balancing raised per-hop relay cost from 72.7ms (N-6W) to 84.8ms (N-9W).
 
-const LOAD_DECAY       = 0.995;   // EMA decay factor per lookup participation
-const LOAD_PENALTY     = 0.40;    // max AP multiplier reduction at saturation
-const LOAD_FLOOR       = 0.10;    // minimum load discount (never excludes entirely)
-const LOAD_SATURATION  = 0.15;    // loadEMA value treated as "fully saturated"
+// ── Change 1 (N-14W): Highway synapse protected decay rate ────────────────────
+// Highway synapses decay at this fixed rate regardless of useCount.
+// 0.9995 ≈ 0.05% loss per interval — ~20× slower than a cold local synapse.
+const DECAY_GAMMA_HIGHWAY = 0.9995;
+
+// ── Change 2 (N-14W): Highway synapse floor ───────────────────────────────────
+// The highway tier never prunes below this count; below-threshold synapses are
+// reset to PRUNE_THRESHOLD (recoverable) rather than deleted.
+const HIGHWAY_FLOOR = 8;
+
+// ── Change 3: Relay pinning ───────────────────────────────────────────────────
+
+const RELAY_PIN_THRESHOLD = 5;    // pin-window freq to enter protected set
+const RELAY_PIN_WINDOW    = 64;   // rolling window size for pin decisions
+const RELAY_PIN_MAX       = 4;    // max pinned destinations per node
+const RELAY_PIN_WEIGHT    = 0.95; // minimum weight floor for pinned synapses
 
 // ─────────────────────────────────────────────────────────────────────────────
-// NeuromorphicDHT8W
+// NeuromorphicDHT10W
 // ─────────────────────────────────────────────────────────────────────────────
 
-export class NeuromorphicDHT8W extends DHT {
-  static get protocolName() { return 'Neuromorphic-8W'; }
+export class NeuromorphicDHT14W extends DHT {
+  static get protocolName() { return 'Neuromorphic-14W'; }
 
   constructor(config = {}) {
     super(config);
@@ -298,16 +198,15 @@ export class NeuromorphicDHT8W extends DHT {
     const id       = (BigInt(prefix) << BigInt(shift)) | randBits;
     const node     = new NeuronNode({ id, lat, lng });
 
-    // Per-node N-6W state (duck-typed onto NeuronNode)
     node.temperature      = T_INIT;
-    node.highway          = new Map();      // peerId → Synapse (highway tier)
-    node.hubRefreshCount  = 0;              // lookup participations since last refresh
-    node.recentDests      = [];             // Markov: rolling dest array
-    node.recentDestFreq   = new Map();      // Markov: dest → count in window
-
-    // Per-node N-7W state (Mechanism 5)
-    node.loadEMA          = 0;              // exponential moving average of relay load
-    node.loadLastEpoch    = 0;              // simEpoch when loadEMA was last written
+    node.highway          = new Map();
+    node.hubRefreshCount  = 0;
+    node.recentDests      = [];
+    node.recentDestFreq   = new Map();
+    // Change 3: relay pinning state (replaces load tracking from N-9W)
+    node.pinnedDests      = new Set();
+    node.pinWindow        = [];
+    node.pinWindowFreq    = new Map();
 
     this.nodeMap.set(id, node);
     this.network.addNode(node);
@@ -335,13 +234,11 @@ export class NeuromorphicDHT8W extends DHT {
       for (const peer of buildXorRoutingTable(node.id, sorted, this._k * K_BOOT_FACTOR)) {
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
-        // Bootstrap fills local tier directly; 20 peers is well under the 48 cap.
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
         if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
       node._nodeMapRef = this.nodeMap;
     }
-    // Highway starts empty — fills during first HUB_REFRESH_INTERVAL lookups.
   }
 
   // ── Routing ───────────────────────────────────────────────────────────────
@@ -361,12 +258,8 @@ export class NeuromorphicDHT8W extends DHT {
       this._annealBufCount = 0;
     }
 
-    // ── Mechanism 3 + 8: Markov hot-destination pre-learning ──────────────
-    // Update the source node's rolling destination window.
+    // Markov hot-destination pre-learning.
     this._markovRecord(source, targetKey);
-    // If this target is "hot" and we lack a direct synapse, create one now —
-    // it will be available as a candidate on the very first hop below.
-    // Mechanism 8: the initial weight scales with destination frequency.
     if (!this._hasAny(source, targetKey)) {
       const freq = source.recentDestFreq.get(targetKey) ?? 0;
       if (freq >= MARKOV_HOT_THRESHOLD) {
@@ -375,6 +268,9 @@ export class NeuromorphicDHT8W extends DHT {
         this._introduce(sourceId, targetKey, markovWeight);
       }
     }
+
+    // Change 3: update relay pin tracking at the source.
+    this._updatePins(source, targetKey);
 
     const path  = [sourceId];
     const trace = [];
@@ -389,8 +285,6 @@ export class NeuromorphicDHT8W extends DHT {
       const currentDist = current.id ^ targetKey;
       if (currentDist === 0n) { reached = true; break; }
 
-      // Collect forward-progress candidates from BOTH local and highway tiers.
-      // Passive dead-node eviction: zero weight on first encounter.
       const candidates = [];
       for (const s of current.synaptome.values()) {
         if ((s.peerId ^ targetKey) >= currentDist) continue;
@@ -416,17 +310,29 @@ export class NeuromorphicDHT8W extends DHT {
         ((current.id ^ targetKey) >> BigInt(64 - GEO_REGION_BITS)) === 0n;
 
       let nextSyn;
-      // Priority 0: direct-to-target short-circuit (checks both tiers).
       const directSyn = current.synaptome.get(targetKey) ?? current.highway.get(targetKey)
                      ?? current.incomingSynapses.get(targetKey);
       if (directSyn && this.nodeMap.get(targetKey)?.alive) {
+        // Priority 0: direct synapse to target.
         nextSyn = directSyn;
-      } else if (hop === 0 && Math.random() < EXPLORATION_EPSILON) {
-        nextSyn = candidates[Math.floor(Math.random() * candidates.length)];
-      } else if (inTargetRegion) {
-        nextSyn = this._bestByTwoHopAP(current, candidates, targetKey, currentDist, WEIGHT_SCALE);
-      } else {
-        nextSyn = this._bestByTwoHopAP(current, candidates, targetKey, currentDist, 0);
+      } else if (hop === 0 && current.pinnedDests.has(targetKey)) {
+        // Change 3 — Priority 0.5: pinned destination at source.
+        // The pin guarantees a high-weight direct synapse exists; route to it
+        // immediately without two-hop lookahead overhead.
+        const pinnedSyn = current.synaptome.get(targetKey) ?? current.highway.get(targetKey);
+        if (pinnedSyn && this.nodeMap.get(pinnedSyn.peerId)?.alive) {
+          nextSyn = pinnedSyn;
+        }
+      }
+
+      if (!nextSyn) {
+        if (hop === 0 && Math.random() < EXPLORATION_EPSILON) {
+          nextSyn = candidates[Math.floor(Math.random() * candidates.length)];
+        } else if (inTargetRegion) {
+          nextSyn = this._bestByTwoHopAP(current, candidates, targetKey, currentDist, WEIGHT_SCALE);
+        } else {
+          nextSyn = this._bestByTwoHopAP(current, candidates, targetKey, currentDist, 0);
+        }
       }
 
       const nextId   = nextSyn.peerId;
@@ -437,27 +343,21 @@ export class NeuromorphicDHT8W extends DHT {
       trace.push({ fromId: currentId, synapse: nextSyn });
       totalTimeMs += nextSyn.latency;
 
-      // Mechanism 5: record relay load on the node about to be visited.
-      nextNode.loadEMA       = this._decayedLoad(nextNode) + (1 - LOAD_DECAY);
-      nextNode.loadLastEpoch = this.simEpoch;
+      // Change 1: load tracking removed — no loadEMA update here.
 
-      // Triadic closure (intermediate nodes only).
       if (currentId !== sourceId) {
         this._recordTransit(current, sourceId, nextId);
       }
 
-      // Source-inclusive hop caching with cascading lateral spread (Change 2).
       if (currentId !== targetKey) {
         this._introduceAndSpread(currentId, targetKey);
       }
 
-      // ── Simulated annealing ───────────────────────────────────────────────
       current.temperature = Math.max(T_MIN, current.temperature * ANNEAL_COOLING);
       if (Math.random() < current.temperature) {
         this._tryAnneal(current);
       }
 
-      // ── Mechanism 1 + 7: Highway refresh ─────────────────────────────────
       if (++current.hubRefreshCount >= HUB_REFRESH_INTERVAL) {
         current.hubRefreshCount = 0;
         this._refreshHighway(current);
@@ -466,7 +366,6 @@ export class NeuromorphicDHT8W extends DHT {
       currentId = nextId;
     }
 
-    // LTP reinforcement on successful below-EMA-latency paths.
     const hopCount = path.length - 1;
     if (reached) {
       this._emaHops = this._emaHops === null
@@ -477,7 +376,6 @@ export class NeuromorphicDHT8W extends DHT {
         this._reinforceWave(trace);
       }
 
-      // Shortcut cascade backpropagation.
       if (trace.length >= 2) {
         const lastTrace = trace[trace.length - 1];
         if (lastTrace.synapse.peerId === targetKey) {
@@ -500,47 +398,28 @@ export class NeuromorphicDHT8W extends DHT {
     };
   }
 
-  // ── LTP reinforcement wave (tracks useCount for adaptive decay) ───────────
+  // ── LTP reinforcement wave ────────────────────────────────────────────────
 
   _reinforceWave(trace) {
     for (let i = trace.length - 1; i >= 0; i--) {
       const { fromId, synapse } = trace[i];
       const node = this.nodeMap.get(fromId);
       if (!node) continue;
-      // Check both tiers — a highway synapse may be on the winning path.
       const syn = node.synaptome.get(synapse.peerId) ?? node.highway.get(synapse.peerId);
       if (syn) {
         syn.reinforce(this.simEpoch, INERTIA_DURATION);
-        syn.useCount = (syn.useCount ?? 0) + 1;  // adaptive decay tracking
+        syn.useCount = (syn.useCount ?? 0) + 1;
       }
     }
   }
 
-  // ── Mechanism 5: Lazy load decay helper ───────────────────────────────────
-  // Returns the decayed loadEMA for a node without mutating it.  The actual
-  // write-back happens only when the node is selected as a relay hop.
-
-  _decayedLoad(node) {
-    const elapsed = this.simEpoch - (node.loadLastEpoch ?? 0);
-    return (node.loadEMA ?? 0) * Math.pow(LOAD_DECAY, elapsed);
-  }
-
-  // ── 2-hop lookahead AP selection (Mechanism 6: load-aware) ───────────────
-  // Reads the peer's full synaptome (local + highway) for the second hop.
-  // Load discounts are applied to both the 1-hop and 2-hop combined scores.
+  // ── 2-hop lookahead AP selection (load balancing removed) ─────────────────
 
   _bestByTwoHopAP(current, candidates, targetKey, currentDist, wScale) {
     const sorted = candidates
       .map(s => {
-        const peer = this.nodeMap.get(s.peerId);
-        const pd   = s.peerId ^ targetKey;
-        let ap1    = (Number(currentDist - pd) / s.latency) * (1 + wScale * s.weight);
-
-        // Mechanism 6: discount ap1 by the candidate peer's load.
-        const peerLoad     = this._decayedLoad(peer);
-        const loadDiscount = Math.max(LOAD_FLOOR, 1 - LOAD_PENALTY * (peerLoad / LOAD_SATURATION));
-        ap1 *= loadDiscount;
-
+        const pd  = s.peerId ^ targetKey;
+        const ap1 = (Number(currentDist - pd) / s.latency) * (1 + wScale * s.weight);
         return { s, ap1 };
       })
       .sort((a, b) => b.ap1 - a.ap1);
@@ -557,7 +436,6 @@ export class NeuromorphicDHT8W extends DHT {
       const firstNode = this.nodeMap.get(firstSyn.peerId);
       if (!firstNode?.alive) continue;
 
-      // Collect forward candidates from peer's both tiers.
       const fwdCands = [];
       for (const fs of firstNode.synaptome.values()) {
         if ((fs.peerId ^ targetKey) < firstDist && this.nodeMap.get(fs.peerId)?.alive)
@@ -580,10 +458,7 @@ export class NeuromorphicDHT8W extends DHT {
 
       const progress2 = Number(currentDist - twoHopDist);
       const totalLat  = firstSyn.latency + secondLatency;
-      let ap2         = (progress2 / totalLat) * (1 + wScale * firstSyn.weight);
-
-      // Mechanism 6: discount ap2 by the first-hop node's load (it is the relay).
-      ap2 *= Math.max(LOAD_FLOOR, 1 - LOAD_PENALTY * (this._decayedLoad(firstNode) / LOAD_SATURATION));
+      const ap2       = (progress2 / totalLat) * (1 + wScale * firstSyn.weight);
 
       if (ap2 > bestAP2) {
         bestAP2 = ap2;
@@ -607,7 +482,7 @@ export class NeuromorphicDHT8W extends DHT {
     }
   }
 
-  // ── Standard introduce (stratified into local tier) ───────────────────────
+  // ── Standard introduce ────────────────────────────────────────────────────
 
   _introduce(aId, cId, initialWeight = 0.5) {
     const nodeA = this.nodeMap.get(aId);
@@ -622,19 +497,7 @@ export class NeuromorphicDHT8W extends DHT {
     this._stratifiedAdd(nodeA, syn);
   }
 
-  // ── Change 2: Cascading lateral spread (depth-aware) ──────────────────────
-  //
-  // Depth=1: node A gains shortcut to C, then tells its top-LATERAL_K regional
-  //          neighbours about C.
-  // Depth=2: each of those regional neighbours, upon gaining the shortcut,
-  //          tells their own top-LATERAL_K2 regional neighbours.
-  // Depth>LATERAL_MAX_DEPTH: no further recursion.
-  //
-  // Total shortcut propagation per discovery event (worst case):
-  //   1 (A) + LATERAL_K (depth-1) + LATERAL_K × LATERAL_K2 (depth-2) = 19
-  //
-  // The _hasAny guard at entry ensures nodes that already hold the shortcut
-  // do not trigger further spread, so the bound is tight.
+  // ── Cascading lateral spread ──────────────────────────────────────────────
 
   _introduceAndSpread(aId, cId, depth = 1) {
     const nodeA = this.nodeMap.get(aId);
@@ -665,7 +528,6 @@ export class NeuromorphicDHT8W extends DHT {
   }
 
   // ── Two-tier helper ───────────────────────────────────────────────────────
-  // Returns true if peerId is present in either the local or highway tier.
 
   _hasAny(node, peerId) {
     return node.synaptome.has(peerId) || node.highway.has(peerId);
@@ -687,8 +549,10 @@ export class NeuromorphicDHT8W extends DHT {
     }
     if (evictGroup === -1) return false;
 
+    // Change 3: skip pinned destinations when selecting eviction candidate.
     let weakest = null, weakestW = Infinity;
     for (const syn of byGroup[evictGroup]) {
+      if (node.pinnedDests.has(syn.peerId)) continue;
       if (syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
     }
     if (!weakest) return false;
@@ -698,12 +562,7 @@ export class NeuromorphicDHT8W extends DHT {
     return true;
   }
 
-  // ── Mechanism 1 + 7: Highway tier management ──────────────────────────────
-  //
-  // Scans the 2-hop neighbourhood for the highest-stratum-diversity nodes and
-  // fills the highway tier with up to HIGHWAY_SLOTS of them.  Random noise is
-  // added to each candidate's score (Mechanism 7) to prevent identical hub
-  // selection across refreshes.
+  // ── Highway tier management ───────────────────────────────────────────────
 
   _refreshHighway(node) {
     if (!node.alive) return;
@@ -711,7 +570,6 @@ export class NeuromorphicDHT8W extends DHT {
     const candidates = [];
     const seen       = new Set([node.id]);
 
-    // Collect up to HUB_SCAN_CAP peers-of-peers.
     outer:
     for (const syn of node.synaptome.values()) {
       const peer = this.nodeMap.get(syn.peerId);
@@ -727,28 +585,23 @@ export class NeuromorphicDHT8W extends DHT {
       }
     }
 
-    // Score each candidate by stratum diversity of its synaptome, with random
-    // noise to prevent deterministic re-selection (Mechanism 7).
     const scored = candidates
       .map(c => ({ node: c, score: this._stratumDiversity(c) + Math.random() * HUB_NOISE }))
       .filter(c => c.score >= HUB_MIN_DIVERSITY);
 
     scored.sort((a, b) => b.score - a.score);
 
-    // Rebuild highway with top-scoring hubs.
     node.highway.clear();
     for (let i = 0; i < Math.min(HIGHWAY_SLOTS, scored.length); i++) {
       const hub     = scored[i].node;
       const latMs   = roundTripLatency(node, hub);
       const stratum = clz64(node.id ^ hub.id);
       const syn     = new Synapse({ peerId: hub.id, latencyMs: latMs, stratum });
-      syn.weight    = 0.5;  // hubs start with meaningful weight
+      syn.weight    = 0.5;
       node.highway.set(hub.id, syn);
     }
   }
 
-  // Returns the number of distinct stratum groups (0–15) covered by a node's
-  // local synaptome — used as the hub quality score.
   _stratumDiversity(node) {
     const groups = new Set();
     for (const syn of node.synaptome.values()) {
@@ -757,7 +610,7 @@ export class NeuromorphicDHT8W extends DHT {
     return groups.size;
   }
 
-  // ── Mechanism 3: Markov rolling-window tracking ───────────────────────────
+  // ── Markov rolling-window tracking ────────────────────────────────────────
 
   _markovRecord(node, targetKey) {
     node.recentDests.push(targetKey);
@@ -773,10 +626,50 @@ export class NeuromorphicDHT8W extends DHT {
     }
   }
 
+  // ── Change 3: Relay pin tracking ─────────────────────────────────────────
+
+  _updatePins(node, targetKey) {
+    // Update the pin rolling window.
+    node.pinWindow.push(targetKey);
+    node.pinWindowFreq.set(
+      targetKey,
+      (node.pinWindowFreq.get(targetKey) ?? 0) + 1
+    );
+    if (node.pinWindow.length > RELAY_PIN_WINDOW) {
+      const evicted = node.pinWindow.shift();
+      const f = node.pinWindowFreq.get(evicted) - 1;
+      if (f <= 0) node.pinWindowFreq.delete(evicted);
+      else        node.pinWindowFreq.set(evicted, f);
+    }
+
+    // Pin new hot destinations that cross the threshold.
+    const freq = node.pinWindowFreq.get(targetKey) ?? 0;
+    if (freq >= RELAY_PIN_THRESHOLD && !node.pinnedDests.has(targetKey)) {
+      if (node.pinnedDests.size < RELAY_PIN_MAX) {
+        node.pinnedDests.add(targetKey);
+        // Immediately boost the synapse weight if it already exists.
+        const syn = node.synaptome.get(targetKey) ?? node.highway.get(targetKey);
+        if (syn && syn.weight < RELAY_PIN_WEIGHT) {
+          syn.weight = RELAY_PIN_WEIGHT;
+        }
+      }
+    }
+
+    // Release pins whose frequency has dropped below the threshold.
+    for (const dest of node.pinnedDests) {
+      if ((node.pinWindowFreq.get(dest) ?? 0) < RELAY_PIN_THRESHOLD) {
+        node.pinnedDests.delete(dest);
+      }
+    }
+  }
+
   // ── Local-tier annealing ──────────────────────────────────────────────────
 
   _tryAnneal(node) {
     if (!node.alive || node.synaptome.size === 0) return;
+
+    // Guard A: do not anneal below the floor.
+    if (node.synaptome.size <= SYNAPTOME_FLOOR) return;
 
     const { counts, byGroup } = this._buildGroupCounts(node);
 
@@ -791,8 +684,10 @@ export class NeuromorphicDHT8W extends DHT {
     }
     if (evictGroup === -1) return;
 
+    // Change 3: skip pinned destinations when selecting eviction candidate.
     let weakest = null, weakestW = Infinity;
     for (const syn of byGroup[evictGroup]) {
+      if (node.pinnedDests.has(syn.peerId)) continue;
       if (syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
     }
     if (!weakest) return;
@@ -815,7 +710,7 @@ export class NeuromorphicDHT8W extends DHT {
     node.addSynapse(newSyn);
   }
 
-  // ── Global candidate ─────────────────────────────────────────────────────
+  // ── Global candidate ──────────────────────────────────────────────────────
 
   _globalCandidate(node, lo, hi) {
     if (this._annealBufDirty || !this._annealBuffer) {
@@ -875,28 +770,39 @@ export class NeuromorphicDHT8W extends DHT {
     return { counts, byGroup };
   }
 
-  // ── Mechanism 2: Adaptive temporal decay ─────────────────────────────────
-  // Synapses with high useCount decay slowly (valuable learned routes);
-  // unused synapses decay quickly (frees slots for new discoveries).
+  // ── Adaptive temporal decay ───────────────────────────────────────────────
 
   _tickDecay() {
     for (const node of this.nodeMap.values()) {
-      // Decay local tier.
       this._decayTier(node, node.synaptome, true);
-      // Decay highway tier (no structural survival rule applies there).
       this._decayTier(node, node.highway, false);
     }
   }
 
   _decayTier(node, tierMap, applyStructuralRule) {
-    const toPrune = [];
+    const toPrune    = [];
+    const isHighway  = !applyStructuralRule;
 
     for (const syn of tierMap.values()) {
       if (syn.inertia > this.simEpoch) continue;
 
-      // Adaptive gamma: used synapses decay much slower than cold ones.
-      const useFrac = Math.min(1, (syn.useCount ?? 0) / USE_SATURATION);
-      const gamma   = DECAY_GAMMA_MIN + (DECAY_GAMMA_MAX - DECAY_GAMMA_MIN) * useFrac;
+      // Pinned destinations always decay at the protected rate.
+      if (node.pinnedDests?.has(syn.peerId)) {
+        syn.decay(DECAY_GAMMA_MAX);
+        if (syn.weight < RELAY_PIN_WEIGHT) syn.weight = RELAY_PIN_WEIGHT;
+        continue;   // never a prune candidate
+      }
+
+      // Change 1 (N-14W): highway synapses use a fixed protected decay rate
+      // regardless of useCount — they are exercised far less frequently than
+      // local synapses and should not be penalised for low traffic.
+      let gamma;
+      if (isHighway) {
+        gamma = DECAY_GAMMA_HIGHWAY;
+      } else {
+        const useFrac = Math.min(1, (syn.useCount ?? 0) / USE_SATURATION);
+        gamma = DECAY_GAMMA_MIN + (DECAY_GAMMA_MAX - DECAY_GAMMA_MIN) * useFrac;
+      }
       syn.decay(gamma);
 
       if (syn.weight < PRUNE_THRESHOLD) toPrune.push(syn);
@@ -904,9 +810,27 @@ export class NeuromorphicDHT8W extends DHT {
 
     if (!toPrune.length) return;
 
-    if (!applyStructuralRule) {
-      // Highway: prune all below-threshold entries directly.
-      for (const syn of toPrune) tierMap.delete(syn.peerId);
+    if (isHighway) {
+      // Change 2 (N-14W): highway floor — never prune below HIGHWAY_FLOOR slots.
+      if (tierMap.size <= HIGHWAY_FLOOR) {
+        // At or below floor: reset weights instead of deleting.
+        for (const syn of toPrune) syn.weight = PRUNE_THRESHOLD;
+        return;
+      }
+      // Above floor: prune weakest first, but stop at HIGHWAY_FLOOR.
+      const canDelete = tierMap.size - HIGHWAY_FLOOR;
+      toPrune.sort((a, b) => a.weight - b.weight);
+      for (let i = 0; i < toPrune.length; i++) {
+        if (i < canDelete) tierMap.delete(toPrune[i].peerId);
+        else               toPrune[i].weight = PRUNE_THRESHOLD;
+      }
+      return;
+    }
+
+    // Guard B: if the local tier is at or below the floor, reset
+    // all below-threshold weights rather than deleting entries.
+    if (tierMap.size <= SYNAPTOME_FLOOR) {
+      for (const syn of toPrune) syn.weight = PRUNE_THRESHOLD;
       return;
     }
 
@@ -943,29 +867,19 @@ export class NeuromorphicDHT8W extends DHT {
     const avgTemp    = nodes.length
       ? (nodes.reduce((a, n) => a + (n.temperature ?? T_INIT), 0) / nodes.length).toFixed(3)
       : '—';
-
-    // Mechanism 5: median loadEMA across live nodes.
-    let avgLoad = '0.0000';
-    if (nodes.length > 0) {
-      const loads = nodes
-        .map(n => this._decayedLoad(n))
-        .sort((a, b) => a - b);
-      const mid = Math.floor(loads.length / 2);
-      const median = loads.length % 2 === 0
-        ? (loads[mid - 1] + loads[mid]) / 2
-        : loads[mid];
-      avgLoad = median.toFixed(4);
-    }
+    const avgPinned  = nodes.length
+      ? (nodes.reduce((a, n) => a + (n.pinnedDests?.size ?? 0), 0) / nodes.length).toFixed(2)
+      : '0.00';
 
     return {
       ...base,
-      protocol:      'Neuromorphic-8W',
+      protocol:      'Neuromorphic-14W',
       epoch:         this.simEpoch,
       avgSynapses:   nodes.length ? ((localSyn + hwSyn) / nodes.length).toFixed(1) : 0,
       avgLocalSyn:   nodes.length ? (localSyn / nodes.length).toFixed(1) : 0,
       avgHighwaySyn: nodes.length ? (hwSyn / nodes.length).toFixed(1) : 0,
       avgTemp,
-      avgLoad,
+      avgPinned,
     };
   }
 }

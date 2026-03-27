@@ -119,13 +119,15 @@ export class NeuromorphicDHT4 extends DHT {
 
   // ── Neurogenesis ──────────────────────────────────────────────────────────
 
-  buildRoutingTables() {
+  buildRoutingTables({ bidirectional = true } = {}) {
+    super.buildRoutingTables({ bidirectional });
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     for (const node of sorted) {
       for (const peer of buildXorRoutingTable(node.id, sorted, this._k * K_BOOT_FACTOR)) {
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
+        if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
       node._nodeMapRef = this.nodeMap;
     }
@@ -169,6 +171,12 @@ export class NeuromorphicDHT4 extends DHT {
         }
         candidates.push(s);
       }
+      for (const s of current.incomingSynapses.values()) {
+        if ((s.peerId ^ targetKey) >= currentDist) continue; // no progress
+        const peer = this.nodeMap.get(s.peerId);
+        if (!peer?.alive) continue;
+        candidates.push(s);
+      }
       if (candidates.length === 0) break;
 
       // Two-tier region check.
@@ -177,7 +185,8 @@ export class NeuromorphicDHT4 extends DHT {
 
       // Priority 0 — Direct-to-target short-circuit.
       let nextSyn;
-      const directSyn = current.synaptome.get(targetKey);
+      const directSyn = current.synaptome.get(targetKey)
+                     ?? current.incomingSynapses.get(targetKey);
       if (directSyn && this.nodeMap.get(targetKey)?.alive) {
         nextSyn = directSyn;
       } else if (hop === 0 && Math.random() < EXPLORATION_EPSILON) {
@@ -341,6 +350,7 @@ export class NeuromorphicDHT4 extends DHT {
     const syn     = new Synapse({ peerId: cId, latencyMs: latMs, stratum });
     syn.weight    = initialWeight; // direct shortcuts start at 0.5; cascade relays at 0.1
     nodeA.addSynapse(syn);
+    if (this.bidirectional) nodeC.addIncomingSynapse(aId, latMs, stratum);
   }
 
   // ── Introduce with lateral spread (N-4 mechanism 1) ──────────────────────

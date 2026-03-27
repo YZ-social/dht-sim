@@ -13,6 +13,43 @@ export class Results {
     this._lastLookupResult   = null;
     this._lastChurnResult    = null;
     this._hotspotData        = null;
+    this._lastRunParams      = null;  // set before every test via setRunParams()
+    this._lastRunTs          = null;  // ISO timestamp of most recent test
+  }
+
+  /**
+   * Call this immediately before starting any test so the params are
+   * captured and included in every CSV export for that test.
+   */
+  setRunParams(params) {
+    this._lastRunParams = params ?? null;
+    this._lastRunTs     = new Date().toISOString();
+  }
+
+  /**
+   * Returns a standardised "Run Parameters" CSV block that is appended to
+   * every exported file.  `extraRows` is an optional array of [key, value]
+   * pairs for test-specific fields that aren't in params.
+   */
+  _paramsSection(params, extraRows = []) {
+    const p = params ?? this._lastRunParams;
+    const ts = this._lastRunTs ?? new Date().toISOString();
+    const rows = [];
+    rows.push('');
+    rows.push('# Run Parameters');
+    rows.push('Parameter,Value');
+    rows.push(`Timestamp,${ts}`);
+    rows.push(`Bidirectional,${p?.bidirectional ? 'yes' : 'no'}`);
+    if (p) {
+      rows.push(`Nodes,${p.nodeCount ?? ''}`);
+      rows.push(`Protocol,${p.protocol ?? ''}`);
+      rows.push(`K (bucket size),${p.k ?? ''}`);
+      rows.push(`Alpha (parallel queries),${p.alpha ?? ''}`);
+      rows.push(`ID bits,${p.bits ?? ''}`);
+      rows.push(`Node delay (ms),${p.nodeDelay ?? ''}`);
+    }
+    for (const [k, v] of extraRows) rows.push(`${k},${v}`);
+    return rows.join('\r\n');
   }
 
   // ── CSV download helpers ──────────────────────────────────────────────────
@@ -391,6 +428,9 @@ export class Results {
         s.epoch       != null ? s.epoch : '',
       ].join(','));
     }
+    rows.push(this._paramsSection(null, [
+      ['Sessions', this._trainingHistory.length],
+    ]));
     return rows.join('\r\n');
   }
 
@@ -627,6 +667,7 @@ export class Results {
         delta,
       ].join(','));
     }
+    rows.push(this._paramsSection());
     return rows.join('\r\n');
   }
 
@@ -802,6 +843,7 @@ export class Results {
 
   _pubsubCSV() {
     if (!this._pubsubHistory?.length) return '';
+    const last = this._pubsubHistory[this._pubsubHistory.length - 1];
     const rows = [
       ['Tick', 'Groups', 'Coverage%', 'Relay Hops', 'Relay ms', 'Bcast Avg Hops', 'Bcast ms', 'Total Hops'].join(','),
     ];
@@ -817,6 +859,10 @@ export class Results {
         s.totalHops ?? '',
       ].join(','));
     }
+    rows.push(this._paramsSection(null, [
+      ['Pub/Sub group size',  this._lastRunParams?.pubsubGroupSize ?? ''],
+      ['Pub/Sub coverage %',  last?.coverage ?? this._lastRunParams?.pubsubCoverage ?? ''],
+    ]));
     return rows.join('\r\n');
   }
 
@@ -838,6 +884,7 @@ export class Results {
         if (count > 0) rows.push([idx, count].join(','));
       });
     }
+    rows.push(this._paramsSection());
     return rows.join('\r\n');
   }
 
@@ -850,6 +897,7 @@ export class Results {
       ['Median Time (ms)', time?.median?.toFixed(2) ?? ''],
       ['Max Time (ms)', time?.max ?? ''],
     ];
+    rows.push(this._paramsSection());
     return rows.join('\r\n');
   }
 
@@ -870,6 +918,11 @@ export class Results {
         e.successRate != null ? (e.successRate * 100).toFixed(2) + '%' : '',
       ].join(','));
     }
+    rows.push(this._paramsSection(null, [
+      ['Churn rate %',   this._lastRunParams?.churnRate ?? ''],
+      ['Churn intervals', this._lastRunParams?.churnIntervals ?? ''],
+      ['Lookups/interval', this._lastRunParams?.lookupsPerInterval ?? ''],
+    ]));
     return rows.join('\r\n');
   }
 
@@ -1335,30 +1388,26 @@ export class Results {
 
     // ── Parameter section at the bottom ────────────────────────────────────
     const hasType = t => testSpecs.some(s => s.type === t);
-    rows.push('');
-    rows.push('# Run Parameters');
-    rows.push('Parameter,Value');
-    rows.push(`Nodes,${nodeCount ?? ''}`);
+    const extra = [];
     if (params) {
-      rows.push(`K (bucket size),${params.k}`);
-      rows.push(`Alpha (parallel queries),${params.alpha}`);
-      rows.push(`ID bits,${params.bits}`);
-      rows.push(`Node delay (ms),${params.nodeDelay}`);
-      rows.push(`Lookups per cell,${params.msgCount}`);
-      rows.push(`Warmup sessions (neuromorphic),${params.benchWarmupSessions}`);
+      extra.push(['Lookups per cell',              params.msgCount]);
+      extra.push(['Warmup sessions (neuromorphic)', params.benchWarmupSessions]);
+      extra.push(['Effective warmup lookups',
+        Math.max(params.benchWarmupSessions, Math.round(4 * (nodeCount ?? 0) / 10000)) * 500]);
       if (hasType('source') || hasType('srcdest'))
-        rows.push(`Source pool %,${params.sourcePct}`);
+        extra.push(['Source pool %', params.sourcePct]);
       if (hasType('dest') || hasType('srcdest'))
-        rows.push(`Dest pool %,${params.destPct}`);
+        extra.push(['Dest pool %', params.destPct]);
       if (hasType('pubsub')) {
-        rows.push(`Pub/Sub group size,${params.pubsubGroupSize}`);
-        rows.push(`Pub/Sub coverage %,${params.pubsubCoverage}`);
+        extra.push(['Pub/Sub group size',  params.pubsubGroupSize]);
+        extra.push(['Pub/Sub coverage %',  params.pubsubCoverage]);
       }
       if (hasType('churn'))
-        rows.push(`Churn rate %,${params.benchChurnPct}`);
+        extra.push(['Churn rate %', params.benchChurnPct]);
     }
+    rows.push(this._paramsSection(params, extra));
 
-    rows.unshift(`# DHT Benchmark — ${nodeCount?.toLocaleString()} nodes · 500 lookups/cell`);
+    rows.unshift(`# DHT Benchmark — ${nodeCount?.toLocaleString()} nodes · ${params?.msgCount ?? 500} lookups/cell`);
     return rows.join('\r\n');
   }
 
@@ -1544,6 +1593,11 @@ export class Results {
       'Item percentile,Cumulative queries %',
       ...st.lorenz.xs.map((x, i) => `${x.toFixed(2)},${st.lorenz.ys[i].toFixed(2)}`),
     ];
+    lines.push(this._paramsSection(null, [
+      ['Hotspot lookups',  this._lastRunParams?.hotspotLookups ?? ''],
+      ['Content items',    this._lastRunParams?.contentCount   ?? ''],
+      ['Zipf exponent',    this._lastRunParams?.zipfExponent   ?? ''],
+    ]));
     return lines.join('\n');
   }
 

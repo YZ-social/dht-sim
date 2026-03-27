@@ -94,7 +94,8 @@ export class NeuromorphicDHT2SHC extends DHT {
 
   // ── Bootstrap (identical to N-2 — standard k per stratum) ────────────────
 
-  buildRoutingTables() {
+  buildRoutingTables({ bidirectional = true } = {}) {
+    super.buildRoutingTables({ bidirectional });
     const k      = this._k;
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
@@ -103,6 +104,7 @@ export class NeuromorphicDHT2SHC extends DHT {
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
+        if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
       node._nodeMapRef = this.nodeMap;
     }
@@ -141,6 +143,12 @@ export class NeuromorphicDHT2SHC extends DHT {
         if (!peer?.alive) continue;
         candidates.push(s);
       }
+      for (const s of current.incomingSynapses.values()) {
+        if ((s.peerId ^ targetKey) >= currentDist) continue; // no progress
+        const peer = this.nodeMap.get(s.peerId);
+        if (!peer?.alive) continue;
+        candidates.push(s);
+      }
 
       if (candidates.length === 0) break;
 
@@ -149,7 +157,8 @@ export class NeuromorphicDHT2SHC extends DHT {
 
       // Priority 0 — Direct-to-target short-circuit (same as N-2).
       let nextSyn;
-      const directSyn = current.synaptome.get(targetKey);
+      const directSyn = current.synaptome.get(targetKey)
+                     ?? current.incomingSynapses.get(targetKey);
       if (directSyn && this.nodeMap.get(targetKey)?.alive) {
         nextSyn = directSyn;
       } else if (hop === 0 && Math.random() < EXPLORATION_EPSILON) {
@@ -296,6 +305,7 @@ export class NeuromorphicDHT2SHC extends DHT {
     const syn     = new Synapse({ peerId: cId, latencyMs: latMs, stratum });
     syn.weight    = 0.5;
     nodeA.addSynapse(syn);
+    if (this.bidirectional) nodeC.addIncomingSynapse(aId, latMs, stratum);
   }
 
   // ── Synaptic decay (identical to N-2) ─────────────────────────────────────

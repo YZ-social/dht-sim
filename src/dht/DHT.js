@@ -56,8 +56,9 @@ export class DHT {
    * Rebuild routing tables after bulk node additions.
    * Optional: some implementations do this lazily.
    */
-  buildRoutingTables({ bidirectional = true } = {}) {
-    this.bidirectional = bidirectional;
+  buildRoutingTables({ bidirectional = true, maxConnections = Infinity } = {}) {
+    this.bidirectional  = bidirectional;
+    this.maxConnections = maxConnections;
   }
 
   /** Return all currently active nodes. */

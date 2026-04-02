@@ -183,6 +183,7 @@ export class Globe {
     this.controls.maxDistance     = 8;
     this.controls.autoRotate      = false;
     this.controls.autoRotateSpeed = 0.4;
+    this.controls.enablePan       = false;  // prevent dragging globe off-centre
 
     this.globeGroup   = new THREE.Group();
     this.nodeGroup    = new THREE.Group();
@@ -812,6 +813,12 @@ export class Globe {
   }
 
   setAutoRotate(v) { this.controls.autoRotate = v; }
+
+  setTheme(isLight) {
+    // Background follows UI theme; globe sphere keeps light-mode colours.
+    this.renderer.setClearColor(isLight ? 0xaac8e8 : 0x010810);
+    if (this._globeMesh) this._globeMesh.material.color.setHex(0x3a7ab8);
+  }
 
   dispose() {
     cancelAnimationFrame(this._animFrame);

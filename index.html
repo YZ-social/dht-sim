@@ -29,7 +29,10 @@
     <!-- Header -->
     <div class="sb-hdr">
       <button class="app-title" id="btnAbout" data-tip="Open the DHT Globe user guide.">&#9670; DHT Globe</button>
-      <button class="btn-notify" id="btnNotify" data-tip="Enable desktop notifications — you will be alerted when long-running tests complete.">&#x1F514;</button>
+      <div style="display:flex;gap:4px;align-items:center">
+        <button id="btnThemeToggle" data-tip="Toggle light / dark mode">&#9788;</button>
+        <button class="btn-notify" id="btnNotify" data-tip="Enable desktop notifications — you will be alerted when long-running tests complete.">&#x1F514;</button>
+      </div>
     </div>
 
     <!-- ① Network ──────────────────────────────────────────────────────── -->
@@ -59,10 +62,14 @@
         <option value="ngdht13w">N-13W</option>
         <option value="ngdht15w">N-15W</option>
       </select>
-      <div class="sb-row" style="margin-top:4px;margin-bottom:2px">
+      <div class="sb-row" style="margin-top:4px;margin-bottom:2px;gap:12px">
         <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
           <input type="checkbox" id="bidirectional" checked>
           <span data-tip="When checked, connections are bidirectional: if node A has a route to B, B can also route back through A. Doubles the effective routing candidates and significantly improves Pub/Sub relay and broadcast performance.">Bidirectional</span>
+        </label>
+        <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
+          <input type="checkbox" id="webLimit" checked>
+          <span data-tip="Limits each node to 50 connections — a realistic cap for browser-based DHT nodes using WebRTC or WebSocket. Without this, nodes initialise with hundreds of routing-table entries that a real browser peer cannot maintain.">Web Limit</span>
         </label>
       </div>
       <div class="sb-row">
@@ -121,9 +128,23 @@
       </div>
     </div>
 
-    <!-- ③ Churn ─────────────────────────────────────────────────────────── -->
+    <!-- ③ Add Nodes ─────────────────────────────────────────────────────── -->
     <div class="sb-sec">
-      <div class="sb-sec-lbl">Churn</div>
+      <div class="sb-sec-lbl">Add Nodes <span class="sb-node-badge" id="activeNodeCount">—</span></div>
+      <div class="sb-row">
+        <span class="sb-lbl" data-tip="Number of new nodes to organically join the existing network via a sponsor.">Count</span>
+        <input type="number" id="addNodeCount" class="sb-num" value="1" min="1" max="1000" step="1" style="width:52px">
+        <span class="sb-lbl" data-tip="Random lookups run from each new node after joining to accelerate integration.">Warm</span>
+        <input type="number" id="addNodeWarmup" class="sb-num" value="50" min="0" max="500" step="10" style="width:46px">
+      </div>
+      <div class="sb-btns">
+        <button class="btn btn-action" id="btnAddNodes" disabled data-tip="Add new nodes to the live network one at a time via organic sponsor-based joining. Each node discovers connections through its sponsor rather than having omniscient access to all peers.">+ Add Nodes</button>
+      </div>
+    </div>
+
+    <!-- ④ Churn ─────────────────────────────────────────────────────────── -->
+    <div class="sb-sec">
+      <div class="sb-sec-lbl">Churn <span class="sb-node-badge" id="activeNodeCountChurn">—</span></div>
       <div class="sb-row">
         <span class="sb-lbl" data-tip="Churn rate — percentage of nodes replaced per interval.">Rate</span>
         <input type="number" id="churnRate" class="sb-num" value="5" min="1" max="30" step="1" style="width:38px">

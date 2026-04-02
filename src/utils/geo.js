@@ -118,7 +118,7 @@ export function clz64(n) {
  * @param {number}   k       Max peers per bucket.
  * @returns {object[]}       Peer nodes to add (never includes selfId).
  */
-export function buildXorRoutingTable(selfId, sorted, k) {
+export function buildXorRoutingTable(selfId, sorted, k, maxTotal = Infinity) {
   const result = [];
 
   for (let b = 0; b <= 63; b++) {
@@ -150,6 +150,7 @@ export function buildXorRoutingTable(selfId, sorted, k) {
       if (sorted[i].id > rangeEnd) break;
       result.push(sorted[i]);
       taken++;
+      if (result.length >= maxTotal) return result;  // web-limit early exit
     }
   }
 

@@ -189,13 +189,18 @@ export class NeuromorphicDHTNX2W extends DHT {
 
   // ── Neurogenesis ────────────────────────────────────────────────────────────
 
-  buildRoutingTables({ bidirectional = true } = {}) {
-    super.buildRoutingTables({ bidirectional });
+  buildRoutingTables({ bidirectional = true, maxConnections = Infinity } = {}) {
+    super.buildRoutingTables({ bidirectional, maxConnections });
+    // If a connection cap is active, also shrink the live synaptome ceiling so
+    // training cannot grow beyond the web-limit after init.
+    if (maxConnections < this.MAX_SYNAPTOME_SIZE) {
+      this.MAX_SYNAPTOME_SIZE = maxConnections;
+    }
     const sorted = [...this.nodeMap.values()].sort(
       (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0
     );
     for (const node of sorted) {
-      for (const peer of buildXorRoutingTable(node.id, sorted, this._k * this.K_BOOT_FACTOR)) {
+      for (const peer of buildXorRoutingTable(node.id, sorted, this._k * this.K_BOOT_FACTOR, maxConnections)) {
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
@@ -203,6 +208,82 @@ export class NeuromorphicDHTNX2W extends DHT {
       }
       node._nodeMapRef = this.nodeMap;
     }
+  }
+
+  // ── Organic join ────────────────────────────────────────────────────────────
+
+  /**
+   * Bootstrap a newly-added node into the live network via a known sponsor.
+   *
+   * Explores the sponsor's 1-2 hop neighbourhood, sorts candidates by XOR
+   * distance to the new node, and wires synapses to the closest ones.
+   * Existing peers learn about the new node via addIncomingSynapse so they
+   * can route to it without disrupting their trained weights.
+   *
+   * @param {BigInt} newNodeId  ID of the freshly-created node (already in nodeMap).
+   * @param {BigInt} sponsorId  ID of the existing entry-point node.
+   * @returns {number} Number of synapses wired.
+   */
+  bootstrapJoin(newNodeId, sponsorId) {
+    const newNode = this.nodeMap.get(newNodeId);
+    const sponsor = this.nodeMap.get(sponsorId);
+    if (!newNode || !sponsor) return 0;
+
+    const seen = new Set([newNodeId]);
+    const candidates = [];
+
+    const visit = (node) => {
+      if (!node?.alive || seen.has(node.id)) return;
+      seen.add(node.id);
+      candidates.push(node);
+    };
+
+    // Layer 0: sponsor
+    visit(sponsor);
+
+    // Layer 1: sponsor's direct synaptome + highway
+    const layer1 = [];
+    for (const syn of sponsor.synaptome.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (peer?.alive && !seen.has(peer.id)) { layer1.push(peer); visit(peer); }
+    }
+    if (this.EN_TWO_TIER) {
+      for (const syn of sponsor.highway.values()) {
+        const peer = this.nodeMap.get(syn.peerId);
+        if (peer?.alive && !seen.has(peer.id)) { layer1.push(peer); visit(peer); }
+      }
+    }
+
+    // Layer 2: peers of layer-1 peers (2-hop discovery)
+    for (const peer of layer1) {
+      for (const syn of peer.synaptome.values()) {
+        const peer2 = this.nodeMap.get(syn.peerId);
+        if (peer2) visit(peer2);
+      }
+    }
+
+    // Sort by XOR distance to new node — closest first
+    candidates.sort((a, b) => {
+      const da = newNode.id ^ a.id;
+      const db = newNode.id ^ b.id;
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+
+    // Wire synapses up to synaptome capacity
+    const capacity = this.MAX_SYNAPTOME_SIZE + (this.EN_TWO_TIER ? this.HIGHWAY_SLOTS : 0);
+    let wired = 0;
+    for (const peer of candidates) {
+      if (wired >= capacity) break;
+      const latMs   = roundTripLatency(newNode, peer);
+      const stratum = clz64(newNode.id ^ peer.id);
+      newNode.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
+      peer.addIncomingSynapse(newNode.id, latMs, stratum);
+      wired++;
+    }
+
+    newNode._nodeMapRef = this.nodeMap;
+    newNode.temperature = this.EN_ANNEALING ? this.T_INIT : 1.0;
+    return wired;
   }
 
   // ── Routing ─────────────────────────────────────────────────────────────────

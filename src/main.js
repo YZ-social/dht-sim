@@ -67,6 +67,26 @@ let dht      = null;
 let engine   = null;
 const sweep  = new BenchmarkSweep();
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Theme management — follows prefers-color-scheme; manual toggle overrides
+// ─────────────────────────────────────────────────────────────────────────────
+
+const _themeQuery = window.matchMedia('(prefers-color-scheme: light)');
+
+function applyTheme(isLight) {
+  document.body.classList.toggle('light', isLight);
+  globe?.setTheme(isLight);
+  const btn = document.getElementById('btnThemeToggle');
+  if (btn) btn.textContent = isLight ? '\u2600 Light' : '\u263D Dark';
+}
+
+// System preference changes (e.g. Claude Preview panel toggle):
+// clear any manual override so the app follows the system going forward.
+_themeQuery.addEventListener('change', e => {
+  localStorage.removeItem('dht-theme');
+  applyTheme(e.matches);
+});
+
 // Expose for browser console / Claude debugging
 window.__sim = {
   get globe()  { return globe;  },
@@ -83,9 +103,19 @@ const results  = new Results('resultsOverlay');
 async function init() {
   controls.setStatus('Loading world map…', 'info');
 
+  // Apply theme before globe starts rendering (localStorage overrides system pref)
+  const _savedTheme = localStorage.getItem('dht-theme');
+  const _startLight = _savedTheme ? _savedTheme === 'light' : _themeQuery.matches;
+  document.body.classList.toggle('light', _startLight);
+  const _tb = document.getElementById('btnThemeToggle');
+  if (_tb) _tb.textContent = _startLight ? '\u2600 Light' : '\u263D Dark';
+
   // Initialise Three.js globe
   const canvas = document.getElementById('globeCanvas');
   globe = new Globe(canvas);
+
+  // Globe always uses light-mode colours — call unconditionally.
+  globe.setTheme(_startLight);
 
   // Load countries (TopoJSON via CDN, converted to GeoJSON by topojson-client)
   try {
@@ -107,6 +137,12 @@ async function init() {
   // Wire buttons
   document.getElementById('btnInit')?.addEventListener('click', onInit);
   document.getElementById('btnLookupTest')?.addEventListener('click', onLookupTest);
+  document.getElementById('btnAddNodes')?.addEventListener('click', onAddNodes);
+  document.getElementById('btnThemeToggle')?.addEventListener('click', () => {
+    const isLight = !document.body.classList.contains('light');
+    localStorage.setItem('dht-theme', isLight ? 'light' : 'dark');
+    applyTheme(isLight);
+  });
   document.getElementById('btnChurnTest')?.addEventListener('click', onChurnTest);
   document.getElementById('btnDemoLookup')?.addEventListener('click', onDemoLookup);
   document.getElementById('btnTrainNetwork')?.addEventListener('click', onTrainNetwork);
@@ -247,7 +283,10 @@ async function onInit() {
   controls.setProgress(0.8);
   await yieldUI();
 
-  dht.buildRoutingTables({ bidirectional: params.bidirectional });
+  dht.buildRoutingTables({
+    bidirectional:  params.bidirectional,
+    maxConnections: params.webLimit ? 50 : Infinity,
+  });
 
   controls.setProgress(1);
   await yieldUI();  // let GC settle after routing table build before globe work
@@ -267,9 +306,86 @@ async function onInit() {
     (nodes.length > GLOBE_NODE_LIMIT ? ' — globe hidden for large network' : ''),
     'success'
   );
+  controls.updateNodeCount(nodes.length);
   controls.setRunning(false);
   controls.setProgress(0);
   sweep.notifyInitComplete();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Add Nodes — organic join via sponsor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Find the existing alive node with the smallest XOR distance to newNode. */
+function findSponsor(dht, newNode) {
+  if (!dht.nodeMap) return null;
+  let best = null, bestDist = null;
+  for (const [id, node] of dht.nodeMap) {
+    if (id === newNode.id || !node.alive) continue;
+    const dist = newNode.id ^ id;
+    if (bestDist === null || dist < bestDist) { best = node; bestDist = dist; }
+  }
+  return best;
+}
+
+async function onAddNodes() {
+  if (!dht) {
+    controls.setStatus('Initialise the network first.', 'warn');
+    return;
+  }
+  controls.setRunning(true);
+  controls.setProgress(0);
+
+  const params   = controls.snapshot();
+  const count    = params.addNodeCount;
+  const warmup   = params.addNodeWarmup;
+  const newNodes = [];
+
+  controls.setStatus(
+    `Adding ${count} node${count > 1 ? 's' : ''} via organic join…`, 'info'
+  );
+
+  // Phase 1 — create and sponsor-join each node
+  for (let i = 0; i < count; i++) {
+    const { lat, lng } = globe.randomLandPoint();
+    const newNode = await dht.addNode(lat, lng);
+    newNodes.push(newNode);
+
+    const sponsor = findSponsor(dht, newNode);
+    if (sponsor && dht.bootstrapJoin) {
+      dht.bootstrapJoin(newNode.id, sponsor.id);
+    }
+
+    controls.setProgress((i + 1) / count * (warmup > 0 ? 0.4 : 1.0));
+    if ((i + 1) % 10 === 0) await yieldUI();
+  }
+
+  // Phase 2 — warmup lookups from each new node to integrate via LTP / annealing
+  if (warmup > 0 && newNodes.length > 0) {
+    const allIds = dht.nodeMap
+      ? [...dht.nodeMap.keys()]
+      : dht.getNodes().map(n => n.id);
+    let done = 0;
+    const totalWarmup = newNodes.length * warmup;
+    for (const newNode of newNodes) {
+      for (let w = 0; w < warmup; w++) {
+        const targetId = allIds[Math.floor(Math.random() * allIds.length)];
+        if (targetId !== newNode.id) await dht.lookup(newNode.id, targetId);
+        controls.setProgress(0.4 + (++done / totalWarmup) * 0.6);
+        if (done % 25 === 0) await yieldUI();
+      }
+    }
+  }
+
+  globe.setNodes(dht.getNodes());
+  const total = dht.nodeMap?.size ?? dht.getNodes().length;
+  controls.updateNodeCount(total);
+  controls.setStatus(
+    `Added ${count} node${count > 1 ? 's' : ''} — network now has ${total} active nodes.`,
+    'success'
+  );
+  controls.setRunning(false);
+  controls.setProgress(0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -507,6 +623,7 @@ async function onChurnTest() {
 
   results.showChurnResults(result);
   globe.setNodes(dht.getNodes());
+  controls.updateNodeCount(dht.nodeMap?.size ?? dht.getNodes().length);
   controls.setStatus('Churn test complete.', 'success');
   notify('Churn Test complete', `${params.churnIntervals} intervals · ${(params.churnRate * 100).toFixed(0)}% churn/interval`);
   await pushResult('churn', results.getChurnCSV(), { intervals: params.churnIntervals, churnRate: params.churnRate });
@@ -1084,7 +1201,10 @@ async function onBenchmark() {
 
       if (!benchmarkActive) return null;
       controls.setStatus(`${tag} — building routing tables…`, 'bench');
-      benchDHT.buildRoutingTables({ bidirectional: params.bidirectional });
+      benchDHT.buildRoutingTables({
+        bidirectional:  params.bidirectional,
+        maxConnections: params.webLimit ? 50 : Infinity,
+      });
       completedSteps++;
       controls.setProgress(stepFrac(completedSteps));
       await yieldUI();

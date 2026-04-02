@@ -32,6 +32,8 @@ export class Controls {
     this._bindNumber('churnRate',          1,       30);
     this._bindNumber('churnIntervals',     2,       30);
     this._bindNumber('lookupsPerInterval', 20,     500);
+    this._bindNumber('addNodeCount',        1,    1000);
+    this._bindNumber('addNodeWarmup',       0,     500);
 
     // Benchmark multi-selects: restore from localStorage, then wire buttons + persistence
     this._restoreMultiSelect('benchProtocols', 'dht-bench-protocols');
@@ -167,6 +169,8 @@ export class Controls {
   get churnRate()   { return parseInt(this._el('churnRate')?.value ?? 5) / 100; }
   get churnIntervals() { return parseInt(this._el('churnIntervals')?.value ?? 10); }
   get lookupsPerInterval() { return parseInt(this._el('lookupsPerInterval')?.value ?? 100); }
+  get addNodeCount()  { return Math.max(1, parseInt(this._el('addNodeCount')?.value  ?? 1)); }
+  get addNodeWarmup() { return Math.max(0, parseInt(this._el('addNodeWarmup')?.value ?? 50)); }
   get regional()       { return this._el('regionalMode')?.checked ?? false; }
   get regionalRadius() { return parseInt(this._el('regionalRadius')?.value ?? 2000); }
   get sourceMode()     { return this._el('sourceMode')?.checked ?? false; }
@@ -188,6 +192,7 @@ export class Controls {
     return sel.length ? new Set(sel) : null;
   }
   get bidirectional() { return this._el('bidirectional')?.checked ?? true; }
+  get webLimit()      { return this._el('webLimit')?.checked ?? false; }
   get showAnimation() { return this._el('showAnimation')?.checked ?? true; }
   get autoRotate()  { return this._el('autoRotate')?.checked ?? false; }
   get pubsubGroupSize() { return Math.max(4, Math.min(256, parseInt(this._el('pubsubGroupSize')?.value ?? 32))); }
@@ -225,8 +230,11 @@ export class Controls {
       churnRate: this.churnRate,
       churnIntervals: this.churnIntervals,
       lookupsPerInterval: this.lookupsPerInterval,
+      addNodeCount:  this.addNodeCount,
+      addNodeWarmup: this.addNodeWarmup,
       showAnimation: this.showAnimation,
       bidirectional: this.bidirectional,
+      webLimit:      this.webLimit,
       nx1wRules: this.getNX1WRules(),
       nx2wRules: this.getNX2WRules(),
     };
@@ -398,7 +406,7 @@ export class Controls {
   setRunning(running) {
     // btnBenchmark is managed independently by setBenchmarking(); exclude it here.
     ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup',
-     'btnBenchmark', 'btnTrainNetwork', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest']
+     'btnBenchmark', 'btnTrainNetwork', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest', 'btnAddNodes']
       .forEach(id => { const el = this._el(id); if (el) el.disabled = running; });
   }
 
@@ -415,14 +423,14 @@ export class Controls {
       }
     }
     ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnBenchmark',
-     'btnTrainNetwork', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest']
+     'btnTrainNetwork', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest', 'btnAddNodes']
       .forEach(id => { const b = this._el(id); if (b) b.disabled = active; });
   }
 
   setBenchmarking(active) {
     // During benchmarking: disable everything except the benchmark button itself
     // (which becomes "⏹ Stop Benchmark").
-    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup'];
+    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnAddNodes'];
     btns.forEach(id => {
       const el = this._el(id);
       if (el) el.disabled = active;
@@ -450,7 +458,7 @@ export class Controls {
   }
 
   setPubSub(active) {
-    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnBenchmark', 'btnTrainNetwork', 'btnPairLearning'];
+    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnBenchmark', 'btnTrainNetwork', 'btnPairLearning', 'btnAddNodes'];
     btns.forEach(id => {
       const el = this._el(id);
       if (el) el.disabled = active;
@@ -470,7 +478,7 @@ export class Controls {
 
   setPairLearning(active) {
     const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup',
-                  'btnBenchmark', 'btnTrainNetwork', 'btnPubSub'];
+                  'btnBenchmark', 'btnTrainNetwork', 'btnPubSub', 'btnAddNodes'];
     btns.forEach(id => {
       const el = this._el(id);
       if (el) el.disabled = active;
@@ -489,7 +497,7 @@ export class Controls {
   }
 
   setTraining(active) {
-    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnBenchmark', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest'];
+    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnBenchmark', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest', 'btnAddNodes'];
     btns.forEach(id => {
       const el = this._el(id);
       if (el) el.disabled = active;
@@ -520,8 +528,16 @@ export class Controls {
       }
     }
     ['btnInit','btnLookupTest','btnChurnTest','btnDemoLookup',
-     'btnTrainNetwork','btnPubSub','btnPairLearning','btnBenchmark']
+     'btnTrainNetwork','btnPubSub','btnPairLearning','btnBenchmark','btnAddNodes']
       .forEach(id => { const b = this._el(id); if (b) b.disabled = active; });
+  }
+
+  updateNodeCount(n) {
+    const txt = `${n} active`;
+    const b1 = this._el('activeNodeCount');
+    const b2 = this._el('activeNodeCountChurn');
+    if (b1) b1.textContent = txt;
+    if (b2) b2.textContent = txt;
   }
 
   setStatus(msg, type = 'info') {

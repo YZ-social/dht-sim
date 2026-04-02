@@ -145,7 +145,7 @@ const USE_SATURATION  = 20;
 
 // ── Markov hot-destination learning ──────────────────────────────────────────
 
-const MARKOV_WINDOW        = 32;
+const MARKOV_WINDOW        = 16;
 const MARKOV_HOT_THRESHOLD = 3;
 const MARKOV_BASE_WEIGHT   = 0.3;   // N-9W value — produces better bcast ms than 0.5
 const MARKOV_MAX_WEIGHT    = 0.9;

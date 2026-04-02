@@ -157,6 +157,14 @@ export class BenchmarkSweep {
       el.dispatchEvent(new Event('change', { bubbles: true }));
     };
 
+    const setChk = (id, val) => {
+      if (val === undefined || val === null) return;
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.checked = Boolean(val);
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+
     const setMultiSelect = (id, values, storageKey) => {
       if (!values) return;
       const sel = document.getElementById(id);
@@ -171,12 +179,103 @@ export class BenchmarkSweep {
       sel.dispatchEvent(new Event('change', { bubbles: true }));
     };
 
-    setNum('nodeCount',         run.nodeCount);
-    setNum('pubsubCoverage',    run.pubsubCoverage);
-    setNum('pubsubGroupSize',   run.pubsubGroupSize);
+    setNum('nodeCount',           run.nodeCount);
+    setNum('pubsubCoverage',      run.pubsubCoverage);
+    setNum('pubsubGroupSize',     run.pubsubGroupSize);
     setNum('benchWarmupSessions', run.warmupSessions);
     setMultiSelect('benchProtocols', run.protocols, 'dht-bench-protocols');
     setMultiSelect('benchTests',     run.tests,     'dht-bench-tests');
+
+    // Apply NX-1W rule parameters when present
+    if (run.nx1wRules) {
+      const r = run.nx1wRules;
+
+      // Bootstrap
+      setNum('nx-kBootFactor', r.bootstrap?.kBootFactor);
+
+      // Two-Tier Synaptome
+      setChk('nx-twoTier-en',       r.twoTier?.enabled);
+      setNum('nx-maxSynaptomeSize',  r.twoTier?.maxSynaptomeSize);
+      setNum('nx-highwaySlots',      r.twoTier?.highwaySlots);
+
+      // AP Routing
+      setNum('nx-lookaheadAlpha',      r.apRouting?.lookaheadAlpha);
+      setNum('nx-weightScale',         r.apRouting?.weightScale);
+      setNum('nx-geoRegionBits',       r.apRouting?.geoRegionBits);
+      setNum('nx-explorationEpsilon',  r.apRouting?.explorationEpsilon);
+      setNum('nx-maxGreedyHops',       r.apRouting?.maxGreedyHops);
+
+      // LTP Reinforcement
+      setChk('nx-ltp-en',          r.ltp?.enabled);
+      setNum('nx-inertiaDuration', r.ltp?.inertiaDuration);
+
+      // Triadic Closure
+      setChk('nx-triadic-en',             r.triadic?.enabled);
+      setNum('nx-introductionThreshold',  r.triadic?.introductionThreshold);
+
+      // Hop Caching + Cascade
+      setChk('nx-hopCaching-en',   r.hopCaching?.enabled);
+      setNum('nx-cascadeWeight',   r.hopCaching?.cascadeWeight);
+
+      // Lateral Spread
+      setChk('nx-lateralSpread-en',  r.lateralSpread?.enabled);
+      setNum('nx-lateralK',          r.lateralSpread?.lateralK);
+      setNum('nx-lateralK2',         r.lateralSpread?.lateralK2);
+      setNum('nx-lateralMaxDepth',   r.lateralSpread?.lateralMaxDepth);
+
+      // Stratified Eviction
+      setChk('nx-stratified-en',  r.stratified?.enabled);
+      setNum('nx-strataGroups',   r.stratified?.strataGroups);
+      setNum('nx-stratumFloor',   r.stratified?.stratumFloor);
+
+      // Simulated Annealing
+      setChk('nx-annealing-en',   r.annealing?.enabled);
+      setNum('nx-tInit',          r.annealing?.tInit);
+      setNum('nx-tMin',           r.annealing?.tMin);
+      setNum('nx-annealCooling',  r.annealing?.annealCooling);
+      setNum('nx-globalBias',     r.annealing?.globalBias);
+
+      // Relay Pinning
+      setChk('nx-relayPinning-en',    r.relayPinning?.enabled);
+      setNum('nx-relayPinThreshold',  r.relayPinning?.relayPinThreshold);
+      setNum('nx-relayPinWindow',     r.relayPinning?.relayPinWindow);
+      setNum('nx-relayPinMax',        r.relayPinning?.relayPinMax);
+      setNum('nx-relayPinWeight',     r.relayPinning?.relayPinWeight);
+
+      // Markov Pre-learning
+      setChk('nx-markov-en',           r.markov?.enabled);
+      setNum('nx-markovWindow',        r.markov?.markovWindow);
+      setNum('nx-markovHotThreshold',  r.markov?.markovHotThreshold);
+      setNum('nx-markovBaseWeight',    r.markov?.markovBaseWeight);
+      setNum('nx-markovMaxWeight',     r.markov?.markovMaxWeight);
+
+      // Adaptive Decay
+      setChk('nx-adaptiveDecay-en',        r.adaptiveDecay?.enabled);
+      setNum('nx-decayInterval',           r.adaptiveDecay?.decayInterval);
+      setNum('nx-pruneThreshold',          r.adaptiveDecay?.pruneThreshold);
+      setNum('nx-decayGammaMin',           r.adaptiveDecay?.decayGammaMin);
+      setNum('nx-decayGammaMax',           r.adaptiveDecay?.decayGammaMax);
+      setNum('nx-useSaturation',           r.adaptiveDecay?.useSaturation);
+      setNum('nx-decayGammaHighwayActive', r.adaptiveDecay?.decayGammaHighwayActive);
+      setNum('nx-decayGammaHighwayIdle',   r.adaptiveDecay?.decayGammaHighwayIdle);
+      setNum('nx-highwayRenewalWindow',    r.adaptiveDecay?.highwayRenewalWindow);
+      setNum('nx-highwayFloor',            r.adaptiveDecay?.highwayFloor);
+      setNum('nx-synaptomeFloor',          r.adaptiveDecay?.synaptomeFloor);
+
+      // Highway Refresh
+      setChk('nx-highwayRefresh-en',  r.highwayRefresh?.enabled);
+      setNum('nx-hubRefreshInterval', r.highwayRefresh?.hubRefreshInterval);
+      setNum('nx-hubScanCap',         r.highwayRefresh?.hubScanCap);
+      setNum('nx-hubMinDiversity',    r.highwayRefresh?.hubMinDiversity);
+      setNum('nx-hubNoise',           r.highwayRefresh?.hubNoise);
+
+      // Load Balancing (optional)
+      setChk('nx-loadBalancing-en', r.loadBalancing?.enabled);
+      setNum('nx-loadDecay',        r.loadBalancing?.loadDecay);
+      setNum('nx-loadPenalty',      r.loadBalancing?.loadPenalty);
+      setNum('nx-loadFloor',        r.loadBalancing?.loadFloor);
+      setNum('nx-loadSaturation',   r.loadBalancing?.loadSaturation);
+    }
   }
 
   _updateSweepStatus() {

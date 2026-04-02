@@ -811,3 +811,78 @@ button.app-title:hover { color: #55bbff; text-shadow: 0 0 14px #2288ddcc; }
 .sweep-running  { background: #1a3a1a; color: #66dd66; border: 1px solid #336633; }
 .sweep-done     { background: #1a2a3a; color: #66aaff; border: 1px solid #334466; }
 .sweep-stopped  { background: #3a2a1a; color: #ffaa55; border: 1px solid #664433; }
+
+/* ── NX-1W Rule Engine Panel ──────────────────────────────────────────────── */
+#nx1w-panel { display: none; }
+#nx1w-panel.nx-visible { display: block; }
+#nx2w-panel { display: none; }
+#nx2w-panel.nx-visible { display: block; }
+
+.nx-rule {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  margin-bottom: 3px;
+  overflow: hidden;
+}
+.nx-rule summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  cursor: pointer;
+  background: var(--in-bg);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text);
+  list-style: none;
+  user-select: none;
+}
+.nx-rule summary::-webkit-details-marker { display: none; }
+.nx-rule summary::after {
+  content: '▸';
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 9px;
+  flex-shrink: 0;
+}
+.nx-rule[open] summary::after { content: '▾'; }
+.nx-rule summary:hover { background: #0c2040; }
+.nx-rule.nx-always summary { color: var(--dim); }
+.nx-rule.nx-optional summary { color: #99ccaa; }
+
+.nx-rule-body {
+  padding: 4px 6px 5px;
+}
+
+.nx-params {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 2px 6px;
+  align-items: center;
+}
+.nx-params.nx-single {
+  grid-template-columns: auto 1fr;
+}
+.nx-pl {
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+.nx-pv {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: #77ccff;
+  font: 600 11px var(--font);
+  text-align: center;
+  padding: 0 1px;
+  outline: none;
+  width: 100%;
+  min-width: 0;
+  -moz-appearance: textfield;
+}
+.nx-pv:focus { border-bottom-color: var(--glow); color: #aaddff; }
+.nx-pv::-webkit-inner-spin-button,
+.nx-pv::-webkit-outer-spin-button { opacity: 0; }

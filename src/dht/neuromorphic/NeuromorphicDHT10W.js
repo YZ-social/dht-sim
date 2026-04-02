@@ -135,7 +135,7 @@ const USE_SATURATION  = 20;      // uses needed to reach full decay protection
 
 // ── Markov hot-destination learning ──────────────────────────────────────────
 
-const MARKOV_WINDOW        = 32;
+const MARKOV_WINDOW        = 16;
 const MARKOV_HOT_THRESHOLD = 3;
 const MARKOV_BASE_WEIGHT   = 0.5;  // Change 2: raised from 0.3 → restores N-6W seeding
 const MARKOV_MAX_WEIGHT    = 0.9;

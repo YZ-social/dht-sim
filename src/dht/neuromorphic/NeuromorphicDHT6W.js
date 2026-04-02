@@ -137,7 +137,7 @@ const USE_SATURATION  = 20;      // uses needed to reach full decay protection
 
 // ── Mechanism 3: Markov hot-destination learning ──────────────────────────────
 
-const MARKOV_WINDOW        = 32;  // rolling destination window per node
+const MARKOV_WINDOW        = 16;  // rolling destination window per node
 const MARKOV_HOT_THRESHOLD = 3;   // appearances before eager introduction fires
 
 // ── Mechanism 1: Highway / hub management ─────────────────────────────────────

@@ -28,6 +28,8 @@ import { NeuromorphicDHT11W }  from './dht/neuromorphic/NeuromorphicDHT11W.js';
 import { NeuromorphicDHT12W }  from './dht/neuromorphic/NeuromorphicDHT12W.js';
 import { NeuromorphicDHT13W }  from './dht/neuromorphic/NeuromorphicDHT13W.js';
 import { NeuromorphicDHT15W }  from './dht/neuromorphic/NeuromorphicDHT15W.js';
+import { NeuromorphicDHTNX1W } from './dht/neuromorphic/NeuromorphicDHTNX1W.js';
+import { NeuromorphicDHTNX2W } from './dht/neuromorphic/NeuromorphicDHTNX2W.js';
 // NeuromorphicDHT14W retired — superseded by N-15W. Source kept in neuromorphic/ for reference.
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
@@ -248,10 +250,21 @@ async function onInit() {
   dht.buildRoutingTables({ bidirectional: params.bidirectional });
 
   controls.setProgress(1);
-  globe.setNodes(dht.getNodes());
+  await yieldUI();  // let GC settle after routing table build before globe work
+
+  // Skip WebGL globe rendering for large networks — the per-node objects pushed
+  // into the renderer's internal arrays can exceed browser memory limits at
+  // ≥10 000 nodes.  The benchmark path already avoids this call and works fine.
+  const GLOBE_NODE_LIMIT = 10_000;
+  if (nodes.length <= GLOBE_NODE_LIMIT) {
+    globe.setNodes(dht.getNodes());
+  } else {
+    globe.setNodes([]);  // clear any leftover nodes from a previous smaller run
+  }
   controls.setStatus(
     `Network ready: ${nodes.length} nodes, ${params.protocol} ` +
-    `(k=${params.k}, α=${params.alpha}, ${params.bits}-bit IDs)`,
+    `(k=${params.k}, α=${params.alpha}, ${params.bits}-bit IDs)` +
+    (nodes.length > GLOBE_NODE_LIMIT ? ' — globe hidden for large network' : ''),
     'success'
   );
   controls.setRunning(false);
@@ -1011,6 +1024,8 @@ async function onBenchmark() {
     { key: 'ngdht12w',  label: 'N-12W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht13w',  label: 'N-13W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht15w',  label: 'N-15W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdhtnx1w', label: 'NX-1W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdhtnx2w', label: 'NX-2W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1242,6 +1257,20 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+      });
+    case 'ngdhtnx1w':
+      return new NeuromorphicDHTNX1W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
+      });
+    case 'ngdhtnx2w':
+      return new NeuromorphicDHTNX2W({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx2wRules,
       });
     case 'kademlia':
     default:

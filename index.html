@@ -39,6 +39,8 @@
         <option value="kademlia">Kademlia</option>
         <option value="geo8">G-DHT-8</option>
         <option value="geo16">G-DHT-16</option>
+        <option value="ngdhtnx1w">NX-1W ✦</option>
+        <option value="ngdhtnx2w">NX-2W ✦</option>
         <option value="ngdht">N-1</option>
         <option value="ngdht2">N-2</option>
         <option value="ngdht2bp">N-2-BP</option>
@@ -184,8 +186,10 @@
             <button class="sb-sel-btn" id="benchProtoNone">None</button>
           </div>
           <select id="benchProtocols" multiple size="6">
-            <option value="kademlia"  selected>Kademlia</option>
-            <option value="geo8"      selected>G-DHT-8</option>
+            <option value="kademlia"   selected>Kademlia</option>
+            <option value="geo8"       selected>G-DHT-8</option>
+            <option value="ngdhtnx1w" selected>NX-1W</option>
+            <option value="ngdhtnx2w" selected>NX-2W</option>
             <option value="ngdht"     selected>N-1</option>
             <option value="ngdht2"    selected>N-2</option>
             <option value="ngdht2bp"  selected>N-2-BP</option>
@@ -232,6 +236,473 @@
       </div>
       <div id="sweepStatus" class="sweep-status" style="display:none"></div>
     </div>
+
+    <!-- ⑦ NX-1W Rule Engine (visible only when NX-1W protocol is selected) ── -->
+    <div id="nx1w-panel" class="sb-sec">
+      <div class="sb-sec-lbl">NX-1W Rule Engine</div>
+
+      <!-- Rule 1: Bootstrap (always on) -->
+      <details class="nx-rule nx-always">
+        <summary>Bootstrap (always active)</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params nx-single">
+            <span class="nx-pl" data-tip="Multiplier on k — peers seeded per XOR bucket at startup. 1 = 20 peers/bucket (browser-realistic).">Boot Factor</span>
+            <input type="number" id="nx-kBootFactor" class="nx-pv" value="1" min="1" max="4" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 2: Two-Tier Synaptome -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-twoTier-en" checked onclick="event.stopPropagation()"> Two-Tier Synaptome</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Max connections in the local (learned) tier.">Local Slots</span>
+            <input type="number" id="nx-maxSynaptomeSize" class="nx-pv" value="48" min="16" max="96" step="1">
+            <span class="nx-pl" data-tip="Max connections in the highway (hub) tier.">Hwy Slots</span>
+            <input type="number" id="nx-highwaySlots" class="nx-pv" value="12" min="0" max="24" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 3: AP Routing (always on) -->
+      <details class="nx-rule nx-always">
+        <summary>AP Routing (always active)</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Candidates evaluated in the two-hop lookahead. Higher = better decisions, more CPU.">Lookahead α</span>
+            <input type="number" id="nx-lookaheadAlpha" class="nx-pv" value="5" min="1" max="10" step="1">
+            <span class="nx-pl" data-tip="How much learned weights boost AP score inside the target geographic region (0 = ignore weights).">Weight Scale</span>
+            <input type="number" id="nx-weightScale" class="nx-pv" value="0.40" min="0" max="1" step="0.05">
+            <span class="nx-pl" data-tip="Top N bits used to define 'same region' for weight scaling.">Region Bits</span>
+            <input type="number" id="nx-geoRegionBits" class="nx-pv" value="4" min="1" max="8" step="1">
+            <span class="nx-pl" data-tip="Probability of a random first hop instead of greedy (epsilon-greedy exploration).">Explore ε</span>
+            <input type="number" id="nx-explorationEpsilon" class="nx-pv" value="0.05" min="0" max="0.5" step="0.01">
+            <span class="nx-pl" data-tip="Hard cap on hops before a lookup is abandoned.">Max Hops</span>
+            <input type="number" id="nx-maxGreedyHops" class="nx-pv" value="40" min="5" max="100" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 4: LTP Reinforcement -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-ltp-en" checked onclick="event.stopPropagation()"> LTP Reinforcement</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params nx-single">
+            <span class="nx-pl" data-tip="Epochs a reinforced synapse is protected from decay after being strengthened.">Inertia</span>
+            <input type="number" id="nx-inertiaDuration" class="nx-pv" value="20" min="0" max="200" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 5: Triadic Closure -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-triadic-en" checked onclick="event.stopPropagation()"> Triadic Closure</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params nx-single">
+            <span class="nx-pl" data-tip="How many times A must route A→B→C before B introduces A to C directly.">Threshold</span>
+            <input type="number" id="nx-introductionThreshold" class="nx-pv" value="1" min="1" max="10" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 6: Hop Caching + Cascade Backprop -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-hopCaching-en" checked onclick="event.stopPropagation()"> Hop Caching + Cascade</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params nx-single">
+            <span class="nx-pl" data-tip="Starting weight for synapses introduced by cascade backpropagation (path nodes learning to route via gateway G).">Cascade Wt</span>
+            <input type="number" id="nx-cascadeWeight" class="nx-pv" value="0.1" min="0.0" max="0.9" step="0.05">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 7: Lateral Spread -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-lateralSpread-en" checked onclick="event.stopPropagation()"> Lateral Spread</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Neighbours told at level-1 cascade (direct regional peers of the discoverer).">K1</span>
+            <input type="number" id="nx-lateralK" class="nx-pv" value="6" min="1" max="12" step="1">
+            <span class="nx-pl" data-tip="Neighbours told at level-2 cascade (peers-of-peers).">K2</span>
+            <input type="number" id="nx-lateralK2" class="nx-pv" value="2" min="1" max="8" step="1">
+            <span class="nx-pl" data-tip="Maximum cascade depth (1 = no cascade, 2 = N-15W default).">Max Depth</span>
+            <input type="number" id="nx-lateralMaxDepth" class="nx-pv" value="2" min="1" max="4" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 8: Stratified Eviction -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-stratified-en" checked onclick="event.stopPropagation()"> Stratified Eviction</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Number of XOR-distance groups. 16 groups × 4 strata each covers all 64 strata.">Groups</span>
+            <input type="number" id="nx-strataGroups" class="nx-pv" value="16" min="4" max="32" step="1">
+            <span class="nx-pl" data-tip="Minimum connections per group before that group can be evicted from.">Floor</span>
+            <input type="number" id="nx-stratumFloor" class="nx-pv" value="2" min="0" max="8" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 9: Simulated Annealing -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-annealing-en" checked onclick="event.stopPropagation()"> Simulated Annealing</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Starting temperature (exploration rate). 1.0 = maximum exploration.">T Init</span>
+            <input type="number" id="nx-tInit" class="nx-pv" value="1.0" min="0.1" max="2.0" step="0.1">
+            <span class="nx-pl" data-tip="Minimum temperature — exploration never fully stops.">T Min</span>
+            <input type="number" id="nx-tMin" class="nx-pv" value="0.05" min="0.01" max="0.5" step="0.01">
+            <span class="nx-pl" data-tip="Temperature multiplied by this each time the node participates in a lookup. 0.9997 ≈ cools to 0.05 after ~23,000 participations.">Cooling</span>
+            <input type="number" id="nx-annealCooling" class="nx-pv" value="0.9997" min="0.990" max="0.99999" step="0.0001">
+            <span class="nx-pl" data-tip="At high temperature, probability of exploring globally (random node) vs locally (peers-of-peers).">Global Bias</span>
+            <input type="number" id="nx-globalBias" class="nx-pv" value="0.5" min="0" max="1" step="0.05">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 10: Relay Pinning -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-relayPinning-en" checked onclick="event.stopPropagation()"> Relay Pinning</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Appearances in the rolling window needed to earn a pin.">Threshold</span>
+            <input type="number" id="nx-relayPinThreshold" class="nx-pv" value="5" min="2" max="20" step="1">
+            <span class="nx-pl" data-tip="Rolling window size (recent lookups) for pin decisions.">Window</span>
+            <input type="number" id="nx-relayPinWindow" class="nx-pv" value="64" min="16" max="256" step="4">
+            <span class="nx-pl" data-tip="Maximum pinned destinations per node.">Max Pins</span>
+            <input type="number" id="nx-relayPinMax" class="nx-pv" value="4" min="1" max="20" step="1">
+            <span class="nx-pl" data-tip="Minimum weight floor — pinned synapses are restored to this if they fall below it.">Pin Wt</span>
+            <input type="number" id="nx-relayPinWeight" class="nx-pv" value="0.95" min="0.5" max="1.0" step="0.05">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 11: Markov Learning -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-markov-en" checked onclick="event.stopPropagation()"> Markov Pre-learning</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Recent destination window used to detect hot targets.">Window</span>
+            <input type="number" id="nx-markovWindow" class="nx-pv" value="16" min="8" max="128" step="4">
+            <span class="nx-pl" data-tip="Appearances in window to trigger proactive synapse creation.">Hot Thr</span>
+            <input type="number" id="nx-markovHotThreshold" class="nx-pv" value="3" min="1" max="10" step="1">
+            <span class="nx-pl" data-tip="Base starting weight of Markov-introduced synapses.">Base Wt</span>
+            <input type="number" id="nx-markovBaseWeight" class="nx-pv" value="0.5" min="0.1" max="0.9" step="0.05">
+            <span class="nx-pl" data-tip="Maximum starting weight (reached at high frequency).">Max Wt</span>
+            <input type="number" id="nx-markovMaxWeight" class="nx-pv" value="0.9" min="0.5" max="1.0" step="0.05">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 12: Adaptive Decay -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-adaptiveDecay-en" checked onclick="event.stopPropagation()"> Adaptive Decay</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Lookups between global decay sweeps.">Interval</span>
+            <input type="number" id="nx-decayInterval" class="nx-pv" value="100" min="10" max="1000" step="10">
+            <span class="nx-pl" data-tip="Weight below which a synapse becomes a deletion candidate.">Prune</span>
+            <input type="number" id="nx-pruneThreshold" class="nx-pv" value="0.05" min="0.01" max="0.3" step="0.01">
+            <span class="nx-pl" data-tip="Local: decay rate when useCount = 0 (cold, never used).">γ Min</span>
+            <input type="number" id="nx-decayGammaMin" class="nx-pv" value="0.990" min="0.8" max="0.999" step="0.001">
+            <span class="nx-pl" data-tip="Local: decay rate when useCount ≥ saturation (hot, heavily used).">γ Max</span>
+            <input type="number" id="nx-decayGammaMax" class="nx-pv" value="0.9998" min="0.990" max="0.9999" step="0.0001">
+            <span class="nx-pl" data-tip="useCount at which a local synapse reaches maximum decay protection.">Use Sat</span>
+            <input type="number" id="nx-useSaturation" class="nx-pv" value="20" min="1" max="100" step="1">
+            <span class="nx-pl" data-tip="Highway: decay rate when traversed within the renewal window.">Hwy Active γ</span>
+            <input type="number" id="nx-decayGammaHighwayActive" class="nx-pv" value="0.9995" min="0.990" max="0.9999" step="0.0001">
+            <span class="nx-pl" data-tip="Highway: decay rate when idle (not traversed within renewal window).">Hwy Idle γ</span>
+            <input type="number" id="nx-decayGammaHighwayIdle" class="nx-pv" value="0.990" min="0.8" max="0.999" step="0.001">
+            <span class="nx-pl" data-tip="Lookups within which a highway traversal keeps the synapse 'active'. ~6 sessions at 500 lookups/session.">Hwy Renewal</span>
+            <input type="number" id="nx-highwayRenewalWindow" class="nx-pv" value="3000" min="100" max="10000" step="100">
+            <span class="nx-pl" data-tip="Minimum highway connections — below this, no highway deletions.">Hwy Floor</span>
+            <input type="number" id="nx-highwayFloor" class="nx-pv" value="2" min="0" max="8" step="1">
+            <span class="nx-pl" data-tip="Local tier never shrinks below this. Deletions become resets at the floor.">Syn Floor</span>
+            <input type="number" id="nx-synaptomeFloor" class="nx-pv" value="48" min="0" max="96" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 13: Highway Refresh -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="nx-highwayRefresh-en" checked onclick="event.stopPropagation()"> Highway Refresh</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="How often (in lookup participations) each node rebuilds its highway tier.">Interval</span>
+            <input type="number" id="nx-hubRefreshInterval" class="nx-pv" value="300" min="50" max="2000" step="50">
+            <span class="nx-pl" data-tip="Max two-hop neighbours scanned when scoring hub candidates.">Scan Cap</span>
+            <input type="number" id="nx-hubScanCap" class="nx-pv" value="120" min="20" max="400" step="10">
+            <span class="nx-pl" data-tip="Minimum distinct XOR-distance groups a candidate must cover to qualify as a hub.">Min Div</span>
+            <input type="number" id="nx-hubMinDiversity" class="nx-pv" value="5" min="1" max="16" step="1">
+            <span class="nx-pl" data-tip="Random noise added to hub scores to prevent deterministic re-selection.">Noise</span>
+            <input type="number" id="nx-hubNoise" class="nx-pv" value="1.0" min="0" max="5" step="0.1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Optional Rule: Load-Aware AP Scoring (from N-7W/N-9W) -->
+      <details class="nx-rule nx-optional">
+        <summary><input type="checkbox" id="nx-loadBalancing-en" onclick="event.stopPropagation()"> Load Balancing (optional)</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Exponential decay rate for node load signal.">Load Decay</span>
+            <input type="number" id="nx-loadDecay" class="nx-pv" value="0.995" min="0.9" max="0.9999" step="0.001">
+            <span class="nx-pl" data-tip="Fraction of AP score lost when a node is fully saturated (loadEMA = saturation).">Penalty</span>
+            <input type="number" id="nx-loadPenalty" class="nx-pv" value="0.40" min="0" max="1" step="0.05">
+            <span class="nx-pl" data-tip="Minimum AP multiplier even at full load (prevents fully avoiding overloaded nodes).">Floor</span>
+            <input type="number" id="nx-loadFloor" class="nx-pv" value="0.10" min="0" max="1" step="0.05">
+            <span class="nx-pl" data-tip="loadEMA value at which full penalty is applied.">Saturation</span>
+            <input type="number" id="nx-loadSaturation" class="nx-pv" value="0.15" min="0.01" max="1" step="0.01">
+          </div>
+        </div>
+      </details>
+
+    </div><!-- /nx1w-panel -->
+
+    <!-- ⑧ NX-2W Rule Engine (visible only when NX-2W protocol is selected) ── -->
+    <div id="nx2w-panel" class="sb-sec">
+      <div class="sb-sec-lbl">NX-2W Rule Engine</div>
+
+      <!-- Rule 15: Broadcast Tree Delivery (NX-2W new rule) -->
+      <details class="nx-rule nx-optional" open>
+        <summary><input type="checkbox" id="n2-broadcastTree-en" checked onclick="event.stopPropagation()"> Broadcast Tree Delivery ✦</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Max children per tree node. Higher = shallower tree, more parallel fan-out.">Branch Factor</span>
+            <input type="number" id="n2-branchingFactor" class="nx-pv" value="4" min="2" max="16" step="1">
+            <span class="nx-pl" data-tip="Safety limit on tree depth. Prevents runaway growth in large groups.">Max Depth</span>
+            <input type="number" id="n2-maxDepth" class="nx-pv" value="12" min="2" max="20" step="1">
+            <span class="nx-pl" data-tip="When a node's child count exceeds this, its newest child is promoted as a sub-relay.">Rebalance At</span>
+            <input type="number" id="n2-rebalanceAt" class="nx-pv" value="8" min="2" max="32" step="1">
+            <span class="nx-pl" data-tip="LTP credit applied to each tree edge after delivery. Trains edge paths for future use.">Edge LTP Wt</span>
+            <input type="number" id="n2-edgeLtpWeight" class="nx-pv" value="0.8" min="0" max="1" step="0.05">
+            <span class="nx-pl" data-tip="0 = random child assignment, 1 = assign children by XOR proximity to parent.">Prox Bias</span>
+            <input type="number" id="n2-proximityBias" class="nx-pv" value="0.7" min="0" max="1" step="0.05">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 1: Bootstrap (always on) -->
+      <details class="nx-rule nx-always">
+        <summary>Bootstrap (always active)</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params nx-single">
+            <span class="nx-pl" data-tip="Multiplier on k — peers seeded per XOR bucket at startup. 1 = 20 peers/bucket.">Boot Factor</span>
+            <input type="number" id="n2-kBootFactor" class="nx-pv" value="1" min="1" max="4" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 2: Two-Tier Synaptome -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-twoTier-en" checked onclick="event.stopPropagation()"> Two-Tier Synaptome</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Max connections in the local (learned) tier.">Local Slots</span>
+            <input type="number" id="n2-maxSynaptomeSize" class="nx-pv" value="48" min="16" max="96" step="1">
+            <span class="nx-pl" data-tip="Max connections in the highway (hub) tier.">Hwy Slots</span>
+            <input type="number" id="n2-highwaySlots" class="nx-pv" value="12" min="0" max="24" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 3: AP Routing (always on) -->
+      <details class="nx-rule nx-always">
+        <summary>AP Routing (always active)</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Candidates evaluated in the two-hop lookahead.">Lookahead α</span>
+            <input type="number" id="n2-lookaheadAlpha" class="nx-pv" value="5" min="1" max="10" step="1">
+            <span class="nx-pl" data-tip="How much learned weights boost AP score inside the target geographic region.">Weight Scale</span>
+            <input type="number" id="n2-weightScale" class="nx-pv" value="0.40" min="0" max="1" step="0.05">
+            <span class="nx-pl" data-tip="Top N bits used to define 'same region' for weight scaling.">Region Bits</span>
+            <input type="number" id="n2-geoRegionBits" class="nx-pv" value="4" min="1" max="8" step="1">
+            <span class="nx-pl" data-tip="Probability of a random first hop instead of greedy.">Explore ε</span>
+            <input type="number" id="n2-explorationEpsilon" class="nx-pv" value="0.05" min="0" max="0.5" step="0.01">
+            <span class="nx-pl" data-tip="Hard cap on hops before a lookup is abandoned.">Max Hops</span>
+            <input type="number" id="n2-maxGreedyHops" class="nx-pv" value="40" min="5" max="100" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 4: LTP Reinforcement -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-ltp-en" checked onclick="event.stopPropagation()"> LTP Reinforcement</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params nx-single">
+            <span class="nx-pl" data-tip="Epochs a reinforced synapse is protected from decay after being strengthened.">Inertia</span>
+            <input type="number" id="n2-inertiaDuration" class="nx-pv" value="20" min="0" max="200" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 5: Triadic Closure -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-triadic-en" checked onclick="event.stopPropagation()"> Triadic Closure</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params nx-single">
+            <span class="nx-pl" data-tip="How many times A must route A→B→C before B introduces A to C directly.">Threshold</span>
+            <input type="number" id="n2-introductionThreshold" class="nx-pv" value="1" min="1" max="10" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 6: Hop Caching + Cascade Backprop -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-hopCaching-en" checked onclick="event.stopPropagation()"> Hop Caching + Cascade</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params nx-single">
+            <span class="nx-pl" data-tip="Starting weight for synapses introduced by cascade backpropagation.">Cascade Wt</span>
+            <input type="number" id="n2-cascadeWeight" class="nx-pv" value="0.1" min="0.0" max="0.9" step="0.05">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 7: Lateral Spread -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-lateralSpread-en" checked onclick="event.stopPropagation()"> Lateral Spread</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Neighbours told at level-1 cascade.">K1</span>
+            <input type="number" id="n2-lateralK" class="nx-pv" value="6" min="1" max="12" step="1">
+            <span class="nx-pl" data-tip="Neighbours told at level-2 cascade.">K2</span>
+            <input type="number" id="n2-lateralK2" class="nx-pv" value="2" min="1" max="8" step="1">
+            <span class="nx-pl" data-tip="Maximum cascade depth.">Max Depth</span>
+            <input type="number" id="n2-lateralMaxDepth" class="nx-pv" value="2" min="1" max="4" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 8: Stratified Eviction -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-stratified-en" checked onclick="event.stopPropagation()"> Stratified Eviction</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Number of XOR-distance groups.">Groups</span>
+            <input type="number" id="n2-strataGroups" class="nx-pv" value="16" min="4" max="32" step="1">
+            <span class="nx-pl" data-tip="Minimum connections per group before that group can be evicted from.">Floor</span>
+            <input type="number" id="n2-stratumFloor" class="nx-pv" value="2" min="0" max="8" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 9: Simulated Annealing -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-annealing-en" checked onclick="event.stopPropagation()"> Simulated Annealing</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Starting temperature (exploration rate).">T Init</span>
+            <input type="number" id="n2-tInit" class="nx-pv" value="1.0" min="0.1" max="2.0" step="0.1">
+            <span class="nx-pl" data-tip="Minimum temperature — exploration never fully stops.">T Min</span>
+            <input type="number" id="n2-tMin" class="nx-pv" value="0.05" min="0.01" max="0.5" step="0.01">
+            <span class="nx-pl" data-tip="Cooling rate per lookup participation.">Cooling</span>
+            <input type="number" id="n2-annealCooling" class="nx-pv" value="0.9997" min="0.990" max="0.99999" step="0.0001">
+            <span class="nx-pl" data-tip="Probability of exploring globally vs locally at high temperature.">Global Bias</span>
+            <input type="number" id="n2-globalBias" class="nx-pv" value="0.5" min="0" max="1" step="0.05">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 10: Relay Pinning -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-relayPinning-en" checked onclick="event.stopPropagation()"> Relay Pinning</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Appearances in the rolling window needed to earn a pin.">Threshold</span>
+            <input type="number" id="n2-relayPinThreshold" class="nx-pv" value="5" min="2" max="20" step="1">
+            <span class="nx-pl" data-tip="Rolling window size for pin decisions.">Window</span>
+            <input type="number" id="n2-relayPinWindow" class="nx-pv" value="64" min="16" max="256" step="4">
+            <span class="nx-pl" data-tip="Maximum pinned destinations per node.">Max Pins</span>
+            <input type="number" id="n2-relayPinMax" class="nx-pv" value="4" min="1" max="20" step="1">
+            <span class="nx-pl" data-tip="Minimum weight floor for pinned synapses.">Pin Wt</span>
+            <input type="number" id="n2-relayPinWeight" class="nx-pv" value="0.95" min="0.5" max="1.0" step="0.05">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 11: Markov Learning -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-markov-en" checked onclick="event.stopPropagation()"> Markov Pre-learning</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Recent destination window used to detect hot targets.">Window</span>
+            <input type="number" id="n2-markovWindow" class="nx-pv" value="16" min="8" max="128" step="4">
+            <span class="nx-pl" data-tip="Appearances in window to trigger proactive synapse creation.">Hot Thr</span>
+            <input type="number" id="n2-markovHotThreshold" class="nx-pv" value="3" min="1" max="10" step="1">
+            <span class="nx-pl" data-tip="Base starting weight of Markov-introduced synapses.">Base Wt</span>
+            <input type="number" id="n2-markovBaseWeight" class="nx-pv" value="0.5" min="0.1" max="0.9" step="0.05">
+            <span class="nx-pl" data-tip="Maximum starting weight (reached at high frequency).">Max Wt</span>
+            <input type="number" id="n2-markovMaxWeight" class="nx-pv" value="0.9" min="0.5" max="1.0" step="0.05">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 12: Adaptive Decay -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-adaptiveDecay-en" checked onclick="event.stopPropagation()"> Adaptive Decay</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Lookups between global decay sweeps.">Interval</span>
+            <input type="number" id="n2-decayInterval" class="nx-pv" value="100" min="10" max="1000" step="10">
+            <span class="nx-pl" data-tip="Weight below which a synapse becomes a deletion candidate.">Prune</span>
+            <input type="number" id="n2-pruneThreshold" class="nx-pv" value="0.05" min="0.01" max="0.3" step="0.01">
+            <span class="nx-pl" data-tip="Decay rate when useCount = 0 (cold).">γ Min</span>
+            <input type="number" id="n2-decayGammaMin" class="nx-pv" value="0.990" min="0.8" max="0.999" step="0.001">
+            <span class="nx-pl" data-tip="Decay rate when useCount ≥ saturation (hot).">γ Max</span>
+            <input type="number" id="n2-decayGammaMax" class="nx-pv" value="0.9998" min="0.990" max="0.9999" step="0.0001">
+            <span class="nx-pl" data-tip="useCount at which a local synapse reaches maximum decay protection.">Use Sat</span>
+            <input type="number" id="n2-useSaturation" class="nx-pv" value="20" min="1" max="100" step="1">
+            <span class="nx-pl" data-tip="Highway: decay rate when traversed within the renewal window.">Hwy Active γ</span>
+            <input type="number" id="n2-decayGammaHighwayActive" class="nx-pv" value="0.9995" min="0.990" max="0.9999" step="0.0001">
+            <span class="nx-pl" data-tip="Highway: decay rate when idle.">Hwy Idle γ</span>
+            <input type="number" id="n2-decayGammaHighwayIdle" class="nx-pv" value="0.990" min="0.8" max="0.999" step="0.001">
+            <span class="nx-pl" data-tip="Lookups within which a highway traversal counts as active.">Hwy Renewal</span>
+            <input type="number" id="n2-highwayRenewalWindow" class="nx-pv" value="3000" min="100" max="10000" step="100">
+            <span class="nx-pl" data-tip="Minimum highway connections.">Hwy Floor</span>
+            <input type="number" id="n2-highwayFloor" class="nx-pv" value="2" min="0" max="8" step="1">
+            <span class="nx-pl" data-tip="Local tier never shrinks below this.">Syn Floor</span>
+            <input type="number" id="n2-synaptomeFloor" class="nx-pv" value="48" min="0" max="96" step="1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Rule 13: Highway Refresh -->
+      <details class="nx-rule">
+        <summary><input type="checkbox" id="n2-highwayRefresh-en" checked onclick="event.stopPropagation()"> Highway Refresh</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="How often (in lookup participations) each node rebuilds its highway tier.">Interval</span>
+            <input type="number" id="n2-hubRefreshInterval" class="nx-pv" value="300" min="50" max="2000" step="50">
+            <span class="nx-pl" data-tip="Max two-hop neighbours scanned when scoring hub candidates.">Scan Cap</span>
+            <input type="number" id="n2-hubScanCap" class="nx-pv" value="120" min="20" max="400" step="10">
+            <span class="nx-pl" data-tip="Minimum distinct XOR-distance groups a candidate must cover to qualify.">Min Div</span>
+            <input type="number" id="n2-hubMinDiversity" class="nx-pv" value="5" min="1" max="16" step="1">
+            <span class="nx-pl" data-tip="Random noise added to hub scores.">Noise</span>
+            <input type="number" id="n2-hubNoise" class="nx-pv" value="1.0" min="0" max="5" step="0.1">
+          </div>
+        </div>
+      </details>
+
+      <!-- Optional: Load Balancing -->
+      <details class="nx-rule nx-optional">
+        <summary><input type="checkbox" id="n2-loadBalancing-en" onclick="event.stopPropagation()"> Load Balancing (optional)</summary>
+        <div class="nx-rule-body">
+          <div class="nx-params">
+            <span class="nx-pl" data-tip="Exponential decay rate for node load signal.">Load Decay</span>
+            <input type="number" id="n2-loadDecay" class="nx-pv" value="0.995" min="0.9" max="0.9999" step="0.001">
+            <span class="nx-pl" data-tip="Fraction of AP score lost when a node is fully saturated.">Penalty</span>
+            <input type="number" id="n2-loadPenalty" class="nx-pv" value="0.40" min="0" max="1" step="0.05">
+            <span class="nx-pl" data-tip="Minimum AP multiplier even at full load.">Floor</span>
+            <input type="number" id="n2-loadFloor" class="nx-pv" value="0.10" min="0" max="1" step="0.05">
+            <span class="nx-pl" data-tip="loadEMA value at which full penalty is applied.">Saturation</span>
+            <input type="number" id="n2-loadSaturation" class="nx-pv" value="0.15" min="0.01" max="1" step="0.01">
+          </div>
+        </div>
+      </details>
+
+    </div><!-- /nx2w-panel -->
 
   </div><!-- /sidebar -->
 

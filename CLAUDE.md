@@ -95,6 +95,8 @@ Omitting a field leaves the current UI value unchanged.
 - `geo8` — Geographic DHT (8-bit geo prefix)
 - `ngdht10w` — Neuromorphic DHT v10 (best performer)
 - `ngdht`, `ngdht2`…`ngdht13w` — other neuromorphic variants
+- `ngdhtnx1w` — NX-1W configurable research protocol
+- `ngdhtnx2w` — NX-2W broadcast-tree protocol (NX-1W + Rule 15: proximity-ordered fan-out tree) (pass `nx1wRules` to configure)
 
 ## Test Keys
 - `global` — random global lookups

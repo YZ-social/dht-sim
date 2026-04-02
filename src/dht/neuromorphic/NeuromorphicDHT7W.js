@@ -210,7 +210,7 @@ const USE_SATURATION  = 20;      // uses needed to reach full decay protection
 
 // ── Mechanism 3 + 8: Markov hot-destination learning ─────────────────────────
 
-const MARKOV_WINDOW        = 32;   // rolling destination window per node
+const MARKOV_WINDOW        = 16;   // rolling destination window per node
 const MARKOV_HOT_THRESHOLD = 3;    // appearances before eager introduction fires
 const MARKOV_BASE_WEIGHT   = 0.3;  // ◀ new: floor synapse weight for hot dest
 const MARKOV_MAX_WEIGHT    = 0.9;  // ◀ new: ceiling synapse weight for hot dest

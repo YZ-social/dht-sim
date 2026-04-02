@@ -11,10 +11,15 @@ export class Controls {
 
   _bindAll() {
     // Rename "Lookup Test" → "Lookup Training" for the Neuromorphic protocol
+    // Also show/hide NX-1W rule panel
     const protocolSel = this._el('dhtProtocol');
     if (protocolSel) {
-      protocolSel.addEventListener('change', () => this._updateLookupLabel());
+      protocolSel.addEventListener('change', () => {
+        this._updateLookupLabel();
+        this._updateNX1WPanel();
+      });
       this._updateLookupLabel();
+      this._updateNX1WPanel();
     }
 
     // Number inputs — clamp on change
@@ -222,6 +227,8 @@ export class Controls {
       lookupsPerInterval: this.lookupsPerInterval,
       showAnimation: this.showAnimation,
       bidirectional: this.bidirectional,
+      nx1wRules: this.getNX1WRules(),
+      nx2wRules: this.getNX2WRules(),
     };
   }
 
@@ -231,6 +238,159 @@ export class Controls {
       const isNeuro = this.dhtProtocol.startsWith('ngdht');
       btn.textContent = isNeuro ? '▶ Lookup Training' : '▶ Lookup Test';
     }
+  }
+
+  _updateNX1WPanel() {
+    const p1 = this._el('nx1w-panel');
+    if (p1) p1.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx1w');
+    const p2 = this._el('nx2w-panel');
+    if (p2) p2.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx2w');
+  }
+
+  /** Read all NX-1W rule parameters from DOM inputs. */
+  getNX1WRules() {
+    const num = id => { const el = this._el(id); return el ? parseFloat(el.value) : undefined; };
+    const int = id => { const el = this._el(id); return el ? parseInt(el.value) : undefined; };
+    const chk = (id, def = true) => { const el = this._el(id); return el ? el.checked : def; };
+
+    return {
+      bootstrap:          { kBootFactor:               int('nx-kBootFactor') },
+      twoTier:            { enabled: chk('nx-twoTier-en'),
+                            maxSynaptomeSize:          int('nx-maxSynaptomeSize'),
+                            highwaySlots:              int('nx-highwaySlots') },
+      apRouting:          { lookaheadAlpha:            int('nx-lookaheadAlpha'),
+                            weightScale:               num('nx-weightScale'),
+                            geoRegionBits:             int('nx-geoRegionBits'),
+                            explorationEpsilon:        num('nx-explorationEpsilon'),
+                            maxGreedyHops:             int('nx-maxGreedyHops') },
+      ltp:                { enabled: chk('nx-ltp-en'),
+                            inertiaDuration:           int('nx-inertiaDuration') },
+      triadicClosure:     { enabled: chk('nx-triadic-en'),
+                            introductionThreshold:     int('nx-introductionThreshold') },
+      hopCaching:         { enabled: chk('nx-hopCaching-en'),
+                            cascadeWeight:             num('nx-cascadeWeight') },
+      lateralSpread:      { enabled: chk('nx-lateralSpread-en'),
+                            lateralK:                  int('nx-lateralK'),
+                            lateralK2:                 int('nx-lateralK2'),
+                            lateralMaxDepth:           int('nx-lateralMaxDepth') },
+      stratifiedEviction: { enabled: chk('nx-stratified-en'),
+                            strataGroups:              int('nx-strataGroups'),
+                            stratumFloor:              int('nx-stratumFloor') },
+      annealing:          { enabled: chk('nx-annealing-en'),
+                            tInit:                     num('nx-tInit'),
+                            tMin:                      num('nx-tMin'),
+                            annealCooling:             num('nx-annealCooling'),
+                            globalBias:                num('nx-globalBias'),
+                            annealLocalSample:         int('nx-annealLocalSample') },
+      relayPinning:       { enabled: chk('nx-relayPinning-en'),
+                            relayPinThreshold:         int('nx-relayPinThreshold'),
+                            relayPinWindow:            int('nx-relayPinWindow'),
+                            relayPinMax:               int('nx-relayPinMax'),
+                            relayPinWeight:            num('nx-relayPinWeight') },
+      markov:             { enabled: chk('nx-markov-en'),
+                            markovWindow:              int('nx-markovWindow'),
+                            markovHotThreshold:        int('nx-markovHotThreshold'),
+                            markovBaseWeight:          num('nx-markovBaseWeight'),
+                            markovMaxWeight:           num('nx-markovMaxWeight') },
+      adaptiveDecay:      { enabled: chk('nx-adaptiveDecay-en'),
+                            decayInterval:             int('nx-decayInterval'),
+                            pruneThreshold:            num('nx-pruneThreshold'),
+                            decayGammaMin:             num('nx-decayGammaMin'),
+                            decayGammaMax:             num('nx-decayGammaMax'),
+                            useSaturation:             int('nx-useSaturation'),
+                            decayGammaHighwayActive:   num('nx-decayGammaHighwayActive'),
+                            decayGammaHighwayIdle:     num('nx-decayGammaHighwayIdle'),
+                            highwayRenewalWindow:      int('nx-highwayRenewalWindow'),
+                            highwayFloor:              int('nx-highwayFloor'),
+                            synaptomeFloor:            int('nx-synaptomeFloor') },
+      highwayRefresh:     { enabled: chk('nx-highwayRefresh-en'),
+                            hubRefreshInterval:        int('nx-hubRefreshInterval'),
+                            hubScanCap:                int('nx-hubScanCap'),
+                            hubMinDiversity:           int('nx-hubMinDiversity'),
+                            hubNoise:                  num('nx-hubNoise') },
+      loadBalancing:      { enabled: chk('nx-loadBalancing-en', false),
+                            loadDecay:                 num('nx-loadDecay'),
+                            loadPenalty:               num('nx-loadPenalty'),
+                            loadFloor:                 num('nx-loadFloor'),
+                            loadSaturation:            num('nx-loadSaturation') },
+    };
+  }
+
+  /** Read all NX-2W rule parameters from DOM inputs. */
+  getNX2WRules() {
+    const num = id => { const el = this._el(id); return el ? parseFloat(el.value) : undefined; };
+    const int = id => { const el = this._el(id); return el ? parseInt(el.value)   : undefined; };
+    const chk = (id, def = true) => { const el = this._el(id); return el ? el.checked : def; };
+
+    return {
+      // ── All NX-1W rules (same params, n2- prefix) ──────────────────────────
+      bootstrap:          { kBootFactor:               int('n2-kBootFactor') },
+      twoTier:            { enabled: chk('n2-twoTier-en'),
+                            maxSynaptomeSize:           int('n2-maxSynaptomeSize'),
+                            highwaySlots:               int('n2-highwaySlots') },
+      apRouting:          { lookaheadAlpha:             int('n2-lookaheadAlpha'),
+                            weightScale:               num('n2-weightScale'),
+                            geoRegionBits:             int('n2-geoRegionBits'),
+                            explorationEpsilon:        num('n2-explorationEpsilon'),
+                            maxGreedyHops:             int('n2-maxGreedyHops') },
+      ltp:                { enabled: chk('n2-ltp-en'),
+                            inertiaDuration:           int('n2-inertiaDuration') },
+      triadicClosure:     { enabled: chk('n2-triadic-en'),
+                            introductionThreshold:     int('n2-introductionThreshold') },
+      hopCaching:         { enabled: chk('n2-hopCaching-en'),
+                            cascadeWeight:             num('n2-cascadeWeight') },
+      lateralSpread:      { enabled: chk('n2-lateralSpread-en'),
+                            lateralK:                  int('n2-lateralK'),
+                            lateralK2:                 int('n2-lateralK2'),
+                            lateralMaxDepth:           int('n2-lateralMaxDepth') },
+      stratifiedEviction: { enabled: chk('n2-stratified-en'),
+                            strataGroups:              int('n2-strataGroups'),
+                            stratumFloor:              int('n2-stratumFloor') },
+      annealing:          { enabled: chk('n2-annealing-en'),
+                            tInit:                     num('n2-tInit'),
+                            tMin:                      num('n2-tMin'),
+                            annealCooling:             num('n2-annealCooling'),
+                            globalBias:                num('n2-globalBias'),
+                            annealLocalSample:         int('n2-annealLocalSample') },
+      relayPinning:       { enabled: chk('n2-relayPinning-en'),
+                            relayPinThreshold:         int('n2-relayPinThreshold'),
+                            relayPinWindow:            int('n2-relayPinWindow'),
+                            relayPinMax:               int('n2-relayPinMax'),
+                            relayPinWeight:            num('n2-relayPinWeight') },
+      markov:             { enabled: chk('n2-markov-en'),
+                            markovWindow:              int('n2-markovWindow'),
+                            markovHotThreshold:        int('n2-markovHotThreshold'),
+                            markovBaseWeight:          num('n2-markovBaseWeight'),
+                            markovMaxWeight:           num('n2-markovMaxWeight') },
+      adaptiveDecay:      { enabled: chk('n2-adaptiveDecay-en'),
+                            decayInterval:             int('n2-decayInterval'),
+                            pruneThreshold:            num('n2-pruneThreshold'),
+                            decayGammaMin:             num('n2-decayGammaMin'),
+                            decayGammaMax:             num('n2-decayGammaMax'),
+                            useSaturation:             int('n2-useSaturation'),
+                            decayGammaHighwayActive:   num('n2-decayGammaHighwayActive'),
+                            decayGammaHighwayIdle:     num('n2-decayGammaHighwayIdle'),
+                            highwayRenewalWindow:      int('n2-highwayRenewalWindow'),
+                            highwayFloor:              int('n2-highwayFloor'),
+                            synaptomeFloor:            int('n2-synaptomeFloor') },
+      highwayRefresh:     { enabled: chk('n2-highwayRefresh-en'),
+                            hubRefreshInterval:        int('n2-hubRefreshInterval'),
+                            hubScanCap:                int('n2-hubScanCap'),
+                            hubMinDiversity:           int('n2-hubMinDiversity'),
+                            hubNoise:                  num('n2-hubNoise') },
+      loadBalancing:      { enabled: chk('n2-loadBalancing-en', false),
+                            loadDecay:                 num('n2-loadDecay'),
+                            loadPenalty:               num('n2-loadPenalty'),
+                            loadFloor:                 num('n2-loadFloor'),
+                            loadSaturation:            num('n2-loadSaturation') },
+      // ── Rule 15: Broadcast Tree (NX-2W only) ──────────────────────────────
+      broadcastTree:      { enabled: chk('n2-broadcastTree-en'),
+                            branchingFactor:           int('n2-branchingFactor'),
+                            maxDepth:                  int('n2-maxDepth'),
+                            rebalanceAt:               int('n2-rebalanceAt'),
+                            edgeLtpWeight:             num('n2-edgeLtpWeight'),
+                            proximityBias:             num('n2-proximityBias') },
+    };
   }
 
   // ── Button state management ──────────────────────────────────────────────

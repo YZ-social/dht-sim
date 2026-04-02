@@ -759,19 +759,31 @@ export class SimulationEngine {
     } catch { /* skip */ }
 
     // relay → all participants (broadcast)
-    const bcastHops = [];
+    const bcastHops  = [];
     const bcastMsArr = [];
-    for (let i = 0; i < alive.length; i++) {
-      const p = alive[i];
-      if (p.id === sender.id) continue; // sender already reached relay
+    const targets    = alive.filter(p => p.id !== sender.id).map(p => p.id);
+
+    if (typeof dht.pubsubBroadcast === 'function' && targets.length > 0) {
+      // NX-2W tree-based broadcast: one call handles the full fan-out
       try {
-        const r = await dht.lookup(relay.id, p.id);
-        if (r?.found) {
-          bcastHops.push(r.hops);
-          bcastMsArr.push(Math.round(r.time));  // per-hop geographic RTT
-        }
+        const result = await dht.pubsubBroadcast(relay.id, targets);
+        bcastHops.push(...result.hops);
+        bcastMsArr.push(...result.times);
       } catch { /* skip */ }
-      if ((i + 1) % YIELD_EVERY === 0) await this._yield();
+    } else {
+      // Standard flat broadcast: one lookup per participant
+      for (let i = 0; i < alive.length; i++) {
+        const p = alive[i];
+        if (p.id === sender.id) continue; // sender already reached relay
+        try {
+          const r = await dht.lookup(relay.id, p.id);
+          if (r?.found) {
+            bcastHops.push(r.hops);
+            bcastMsArr.push(Math.round(r.time));  // per-hop geographic RTT
+          }
+        } catch { /* skip */ }
+        if ((i + 1) % YIELD_EVERY === 0) await this._yield();
+      }
     }
 
     const bcastStats  = computeStats(bcastHops);

@@ -1,8 +1,8 @@
 # DHT Globe Simulator
 
-An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of thirteen neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — including eight browser-realistic variants engineered for real-world WebRTC deployment.
+An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — designed for real-world browser WebRTC deployment.
 
-The primary research focus is **publish/subscribe (pub/sub) overlay networks**: we believe pub/sub will be the dominant use case for decentralised peer-to-peer networks, enabling real-time messaging, collaborative applications, live media, and event streaming without centralised infrastructure. The most advanced variant, **N-10W**, introduces eviction-immune relay pinning and is the current best-performing protocol for pub/sub workloads, winning on every benchmark metric at 25,000 nodes across a range of coverage levels.
+The primary research focus is **publish/subscribe (pub/sub) overlay networks**: we believe pub/sub will be the dominant use case for decentralised peer-to-peer networks, enabling real-time messaging, collaborative applications, live media, and event streaming without centralised infrastructure. The current state-of-the-art protocol is **NX-2W**, which introduces a configurable broadcast tree delivery mechanism and has been empirically tuned to outperform all previous protocols on pub/sub workloads under realistic browser connection constraints.
 
 The simulator renders a live WebGL globe of up to 100,000 nodes distributed according to real-world population density, routes messages between them in real time, and benchmarks every protocol side by side — measuring hop counts, latency, churn resilience, regional performance, load distribution, and learning convergence over time.
 
@@ -36,7 +36,7 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 │              ▼            ▼             ▼                          │
 │  ┌──────────────┐  ┌──────────┐  ┌───────────────┐                │
 │  │  Globe.js    │  │ Engine   │  │  DHT Protocol │                │
-│  │  (Three.js   │  │ (test    │  │  (one of 14   │                │
+│  │  (Three.js   │  │ (test    │  │  (one of 21   │                │
 │  │   WebGL)     │  │  runner) │  │   protocols)  │                │
 │  └──────────────┘  └──────────┘  └───────────────┘                │
 │                                                                    │
@@ -44,8 +44,9 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 │  │   Protocol family                                           │   │
 │  │   Kademlia · Geographic                                     │   │
 │  │   N-1 · N-2 · N-2-BP · N-2-SHC · N-3 · N-4 · N-5          │   │
-│  │   N-5W · N-6W · N-7W · N-8W · N-9W                         │   │
-│  │   N-10W ★ · N-11W · N-12W · N-13W                          │   │
+│  │   N-5W · N-6W · N-7W · N-8W · N-9W · N-10W                 │   │
+│  │   N-11W · N-12W · N-13W · N-15W                             │   │
+│  │   NX-1W · NX-2W ★                                           │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 └────────────────────────────────────────────────────────────────────┘
          ▲
@@ -57,7 +58,7 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 | Path | Role |
 |---|---|
 | `index.html` | Shell, control strip HTML, results overlay HTML |
-| `style.css` | All styling (dark theme, uniform control groups, chart panels) |
+| `style.css` | All styling (dark/light theme, uniform control groups, chart panels) |
 | `src/main.js` | Orchestrator — wires controls → engine → globe → results |
 | `src/simulation/Engine.js` | Test runner (lookup, churn, benchmark, pub/sub, pairs, hotspot) |
 | `src/ui/Controls.js` | Control strip read/write, button state machine |
@@ -77,11 +78,14 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 | `src/dht/neuromorphic/NeuromorphicDHT7W.js` | N-7W + load-aware routing + extended hub pool |
 | `src/dht/neuromorphic/NeuromorphicDHT8W.js` | N-8W + cascading lateral spread + tier rebalancing |
 | `src/dht/neuromorphic/NeuromorphicDHT9W.js` | N-9W + synaptome floor protection |
-| `src/dht/neuromorphic/NeuromorphicDHT10W.js` | N-10W ★ + relay pinning (current best pub/sub) |
+| `src/dht/neuromorphic/NeuromorphicDHT10W.js` | N-10W + relay pinning (best pub/sub pre-NX) |
 | `src/dht/neuromorphic/NeuromorphicDHT11W.js` | N-11W + frequency-weighted reservation (experimental) |
 | `src/dht/neuromorphic/NeuromorphicDHT12W.js` | N-12W + highway-tier relay pinning (experimental) |
 | `src/dht/neuromorphic/NeuromorphicDHT13W.js` | N-13W + load awareness + local pins (experimental) |
-| `src/dht/neuromorphic/NeuronNode.js` | Per-node state: synaptome, transit cache |
+| `src/dht/neuromorphic/NeuromorphicDHT15W.js` | N-15W + highway synapse preservation |
+| `src/dht/neuromorphic/NeuromorphicDHTNX1W.js` | NX-1W fully configurable research protocol |
+| `src/dht/neuromorphic/NeuromorphicDHTNX2W.js` | **NX-2W ★ broadcast tree delivery — current SOTA** |
+| `src/dht/neuromorphic/NeuronNode.js` | Per-node state: synaptome, transit cache, incoming synapses |
 | `src/dht/neuromorphic/Synapse.js` | Synapse data model (weight, latency, stratum, useCount) |
 | `src/utils/geo.js` | Great-circle distance, latency model, population sampling, XOR routing table |
 | `src/utils/s2.js` | S2 cell encoding for geographic IDs |
@@ -108,6 +112,19 @@ Stratum 24: share top 24 bits    — same city block (in geo-encoded protocols)
 ```
 
 In Geographic-DHT and all neuromorphic protocols, the G-ID encodes geographic position in its high bits, so XOR distance approximates physical distance. The neuromorphic synaptome is partitioned into **16 stratum groups** (groups of 4 strata) to guarantee routing table coverage across the full keyspace.
+
+### Initial connection distribution under Web Limit
+
+With the 8-bit geographic prefix and Web Limit enabled (50 connections), `buildXorRoutingTable` iterates XOR-distance buckets from closest (b=0) to farthest (b=63). The 50-slot budget fills as follows for a 5,000-node network:
+
+```
+Buckets b=0–55  (same geo cell, XOR < 2⁵⁶):  ~20 local nodes
+Bucket  b=56    (1 geo-prefix bit differs):    ~20 regional nodes
+Bucket  b=57    (2 geo-prefix bits differ):    ~10 broader-region nodes
+Buckets b=58–63 (cross-continental, >3 bits):   0 — cap already reached
+```
+
+Cross-continental connections are therefore absent at initialisation time. They form within the first few hundred training lookups via three mechanisms: (1) simulated annealing's `_globalCandidate` explicitly searches the nodeMap for nodes in under-represented far strata; (2) hop caching plants shortcuts along every multi-hop global path; and (3) bidirectional `incomingSynapses` registers reverse-route candidates immediately. By the end of a warmup phase, every node's synaptome covers all 64 XOR strata within the 50-connection budget.
 
 ---
 
@@ -199,10 +216,13 @@ graph TD
     N6W --> N7W["N-7W: Load-Balanced\nPer-node load tracking\nLoad-aware AP scoring\nExtended randomised hub pool"]
     N7W --> N8W["N-8W: Cascade Spread\nRestored N-6W tier split\nDepth-2 lateral cascade\n19 nodes per shortcut event"]
     N8W --> N9W["N-9W: Synaptome Floor\nAnnealing floor protection\nDecay floor protection\nPrevents routing table erosion"]
-    N9W --> N10W["N-10W ★ BEST PUB/SUB\nRelay pinning (eviction-immune)\nHigher Markov seed weight\nRemoved load awareness"]
+    N9W --> N10W["N-10W\nRelay pinning (eviction-immune)\nHigher Markov seed weight\nRemoved load awareness"]
     N10W --> N11W["N-11W: Freq-Weighted Reservation\n24-pin budget (50% of local tier)\nFrequency-ranked replacement\n⚠ Regression at high coverage"]
     N10W --> N12W["N-12W: Highway-Tier Pins\n4 pin + 8 hub highway split\nLocal tier fully freed\n⚠ 33% highway diversity loss"]
     N10W --> N13W["N-13W: Load + Local Pins\nN-10W + load-aware restored\nBcast improves vs N-9W\n⚠ Relay regresses vs N-10W"]
+    N10W --> N15W["N-15W\nHighway synapse preservation\nRenewal-based lifetime tracking\nStatic highway outperforms refresh"]
+    N15W --> NX1W["NX-1W: Fully Configurable\nEvery rule on/off via UI\nEvery param exposed\nDefaults reproduce N-15W"]
+    NX1W --> NX2W["NX-2W ★ CURRENT SOTA\nBroadcast tree delivery\nProximity-ordered fan-out\nEmpirical default tuning"]
 
     style K fill:#0a1e3e,stroke:#2a5ea0,color:#88c4f0
     style G fill:#0a1e3e,stroke:#2a5ea0,color:#88c4f0
@@ -222,6 +242,9 @@ graph TD
     style N11W fill:#0e0e0e,stroke:#444444,color:#888888
     style N12W fill:#0e0e0e,stroke:#444444,color:#888888
     style N13W fill:#0e0e0e,stroke:#444444,color:#888888
+    style N15W fill:#081428,stroke:#2a5088,color:#88aadd
+    style NX1W fill:#0a1c10,stroke:#2a6040,color:#88ddaa
+    style NX2W fill:#1c0a00,stroke:#cc6600,color:#ffaa44
 ```
 
 ### The Synaptome
@@ -550,11 +573,7 @@ loadEMA     = decayedLoad + (1 − LOAD_DECAY)
 LOAD_DECAY = 0.995   — single relay participation decays to 50% after ~138 lookups
 ```
 
-Only nodes actually selected as relay hops are ever written; all others accrue passive decay computed on demand. This makes load tracking O(1) per hop with no background sweeps.
-
 ### Mechanism 6: Load-Aware AP Scoring
-
-The two-hop lookahead penalises high-load candidates:
 
 ```
 loadDiscount = max(LOAD_FLOOR, 1 − LOAD_PENALTY × (load / LOAD_SATURATION))
@@ -564,11 +583,7 @@ LOAD_FLOOR      = 0.10   — even a saturated node retains 10% of its score
 LOAD_SATURATION = 0.15   — loadEMA value treated as "fully saturated"
 ```
 
-Applied to both the 1-hop and 2-hop combined scores, steering routing away from congested hubs while still considering them as fallbacks.
-
 ### Mechanism 7: Extended + Randomised Hub Pool
-
-The highway selection scan is widened and randomised to prevent deterministic re-election of the same hubs:
 
 ```
 HUB_SCAN_CAP      = 120   — scan up to 120 two-hop candidates (was 80)
@@ -579,8 +594,6 @@ HUB_NOISE         = 1.0   — random perturbation added to each hub score per re
 
 ### Mechanism 8: Adaptive Markov Weight
 
-The initial weight of a Markov-triggered introduction now scales with destination frequency:
-
 ```
 markovWeight = min(MARKOV_MAX_WEIGHT,
   MARKOV_BASE_WEIGHT + (MARKOV_MAX_WEIGHT − MARKOV_BASE_WEIGHT) × (freq / MARKOV_WINDOW))
@@ -588,9 +601,7 @@ markovWeight = min(MARKOV_MAX_WEIGHT,
 MARKOV_BASE_WEIGHT = 0.3   MARKOV_MAX_WEIGHT = 0.9
 ```
 
-A destination seen 3 times gets a weight-0.3 shortcut; one seen 32 times gets weight-0.9. This prioritises strong learning for high-frequency traffic patterns.
-
-**Hotspot benchmark result (5,000 nodes):** N-7W achieves highway Gini = 0.85 — matching Kademlia and G-DHT-8, and significantly better than N-6W's 0.88. The efficiency cost is modest: +0.13 hops globally vs N-6W.
+**Hotspot benchmark result (5,000 nodes):** N-7W achieves highway Gini = 0.85 — matching Kademlia and G-DHT-8.
 
 ---
 
@@ -598,37 +609,18 @@ A destination seen 3 times gets a weight-0.3 shortcut; one seen 32 times gets we
 
 **File:** `src/dht/neuromorphic/NeuromorphicDHT8W.js`
 
-N-8W is a hybrid of N-4's lateral spread scaling insight and N-7W's load-aware routing. It introduces two targeted changes to N-7W.
+N-8W introduces cascading lateral spread (depth-2) and returns to N-6W's tier split.
 
-### Change 1: Tier Rebalancing (restores N-6W split)
-
-N-7W's wider highway tier (40+20) offered diminishing returns once the hub scan pool was wide. N-8W returns to the N-6W split, giving the reclaimed 8 slots to the local tier to benefit lateral spread:
-
-```
-MAX_SYNAPTOME_SIZE = 48   (was 40 in N-7W; restores N-6W value)
-HIGHWAY_SLOTS      = 12   (was 20 in N-7W; restores N-6W value)
-Total              = 60   (unchanged browser WebRTC budget)
-```
-
-### Change 2: Cascading Lateral Spread (depth-2)
-
-N-7W's lateral spread shares a shortcut with 3 immediate regional neighbours (LATERAL_K=3), reaching 4 nodes total. N-8W introduces a depth-2 cascade:
+### Cascading Lateral Spread (depth-2)
 
 ```
 When node A gains a shortcut to C (depth=1):
   A tells its top-6 regional neighbours (LATERAL_K=6)
   Each of those 6 nodes tells their own top-2 regional neighbours (LATERAL_K2=2)
-  Depth-3 calls do not recurse (LATERAL_MAX_DEPTH=2)
 
 Total nodes per shortcut discovery event:
   1 (A itself) + 6 (depth-1) + 12 (depth-2) = 19 nodes
 ```
-
-The cascade terminates at depth=2 to contain message amplification. Each recursive call is guarded by a `_hasAny` check so nodes that already hold the shortcut do not spread further — worst-case total is always ≤ 19 regardless of graph density.
-
-**Scaling rationale:** at N=50,000 the synaptome covers only 60/50,000 = 0.12% of nodes. Annealing's random sampling rarely hits the geographic cluster containing the target. Lateral spread bypasses this: when A discovers a shortcut to C, A already knows which synaptome peers are in C's region (they share the same top GEO_REGION_BITS of their ID) and can push the shortcut directly to them — O(LATERAL_K) work with guaranteed geographic relevance.
-
-**Benchmark result (50K nodes):** N-8W global hops ratio (50K/5K) = best in suite, showing better scaling than N-7W's wider highway tier.
 
 ---
 
@@ -636,213 +628,254 @@ The cascade terminates at depth=2 to contain message amplification. Each recursi
 
 **File:** `src/dht/neuromorphic/NeuromorphicDHT9W.js`
 
-N-9W takes N-8W as its direct base and introduces one targeted fix: a **synaptome floor** that prevents the local routing table from eroding below the designed connection capacity.
+N-9W introduces a **synaptome floor** (`SYNAPTOME_FLOOR = 48`) preventing the local routing table from eroding below the designed connection capacity under random traffic.
 
-### The problem: synaptome collapse under random traffic
+**Guard A — `_tryAnneal`:** Annealing is suspended when the synaptome is at or below the floor.
 
-Training data from 245 sessions of N-8W with global random lookups revealed a pathological behaviour:
-
-```
-Sessions 1–44:   Avg synapses = 195.1 (flat — XOR routing table intact)
-Session 45:      Avg synapses drops sharply to 179.7 (−15.4 in one tick)
-Sessions 46–245: Avg synapses bleeds: 179 → 119.8 (−0.30/session)
-Success rate:    100% → 97.4% over 245 sessions
-```
-
-**Root cause:** the XOR routing table bootstrap fills each node with ~195 entries for a 5,000-node network (up to k=20 peers per XOR-distance bucket × 64 buckets, added directly bypassing the 48-slot cap). In random global lookups, no route is ever repeated, so:
-
-1. Markov hot-destination pre-learning never fires (no repeated targets)
-2. Annealing adds new synapses at weight=0.1; they decay at `DECAY_GAMMA_MIN` (cold) and fall below `PRUNE_THRESHOLD` in ~14 sessions
-3. Once enough strata shift above k=20 entries, `_decayTier` begins deleting below-threshold entries rather than resetting them
-4. Nothing compensates — the synaptome bleeds steadily
-
-### The fix: SYNAPTOME_FLOOR = MAX_SYNAPTOME_SIZE (48)
-
-Two guards are added:
-
-**Guard A — `_tryAnneal`:** Annealing is suspended when the synaptome is at or below the floor. Annealing itself is a net-neutral swap (evict one, add one), but newly introduced synapses start at weight=0.1 and decay quickly when unused. Suspending annealing at the floor prevents new cold decay victims from being introduced when the routing table is already at minimum capacity.
-
-**Guard B — `_decayTier` (local tier):** When the total local synaptome is at or below `SYNAPTOME_FLOOR`, all below-threshold entries are weight-reset to `PRUNE_THRESHOLD` rather than deleted. This mirrors the per-stratum structural survival rule but applies it as a whole-tier floor, ensuring the routing table never shrinks below the designed 48-connection capacity regardless of traffic pattern.
-
-```
-Result: synaptome stabilises at max(bootstrap_size, SYNAPTOME_FLOOR)
-
-N=5,000:   bootstrap ≈ 195 → floor protects at 48 (erosion stops at floor)
-N=50,000:  bootstrap ≈ 48–60 → floor protects exactly at design capacity
-```
+**Guard B — `_decayTier` (local tier):** When the total local synaptome is at or below `SYNAPTOME_FLOOR`, all below-threshold entries are weight-reset to `PRUNE_THRESHOLD` rather than deleted.
 
 ---
 
-## Protocol 15 — N-10W: Pub/Sub Relay Optimisation ★
+## Protocol 15 — N-10W: Pub/Sub Relay Optimisation
 
 **File:** `src/dht/neuromorphic/NeuromorphicDHT10W.js`
 
-N-10W is the **current best-performing web-enabled protocol** for pub/sub overlay networks. It takes N-9W as its base and makes three targeted changes, each derived from analysis of a specific failure mode in the existing routing architecture.
+N-10W adds relay pinning (eviction-immune synaptome entries for frequently-contacted group members), raises the Markov seed weight to 0.5, and removes load-aware AP scoring — which was found to route around pub/sub group members that legitimately need to be reached.
 
-### The Pub/Sub Problem: Stratified Eviction Erases Group Members
+**Benchmark at 25K nodes / 25% coverage:** N-10W wins on every metric versus N-9W, N-11W, N-12W, N-13W. Bcast hops: 2.569 (N-9W) → 1.718 (N-10W), −33%.
 
-In a pub/sub broadcast group of `G` members, every node needs direct synaptome entries for all other group members to achieve 1-hop delivery. However, members of the same geographic group share nearly identical geographic ID prefixes, placing all their synapses in **stratum group 0** (XOR distance 0–3, where `group = stratum >>> 2`).
+---
 
-N-9W's stratified eviction maintains `STRATUM_FLOOR = 2` entries per group as a floor, and the most over-represented group is always the eviction target. When a pub/sub group adds 8 local-region synapse entries, all 8 land in strata group 0. Subsequent `_stratifiedAdd` calls evict the weakest strata-group-0 entry, continuously cycling group member connections out before they can be reinforced into permanent shortcuts. Result: bcast hops in N-9W at 25K nodes / 25% coverage = **2.569** — well above the theoretical 1-hop minimum.
+## Protocols 16–18 — N-11W, N-12W, N-13W: Experimental Variants
 
-### Change 1 — Relay Pinning (Mechanism 11): Eviction-Immune Synaptome Entries
+These extend N-10W's relay pinning in three directions that each produced regressions in benchmark testing:
 
-The core innovation. N-10W tracks a **rolling window of relay destinations** at each node and protects the most-frequently-seen destinations from stratified eviction entirely.
+- **N-11W:** Enlarged pin budget (24 slots = 50% of local tier) — backfired; locked too many near-neighbour entries, destroyed routing diversity
+- **N-12W:** Moved pins to highway tier — highway's 12 slots are only 33% displaced vs local tier's 8.3%, causing worse regression
+- **N-13W:** Restored load-aware scoring — compounds with pinning to both lock entries and AP-discount them simultaneously
 
-```
-Architecture:
+All three remain in the simulator for research comparison.
 
-  pinWindow[]        — circular buffer of last RELAY_PIN_WINDOW=64 destinations
-  pinWindowFreq{}    — frequency count of each destination in the window
-  pinnedDests{}      — Set of currently pinned destination IDs
+---
 
-  On each lookup at the source node:
-    1. Record targetKey in pinWindow; update pinWindowFreq
-    2. If freq(targetKey) ≥ RELAY_PIN_THRESHOLD (5):
-         if pinnedDests.size < RELAY_PIN_MAX (4):
-           add targetKey to pinnedDests
-         else:
-           frequency-ranked replacement: evict the least-frequent current pin
-           if its freq < new entry's freq
-    3. Immediately boost synapse weight: syn.weight = RELAY_PIN_WEIGHT (0.95)
-       if the synapse already exists
+## Protocol 19 — N-15W: Highway Synapse Preservation
 
-  Priority 0.5 source shortcut (hop=0 only):
-    if source.pinnedDests.has(targetKey):
-      use the pinned synapse directly — bypass two-hop lookahead
-```
+**File:** `src/dht/neuromorphic/NeuromorphicDHT15W.js`
 
-**Eviction immunity is enforced in three places:**
-
-| Guard | Location | Effect |
-|---|---|---|
-| `_stratifiedAdd` | Skip pinned entries as eviction candidates | Pinned synapses never selected for displacement |
-| `_tryAnneal` | Skip pinned entries as eviction candidates | Annealing swaps only unpinned synaptome entries |
-| `_decayTier` | Decay at `DECAY_GAMMA_MAX`; reset weight ≥ `RELAY_PIN_WEIGHT` | Pinned entries are nearly permanent regardless of traffic lulls |
-
-**Why this works for pub/sub:** With 4 eviction-immune slots dedicated to the most-contacted group members, the source node accumulates direct connections to 4 group members that survive indefinitely. Subsequent lookups to those members resolve in 1 hop. For a group of 8 members (25% coverage × 32-member group), 4 pinned entries cover 50% of delivery targets directly.
-
-### Change 2 — Raised Markov Seed Weight
-
-N-9W's `MARKOV_BASE_WEIGHT = 0.3` produces a seed weight of ~0.356 at threshold (freq=3 / window=32). At this weight, a freshly introduced group-member synapse sits at the median for stratified eviction and is frequently displaced before reinforcement can raise it to safety.
-
-N-10W raises `MARKOV_BASE_WEIGHT = 0.5`, producing a seed weight of ~0.538 at threshold. This single-point lift moves the initial synapse above the stratified median, giving it a survival window long enough for the LTP reinforcement wave to push it above 0.7 — firmly in the safe zone.
-
-### Change 3 — Load Awareness Removed
-
-N-9W inherited load-aware AP scoring (from N-7W via N-8W). Benchmarks at pub/sub scenarios revealed that load balancing actively **harms** bcast performance: pub/sub group members accumulate high `loadEMA` from being repeatedly visited as broadcast targets, and the load discount routes *around* them — the exact nodes that need to be reached.
+N-15W takes N-10W as its direct base and adds **renewal-based highway lifetime tracking**. Each highway synapse carries a `lastActiveEpoch` timestamp updated whenever the synapse is used as a relay hop. The decay rate applied to the synapse depends on whether it has been used within the `HIGHWAY_RENEWAL_WINDOW`:
 
 ```
-Load discount (N-9W): max(0.10,  1 − 0.40 × (loadEMA / 0.15))
+if (simEpoch − lastActiveEpoch) < HIGHWAY_RENEWAL_WINDOW:
+    gamma = DECAY_GAMMA_HIGHWAY_ACTIVE   // 0.9995 — slow decay for active hubs
+else:
+    gamma = DECAY_GAMMA_HIGHWAY_IDLE     // 0.990  — fast decay for stale hubs
 
-With pub/sub group members at loadEMA ≈ 0.016:
-  loadFrac = 0.016 / 0.15 = 0.11
-  discount = 0.956  (4.4% penalty — small but consistent pressure away from group members)
-
-Combined with pinning interactions and stratified eviction pressure, this
-consistently degrades bcast hops and was removed to recover relay routing quality.
+HIGHWAY_RENEWAL_WINDOW = 3000  epochs
+HIGHWAY_FLOOR          = 2     synapses  (per-tier floor, inherited from N-9W)
 ```
+
+**Why this matters:** the highway tier is designed to provide stable long-range routing shortcuts to diverse parts of the ID space. Without preservation, highway slots that happen to be structurally important but infrequently exercised (e.g. a cross-continental bridge used only by global lookups under regional traffic) decay at the same rate as genuinely stale entries, eventually leaving the routing table without long-range coverage. The renewal window preserves recently-active highways while allowing truly stale ones to be evicted.
+
+**Key empirical finding:** periodic highway refresh (`_refreshHighway`) — which re-scans the 2-hop neighbourhood every 300 lookups and replaces the least-diverse hubs — was found through testing to underperform the static highway established at initialisation. N-15W therefore sets `EN_HIGHWAY_REFRESH = false` as its default. The static highway, once established by `buildRoutingTables`, covers diverse strata naturally via the XOR-bucket distribution; periodic replacement tends to converge to the same highly-connected local nodes repeatedly.
+
+---
+
+## Protocol 20 — NX-1W: Fully Configurable Research Protocol
+
+**File:** `src/dht/neuromorphic/NeuromorphicDHTNX1W.js`
+
+NX-1W is a **research instrument**, not a tuned production protocol. It exposes every rule and every parameter from the entire neuromorphic family as live UI controls, allowing real-time experimentation without code changes. Default values reproduce N-15W behaviour exactly.
+
+### Rule engine
+
+Every mechanism can be independently enabled or disabled at construction time via the `config.rules` object:
+
+```javascript
+const dht = new NeuromorphicDHTNX1W({
+  k: 20,
+  rules: {
+    twoTier:            { enabled: true,  maxSynaptomeSize: 48, highwaySlots: 12 },
+    lateralSpread:      { enabled: true,  lateralK: 6, lateralK2: 2, lateralMaxDepth: 2 },
+    stratifiedEviction: { enabled: true,  strataGroups: 16, stratumFloor: 2 },
+    annealing:          { enabled: true,  tInit: 1.0, tMin: 0.05, annealCooling: 0.9997,
+                          globalBias: 0.5, annealLocalSample: 50 },
+    relayPinning:       { enabled: true,  relayPinThreshold: 5, relayPinWindow: 64,
+                          relayPinMax: 4,  relayPinWeight: 0.95 },
+    highwayRefresh:     { enabled: false },  // static highway outperforms
+    loadBalancing:      { enabled: false },  // harms pub/sub relay routing
+    // ... all other rules
+  }
+});
+```
+
+The UI **NX-2W Rule Engine** panel mirrors this config: each rule shows a checkbox and its parameters, and changes take effect on the next `Init Network`.
+
+### Incoming synapses
+
+NX-1W introduces a second routing pool alongside the synaptome: **`incomingSynapses`** — a lightweight reverse-connection index. When node B routes through node A toward a target, A gets B registered in its `incomingSynapses`. These carry a fixed baseline weight of 0.1 and participate in AP routing without LTP/LTD lifecycle, enabling reverse routing without disrupting trained outgoing weights.
+
+---
+
+## Protocol 21 — NX-2W: Broadcast Tree Delivery ★
+
+**File:** `src/dht/neuromorphic/NeuromorphicDHTNX2W.js`
+
+NX-2W is the **current state-of-the-art** protocol in the simulator. It extends NX-1W with a dedicated **broadcast tree delivery** mechanism for pub/sub groups and a set of empirically-tuned default parameters derived from extensive testing.
+
+### What NX-2W adds over NX-1W
+
+The core innovation is **Rule 15: Broadcast Tree Delivery**. In all previous protocols, the relay node broadcasts to each group member by independently routing a DHT lookup to each subscriber — paying the full routing cost once per subscriber. NX-2W instead constructs a **proximity-ordered fan-out tree** rooted at the relay:
+
+```
+Previous protocols (N-1 through N-15W):
+  Relay → lookup(member1) → 1.6 hops
+  Relay → lookup(member2) → 1.6 hops
+  Relay → lookup(member3) → 1.6 hops
+  ...
+  Total: G × avg_bcast_hops   (scales linearly with group size)
+
+NX-2W broadcast tree:
+  Relay → bridge₁ → {member1, member2, member4}   (1 hop + 1 hop = 2)
+  Relay → bridge₂ → {member3, member5, member7}   (1 hop + 1 hop = 2)
+  Relay → member6                                  (1 hop, direct)
+
+  Depth-1 cost: 1 hop to each bridge
+  Depth-2 cost: 1 hop from each bridge to its cluster
+  Avg bcast hops: ~1.0–1.7 regardless of group size
+```
+
+**Tree construction:** the relay sorts group members by XOR proximity to itself, then greedily assigns them to bridge nodes already present in its synaptome. Each bridge node handles up to `branchFactor` members. Members with a direct synaptome entry are routed to directly (depth-1). The tree is limited to `maxDepth` levels. If any single bridge handles more than `rebalanceAt` fraction of the group, the relay attempts to find a better bridge with a closer geographic centroid.
+
+**Edge LTP:** edges used in broadcast delivery accumulate `edgeLtpWeight` reinforcement per use. Over repeated broadcast rounds, the tree structure becomes self-reinforcing — the most-used relay→bridge and bridge→member paths develop high-weight synapses that survive decay and are preferentially selected by AP routing.
+
+### Broadcast Tree parameters
+
+```javascript
+// NX-2W Rule 15: Broadcast Tree Delivery
+EN_BROADCAST_TREE  = true   // enabled by default
+BRANCH_FACTOR      = 4      // max subscribers per bridge node
+MAX_DEPTH          = 12     // maximum tree depth
+REBALANCE_AT       = 8      // rebalance if any bridge handles >8 members
+EDGE_LTP_WEIGHT    = 0.8    // LTP reinforcement per used tree edge
+PROXIMITY_BIAS     = 0.7    // weight given to XOR proximity in bridge selection
+```
+
+### Empirically-tuned defaults
+
+NX-2W's defaults diverge from NX-1W (N-15W) in several key areas, each driven by empirical testing:
+
+**Stratified eviction: OFF** (`EN_STRATIFIED = false`)
+
+Stratified eviction — which maintains a minimum number of synapses per XOR stratum group — was designed to guarantee keyspace coverage. Testing revealed that for the 50-connection web-limit scenario, the overhead of maintaining 16 protected stratum groups with a floor of 2 each (32 reserved slots out of 50) left insufficient room for the pub/sub group members that need to accumulate in strata group 0. Simple weakest-first eviction produces better pub/sub results and similar global routing quality, because annealing independently ensures stratum diversity.
+
+**Lateral spread depth: 1** (`LATERAL_MAX_DEPTH = 1`)
+
+The depth-2 lateral cascade (N-8W+) was designed for dense 50,000-node networks where a shortcut discovered at one node benefits an entire regional cluster. At 5,000 nodes with Web Limit, depth-2 cascades over-spread: each shortcut fires to 19 nodes (1 + 6 + 12), many of which cannot use the shortcut (wrong geographic direction). Setting `lateralMaxDepth = 1` reduces the spread to 7 nodes maximum (1 + 6), all geographically adjacent to the discovering node and likely to benefit.
+
+**Highway refresh: OFF** (`EN_HIGHWAY_REFRESH = false`)
+
+Periodic highway refresh (`_refreshHighway`) re-scores the 2-hop neighbourhood every 300 lookups and replaces poorly-diverse hubs. In practice, the initial highway established by `buildXorRoutingTable` already covers diverse strata naturally, and replacement candidates found by the 2-hop scan are dominated by the same highly-connected local nodes. Static highway consistently outperforms periodic refresh in pub/sub benchmarks.
+
+**Relay pinning: OFF** (absent from NX-2W default rules)
+
+N-10W's relay pinning was effective at 25,000 nodes where pinning 4 of 48 local slots (8.3%) was acceptable overhead. With Web Limit (50 connections total), pinning 4 of the available connection budget has proportionally larger impact and was found to slightly reduce routing flexibility. The broadcast tree mechanism handles pub/sub group membership more gracefully than pinning.
+
+**Annealing local sample: 50** (`ANNEAL_LOCAL_SAMPLE = 50`)
+
+The `_localCandidate` function collects up to `annealLocalSample` 2-hop neighbourhood candidates before selecting one. At 50 connections, the 2-hop neighbourhood is smaller (50 × 50 = 2500 at most vs 48 × 48 = 2304 for N-15W), so a sample of 50 provides adequate diversity without unnecessary scanning overhead.
+
+### Organic join: `bootstrapJoin`
+
+NX-2W supports **organic node addition** — joining the live network through a sponsor node discovered by XOR distance, rather than requiring full routing table rebuild:
+
+```javascript
+bootstrapJoin(newNodeId, sponsorId) {
+  // 1. Visit sponsor (layer 0)
+  // 2. Collect sponsor's synaptome + highway (layer 1)
+  // 3. Collect peers-of-peers from layer 1 (layer 2)
+  // 4. Sort all candidates by XOR distance to new node
+  // 5. Wire synapses to the closest (capacity) candidates
+  // 6. Call peer.addIncomingSynapse() for reverse routing
+}
+```
+
+This enables the **Add Nodes** UI feature: new nodes join via a sponsor (the existing node with smallest XOR distance to the new node), bootstrap connections through the sponsor's 1–2 hop neighbourhood, then run warmup lookups to integrate via LTP and annealing.
+
+### NX-2W routing flow
+
+```
+At each hop on node C routing toward target T:
+
+1. Collect forward-progress candidates from:
+   - C.synaptome          (outgoing trained connections)
+   - C.highway            (long-range hub tier)
+   - C.incomingSynapses   (reverse connections — unique to NX series)
+
+2. Priority 1: direct synapse to T? → use it immediately
+3. Priority 2: first hop + epsilon-greedy? → random exploration
+4. Priority 3: two-hop lookahead AP scoring across all candidates
+
+5. Advance to selected next hop
+
+6. Per-hop learning:
+   - Triadic closure  (_recordTransit)
+   - Hop caching      (_introduceAndSpread, depth=1)
+   - Simulated annealing (_tryAnneal, temperature-gated)
+
+7. On success, backward:
+   - LTP reinforcement wave (_reinforceWave)
+   - Cascade backpropagation (_introduce along path)
+```
+
+### Performance at 5,000 nodes / Web Limit / 10% coverage
+
+Observed in live pub/sub testing (263 sessions):
+
+| Metric | Value | Interpretation |
+|---|---:|---|
+| Relay hops | **1.0** | Publisher finds relay in 1 direct hop — perfect |
+| Relay ms | **144 ms** | Single geographic hop + 10 ms node delay |
+| Bcast hops | **1.64** | Broadcast tree delivers to 32-member group in ~1.6 hops avg |
+| Bcast ms | **182 ms** | 38 ms deeper than relay — one additional tree depth |
+
+Relay routing at 1.0 hops demonstrates that even with only 50 connections, NX-2W's training correctly identifies and maintains direct paths to relay nodes within the Web Limit budget.
 
 ### Key constants
 
 ```javascript
-// Relay pinning
-RELAY_PIN_THRESHOLD = 5      // appearances in window before pin qualifies
-RELAY_PIN_WINDOW    = 64     // rolling window size (destinations)
-RELAY_PIN_MAX       = 4      // max eviction-immune pins per node
-RELAY_PIN_WEIGHT    = 0.95   // weight floor for pinned synapses
+// Two-tier synaptome (browser-realistic)
+MAX_SYNAPTOME_SIZE    = 48     // local tier cap
+HIGHWAY_SLOTS         = 12     // highway tier cap
+SYNAPTOME_FLOOR       = 48     // erosion floor (Guard A + B)
 
-// Markov (raised from N-9W)
-MARKOV_BASE_WEIGHT  = 0.5    // was 0.3 in N-9W — higher seed survival
+// AP routing
+LOOKAHEAD_ALPHA       = 5      // 2-hop lookahead candidates
+WEIGHT_SCALE          = 0.40   // learned weight bonus
+GEO_REGION_BITS       = 4      // 2⁴ = 16 geographic cells for intra-region bonus
+EXPLORATION_EPSILON   = 0.05   // random first-hop probability
 
-// All other constants identical to N-9W
-MAX_SYNAPTOME_SIZE  = 48     // local tier cap (browser WebRTC)
-HIGHWAY_SLOTS       = 12     // highway tier cap
-SYNAPTOME_FLOOR     = 48     // erosion floor (Guard A + B, inherited)
-LATERAL_K           = 6      // depth-1 cascade spread
-LATERAL_K2          = 2      // depth-2 cascade spread
+// Lateral spread (depth-1 only)
+LATERAL_K             = 6      // depth-1 regional neighbours
+LATERAL_K2            = 2      // depth-2 (inactive, LATERAL_MAX_DEPTH=1)
+LATERAL_MAX_DEPTH     = 1      // ★ empirically tuned: depth-2 over-spreads at 5K nodes
+
+// Simulated annealing
+T_INIT                = 1.0
+T_MIN                 = 0.05
+ANNEAL_COOLING        = 0.9997
+GLOBAL_BIAS           = 0.5
+ANNEAL_LOCAL_SAMPLE   = 50     // ★ empirically tuned: adequate for 50-connection budget
+
+// Adaptive decay
+DECAY_GAMMA_MIN       = 0.990  // cold synapse decay rate
+DECAY_GAMMA_MAX       = 0.9998 // hot synapse decay rate
+USE_SATURATION        = 20     // useCount for maximum decay resistance
+HIGHWAY_RENEWAL_WINDOW = 3000  // epochs of activity before highway considered stale
+
+// Disabled rules (empirically found to underperform)
+EN_STRATIFIED         = false  // ★ simple eviction outperforms at 50-connection budget
+EN_HIGHWAY_REFRESH    = false  // ★ static highway outperforms periodic refresh
 ```
-
-### Benchmark results — why N-10W is considered superior
-
-Benchmarked against all web-enabled protocols at 25,000 nodes with 10 warmup sessions:
-
-**25% pub/sub coverage (8 group members per 32-member group):**
-
-| Protocol | relay hops | relay ms | bcast hops | bcast ms | total hops | total ms |
-|---|---:|---:|---:|---:|---:|---:|
-| N-9W | **3.000** | **223** | 2.569 | 189 | 5.569 | 412 |
-| **N-10W ★** | 3.500 | 236 | **1.718** | **160** | **5.218** | **396** |
-| N-11W | 3.375 | 244 | 2.151 | 178 | 5.526 | 422 |
-| N-12W | 4.250 | 246 | 2.046 | 172 | 6.296 | 418 |
-| N-13W | 3.688 | 260 | 1.819 | 163 | 5.507 | 423 |
-
-N-10W wins on **every single metric** at 25% coverage — both individually and on the combined total (relay + bcast) that represents the full pub/sub message delivery cost. The bcast improvement from N-9W (2.569 → 1.718 hops, −33%) more than compensates for the relay regression (3.000 → 3.500 hops, +17%).
-
-**5,000 nodes / 10% coverage (small-scale, low density):**
-
-| Protocol | relay hops | relay ms | bcast hops | bcast ms |
-|---|---:|---:|---:|---:|
-| N-9W | 2.313 | 196 | 1.000 | **123** |
-| **N-10W ★** | 2.375 | **180** | 1.000 | 127 |
-
-At small scale where every protocol achieves 1.000 bcast hops (all group members fit in synaptome), N-10W leads on relay ms (180ms vs 196ms). Both achieve perfect broadcast.
-
-**Limitation at very high coverage:** At 25,000 nodes / 50% coverage (16 group members per group), N-10W's RELAY_PIN_MAX=4 pins can protect only 4 of 16 targets (25% coverage). N-9W's clean synaptome with no pin overhead slightly outperforms N-10W at this extreme scenario on relay hops (3.250 vs 3.875). For typical production pub/sub deployments — small groups at moderate coverage — N-10W is the clear winner.
-
----
-
-## Protocol 16 — N-11W: Frequency-Weighted Synaptome Reservation (Experimental)
-
-**File:** `src/dht/neuromorphic/NeuromorphicDHT11W.js`
-
-N-11W attempts to fix N-10W's high-coverage limitation by enlarging the pin budget from 4 to a dynamic value scaling to 50% of the local synaptome (24 slots). Pins are frequency-ranked: when the budget is full, a new hot destination displaces the least-frequent current pin.
-
-**Result:** The enlarged budget backfired. With 24 of 48 local synaptome slots locked at weight 0.95, only 24 slots remain for XOR routing diversity in a 25,000-node network. At 50% coverage, ~16 pub/sub group members qualify for pinning — all in the same strata group 0. The combined effect of 16 frozen near-neighbour entries and reduced routing capacity caused relay hops to regress to 4.000 (worse than N-10W's 3.875 and far worse than N-9W's 3.250) at 25K/50%.
-
-**Key lesson:** The proportion of the routing table displaced by pinning matters more than the absolute number of pins. N-10W's 4 pins = 8.3% of the local tier; N-11W's 24 pins = 50%. The former is acceptable overhead; the latter destroys routing diversity.
-
----
-
-## Protocol 17 — N-12W: Highway-Tier Relay Pinning (Experimental)
-
-**File:** `src/dht/neuromorphic/NeuromorphicDHT12W.js`
-
-N-12W moves relay pins entirely out of the local synaptome and into the highway tier to avoid any local routing displacement. The 12 highway slots are split: `RELAY_PIN_HIGHWAY_SLOTS = 4` (pins) + `HIGHWAY_HUB_SLOTS = 8` (diversity hubs). Load-aware routing is also restored from N-9W.
-
-**Result:** Highway pins caused a larger regression than local pins, despite using the same absolute count (4 pins either way):
-
-| Tier | Total slots | Pins | Fraction displaced |
-|---|---:|---:|---:|
-| Local synaptome (N-10W) | 48 | 4 | 8.3% |
-| Highway tier (N-12W) | 12 | 4 | **33%** |
-
-The highway's purpose is to provide long-range XOR routing shortcuts to distant, diverse parts of the ID space. Replacing 33% of it with geographically-local pub/sub group members (who share close XOR proximity and land in strata group 0) eliminates the most valuable long-range jump points. Relay hops regressed to 4.250 — the worst of all web-enabled protocols at 25K/25% coverage.
-
-An additional implementation issue: `_updatePins` deleted highway entries when pins expired, inadvertently removing hub entries placed by `_refreshHighway` that shared IDs with previously-pinned destinations.
-
----
-
-## Protocol 18 — N-13W: Load Awareness + Local Pins (Experimental)
-
-**File:** `src/dht/neuromorphic/NeuromorphicDHT13W.js`
-
-N-13W is N-10W with load-aware AP scoring restored (from N-9W), based on the hypothesis that load balancing at 25K/25% would reduce relay hops back toward N-9W's 3.000 while relay pinning maintained bcast quality.
-
-**Result at 25K/25%, 10 warmups:**
-
-| Metric | N-9W | N-10W | N-13W |
-|---|---:|---:|---:|
-| relay hops | **3.000** | 3.500 | 3.688 |
-| relay ms | **223** | 236 | 260 |
-| bcast hops | 2.569 | **1.718** | 1.819 |
-| bcast ms | 189 | **160** | 163 |
-| total hops | 5.569 | **5.218** | 5.507 |
-| total ms | 412 | **396** | 423 |
-
-N-13W is worse than N-10W on every metric and fails to match N-9W's relay hops.
-
-**Why the mechanisms conflict:** The 4 pinned pub/sub group members have high `loadEMA` (they are frequently visited as broadcast targets). Load-aware routing penalises high-load candidates in AP scoring. The combination means the pinned entries are both weight-frozen in strata group 0 AND AP-discounted during routing, simultaneously reducing local synaptome diversity and steering routing away from the frozen entries. The two negative effects compound. N-10W's removal of load awareness was a correct architectural decision specifically for pub/sub workloads.
 
 ---
 
@@ -850,56 +883,66 @@ N-13W is worse than N-10W on every metric and fails to match N-9W's relay hops.
 
 ### Parameters at a glance
 
-| Protocol | Weight scale | Lookahead | Decay γ | Prune | Boot × | Lateral K | Annealing | Stratified | Cap | Load-aware | Floor | Relay pins |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Kademlia | — | — | — | — | 1 | — | No | No | k×bits | No | — | — |
-| G-DHT | — | — | — | — | 1 | — | No | No | k×bits | No | — | — |
-| N-1 | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — |
-| N-2 | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — |
-| N-2-BP | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — |
-| N-2-SHC | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — |
-| N-3 | **0.40** | **α=5** | **0.998** | **0.05** | **2** | — | No | No | 800 | No | — | — |
-| N-4 | 0.40 | α=5 | 0.998 | 0.05 | 2 | **3** | No | No | 800 | No | — | — |
-| N-5 | 0.40 | α=5 | 0.998 | 0.05 | 2 | 3 | **Yes** | **Yes** | 800 | No | — | — |
-| N-5W | 0.40 | α=5 | 0.998 | 0.05 | 1 | 3 | Yes | Yes | **60** | No | — | — |
-| N-6W | 0.40 | α=5 | adaptive | 0.05 | 1 | 3 | Yes | Yes | 48+12 | No | — | — |
-| N-7W | 0.40 | α=5 | adaptive | 0.05 | 1 | 3 | Yes | Yes | 40+20 | **Yes** | — | — |
-| N-8W | 0.40 | α=5 | adaptive | 0.05 | 1 | **6+2** | Yes | Yes | 48+12 | Yes | — | — |
-| N-9W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | Yes | **48** | — |
-| **N-10W ★** | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | No | 48 | **4 local** |
-| N-11W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | No | 48 | 24 local |
-| N-12W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | Yes | 48 | 4 highway |
-| N-13W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2 | Yes | Yes | 48+12 | Yes | 48 | 4 local |
+| Protocol | Weight scale | Lookahead | Decay γ | Prune | Boot × | Lateral K / depth | Annealing | Stratified | Cap | Load-aware | Floor | Relay pins | Bcast tree |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Kademlia | — | — | — | — | 1 | — | No | No | k×bits | No | — | — | — |
+| G-DHT | — | — | — | — | 1 | — | No | No | k×bits | No | — | — | — |
+| N-1 | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — | — |
+| N-2 | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — | — |
+| N-2-BP | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — | — |
+| N-2-SHC | 0.15 | α=3 | 0.995 | 0.10 | 1 | — | No | No | ∞ | No | — | — | — |
+| N-3 | **0.40** | **α=5** | **0.998** | **0.05** | **2** | — | No | No | 800 | No | — | — | — |
+| N-4 | 0.40 | α=5 | 0.998 | 0.05 | 2 | **3/1** | No | No | 800 | No | — | — | — |
+| N-5 | 0.40 | α=5 | 0.998 | 0.05 | 2 | 3/1 | **Yes** | **Yes** | 800 | No | — | — | — |
+| N-5W | 0.40 | α=5 | 0.998 | 0.05 | 1 | 3/1 | Yes | Yes | **60** | No | — | — | — |
+| N-6W | 0.40 | α=5 | adaptive | 0.05 | 1 | 3/1 | Yes | Yes | 48+12 | No | — | — | — |
+| N-7W | 0.40 | α=5 | adaptive | 0.05 | 1 | 3/1 | Yes | Yes | 40+20 | **Yes** | — | — | — |
+| N-8W | 0.40 | α=5 | adaptive | 0.05 | 1 | **6+2/2** | Yes | Yes | 48+12 | Yes | — | — | — |
+| N-9W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | Yes | **48** | — | — |
+| N-10W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | No | 48 | **4 local** | — |
+| N-11W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | No | 48 | 24 local | — |
+| N-12W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | Yes | 48 | 4 highway | — |
+| N-13W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | Yes | 48 | 4 local | — |
+| N-15W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | No | 48 | 4 local | — |
+| NX-1W | configurable | α=5 | adaptive | 0.05 | 1 | 6+2/**1★** | Yes | Yes | 48+12 | No | 48 | off★ | — |
+| **NX-2W ★** | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/**1★** | Yes | **No★** | 48+12 | No | 48 | off★ | **Yes** |
+
+★ = empirically tuned divergence from N-15W defaults
 
 ### Additive mechanism matrix
 
-| Mechanism | N-1 | N-2 | N-2-BP | N-2-SHC | N-3 | N-4 | N-5 | N-5W | N-6W | N-7W | N-8W | N-9W | **N-10W ★** | N-11W | N-12W | N-13W |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 2-hop AP routing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| LTP reinforcement | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Triadic closure | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| LTD decay + pruning | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Two-tier AP tiers | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cascade backpropagation | — | — | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Source hop caching | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Passive dead-node eviction | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Lateral shortcut propagation | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Stratified synaptome | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Simulated annealing | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Browser connection cap (60) | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Highway tier | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Adaptive temporal decay | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Markov hot-destination learning | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Per-node load tracking | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
-| Load-aware AP scoring | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ |
-| Extended randomised hub pool | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Adaptive Markov weight | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cascading lateral spread (depth-2) | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Synaptome floor protection | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Raised Markov seed weight (0.5) | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
-| Relay pinning — eviction-immune (4) | — | — | — | — | — | — | — | — | — | — | — | — | **✓** | — | — | ✓ |
-| Relay pinning — freq-weighted (24) | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — |
-| Relay pinning — highway-tier (4) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — |
+| Mechanism | N-1 | N-2 | N-2-BP | N-2-SHC | N-3 | N-4 | N-5 | N-5W | N-6W | N-7W | N-8W | N-9W | N-10W | N-11W | N-12W | N-13W | N-15W | NX-1W | **NX-2W ★** |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 2-hop AP routing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| LTP reinforcement | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Triadic closure | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| LTD decay + pruning | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Two-tier AP tiers | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cascade backpropagation | — | — | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Source hop caching | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Passive dead-node eviction | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Lateral shortcut propagation | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Stratified synaptome | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — ★ |
+| Simulated annealing | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Browser connection cap | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Highway tier | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Adaptive temporal decay | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Markov hot-destination learning | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Per-node load tracking | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | — | — | — |
+| Load-aware AP scoring | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | — | — | — |
+| Extended randomised hub pool | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Adaptive Markov weight | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cascading lateral spread (depth-2) | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — ★ |
+| Synaptome floor protection | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Relay pinning (eviction-immune) | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — | ✓ | ✓ | ✓ | — ★ |
+| Relay pinning (freq-weighted 24) | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — | — | — | — |
+| Relay pinning (highway-tier) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — | — | — |
+| Highway synapse preservation | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ |
+| Incoming synapses (reverse routing) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ |
+| Organic join (bootstrapJoin) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ |
+| Broadcast tree delivery | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | **✓** |
+
+★ = disabled by default in NX-2W based on empirical testing
 
 ---
 
@@ -918,8 +961,6 @@ Simulates **node turnover** by repeatedly killing and replacing a fraction of th
 3. Run `lookups/interval` messages
 4. Record hop count and success rate degradation over time
 
-Measures resilience: how quickly does each protocol recover routing quality as the population churns?
-
 ### Train Network
 
 Runs continuous lookup sessions on the currently selected protocol, graphing convergence over time:
@@ -927,7 +968,7 @@ Runs continuous lookup sessions on the currently selected protocol, graphing con
 - **Session graph:** average hops and average time per session
 - **Session log:** scrolling record of each session's stats
 - **Baseline:** session 0 recorded before any warmup, shown as a reference line
-- **CSV export:** download full session history (session, avg hops, avg time, success rate, avg synapses, epoch)
+- **CSV export:** download full session history
 
 Neuromorphic protocols converge downward as the synaptome learns frequent routes. Kademlia is flat (no learning).
 
@@ -935,9 +976,9 @@ Neuromorphic protocols converge downward as the synaptome learns frequent routes
 
 A two-phase test measuring **load concentration** — how evenly routing traffic is distributed across the network.
 
-**Phase 1 — Highway Hotspot:** runs a large number of random lookups and tracks which nodes act as relay hops across many paths. Computes a **Gini coefficient** (0=perfectly equal, 1=all traffic through one node) and plots a **Lorenz curve** showing cumulative relay load vs. cumulative node fraction.
+**Phase 1 — Highway Hotspot:** runs a large number of random lookups and tracks which nodes act as relay hops. Computes a **Gini coefficient** (0=perfectly equal, 1=all traffic through one node) and plots a **Lorenz curve**.
 
-**Phase 2 — Storage Hotspot:** assigns content items to nodes and queries them with a **Zipf distribution** (exponent configurable, default 1.0 — classic internet traffic). Popular items are queried orders-of-magnitude more than rare ones. Computes a Gini coefficient and Lorenz curve for query load distribution.
+**Phase 2 — Storage Hotspot:** assigns content items to nodes and queries them with a **Zipf distribution**. Computes Gini coefficient and Lorenz curve for query load distribution.
 
 ```
 Hotspot Gini results at 5,000 nodes (highway / storage):
@@ -947,10 +988,7 @@ Hotspot Gini results at 5,000 nodes (highway / storage):
   N-1:       0.91 / 0.60
   N-6W:      0.88 / 0.61
   N-7W:      0.85 / 0.59   ← matches Kademlia on highway Gini
-  N-8W:      ~0.87 / ~0.60
 ```
-
-Storage Gini is floor-bounded by the Zipf distribution itself and is not protocol-driven. Highway Gini reflects routing architecture — N-7W's load-aware AP scoring achieves the best highway fairness in the neuromorphic family.
 
 ### Benchmark
 
@@ -960,33 +998,12 @@ Runs all protocols in sequence on identical traffic. Each protocol:
 2. Runs `warmupSessions × 500` lookups to train neuromorphic synaptomes
 3. Runs 500 measured lookups per test scenario
 4. Reports hops mean and time mean for each column
-5. Displays the current protocol name in the status bar throughout
 
-**Protocol selection:** the benchmark multi-select lets you choose any subset of protocols and test types to run. Deselect rarely-needed protocols to focus on the comparison of interest. The default selection includes all protocols; narrow it to e.g. N-9W + N-10W for a targeted pub/sub analysis without running the full 18-protocol suite.
-
-**Test columns:**
-- **Global** — uniformly random source/target pairs
-- **500 km / 1,000 km / 2,000 km / 5,000 km** — regional radius constraints
-- **10% Src** — sources drawn from a geographic population cluster
-- **10% Dest** — destinations drawn from a geographic population cluster
-- **10%→10%** — both source and destination from clusters
-- **N.Am.–Asia** — trans-Pacific continent-crossing lookups
-- **Churn** — node replacement at the configured churn rate
+**Test columns:** Global · 500 km · 1,000 km · 2,000 km · 5,000 km · 10% Src · 10% Dest · 10%→10% · N.Am.–Asia · Pub/Sub · Churn
 
 ### Pub/Sub Test ★ (Primary Research Focus)
 
-The Pub/Sub test is the **most important test in the simulator**. It directly models the scenario that decentralised networks are expected to carry the most of in production: publish-subscribe message delivery, where a publisher broadcasts a message to a group of subscribers through a peer-to-peer overlay.
-
-#### Why Pub/Sub Is Central
-
-We believe pub/sub will be the dominant use case for decentralised networks. Real-time messaging, collaborative editing, live media streaming, multiplayer gaming, IoT sensor feeds, and event-driven microservices all share the same fundamental pattern: one or more publishers send to a group of subscribers without any server intermediary. Moving this onto a DHT overlay — where the "relay" is just another peer, not a privileged server — is the key architectural challenge this simulator was built to explore.
-
-The requirements are demanding:
-
-- **Low relay latency:** how quickly can a publisher find a relay peer and send to it? (measured as relay hops and relay ms)
-- **Low broadcast latency:** once the relay has the message, how quickly can it deliver it to all subscribers? (measured as bcast hops and bcast ms)
-- **Convergence under repetition:** a pub/sub channel is not a one-off lookup; the same group communicates repeatedly. A good protocol should learn the group topology and progressively reduce both metrics over time
-- **Scale and coverage:** real deployments range from small groups (10% of a 32-member set = 3 members) to large groups (50% of a 32-member set = 16 members) across networks of tens of thousands of nodes
+The Pub/Sub test is the **most important test in the simulator**. It directly models the scenario that decentralised networks are expected to carry the most of in production.
 
 #### How the Test Works
 
@@ -996,73 +1013,52 @@ Pub/Sub Group Model:
   Group size  (pubsubGroupSize) = 32 members total
   Coverage %  (pubsubCoverage)  = % of those 32 who are active
 
+  At 10% coverage: ~3 active members
   At 25% coverage: 8 active members
   At 50% coverage: 16 active members
 
 Phase 1 — Relay routing (relay hops / relay ms):
   Each active group member performs a DHT lookup to find and connect
-  to a designated relay node. The relay node is a normal peer that has
-  been "pinned" as the rendezvous point for this group.
+  to a designated relay node.
 
   relay hops = average DHT hops from member to relay
   relay ms   = average total RTT for that routing path
 
 Phase 2 — Broadcast delivery (bcast hops / bcast ms):
   The relay node routes a message to each of the other active members.
-  In a well-trained neuromorphic protocol, the relay accumulates direct
-  synaptome entries for every group member — reducing this to 1 hop each.
+  In NX-2W, the broadcast tree mechanism routes to bridge nodes first,
+  which forward to their subscriber clusters — achieving avg ~1.6 hops
+  regardless of group size.
 
   bcast hops = average DHT hops from relay to each subscriber
   bcast ms   = average total RTT for each delivered message
 ```
 
-The test runs `msgCount` (default 500) lookup sessions per phase. Each session repeats the relay and broadcast steps, giving the neuromorphic synaptome time to learn the group topology through Markov pre-learning, lateral shortcut propagation, and (in N-10W) relay pinning.
-
 #### What Makes Pub/Sub Hard for DHT Protocols
 
-The fundamental challenge is **stratum saturation**. In any geographic deployment, pub/sub group members are likely to be co-located (same application, same region). Their G-IDs share common geographic prefix bits, placing all their synaptome entries in **strata group 0** (XOR distance 0–3).
-
-The stratified eviction mechanism — which guarantees full keyspace coverage — enforces a floor of only 2 entries per strata group. When 8–16 group members all compete for the 2–3 stratum-group-0 slots that eviction allows, most are continuously displaced before the LTP reinforcement wave can stabilise them. The result: bcast hops stays at 2–3 rather than converging to 1.
-
-This is the problem N-10W was specifically designed to solve.
+The fundamental challenge is **stratum saturation**. In any geographic deployment, pub/sub group members are likely to be co-located. Their G-IDs share common geographic prefix bits, placing all their synaptome entries in **strata group 0** (XOR distance 0–3). The stratified eviction mechanism enforces a floor of only 2 entries per strata group — when 8–16 group members all compete for those 2–3 slots, most are continuously displaced. NX-2W's broadcast tree mechanism sidesteps this entirely: rather than requiring the relay to hold a direct synapse to every subscriber, it routes through intermediate bridge nodes that are geographically distributed.
 
 #### Key Parameters
 
 | Control | Range | Default | Description |
 |---|---|---|---|
 | Group size | 4–256 | 32 | Total pub/sub group membership |
-| Coverage % | 1–100 | 25 | % of group that are active subscribers |
-| Warmup | 1–99 | 4 | General routing warmup sessions before measurement (10+ recommended for pub/sub) |
+| Coverage % | 1–100 | 10 | % of group that are active subscribers |
+| Warmup | 1–99 | 4 | General routing warmup sessions (10+ recommended for pub/sub) |
 
-#### Understanding the Results
+### Add Nodes (Organic Join)
 
-```
-Benchmark at 25,000 nodes / 25% coverage / 10 warmup sessions:
+Adds new nodes to a live network one at a time, simulating real peer-to-peer network growth:
 
-                   RELAY              BROADCAST           COMBINED
-Protocol    hops     ms        hops     ms        hops     ms
-─────────────────────────────────────────────────────────────────
-N-9W        3.000   223       2.569    189       5.569    412
-N-10W ★     3.500   236       1.718    160       5.218    396   ← BEST
-N-11W       3.375   244       2.151    178       5.526    422
-N-12W       4.250   246       2.046    172       6.296    418
-N-13W       3.688   260       1.819    163       5.507    423
+1. **Sponsor discovery:** the new node finds the existing alive node with smallest XOR distance — its closest peer in the ID space
+2. **Bootstrap join:** `bootstrapJoin(newNodeId, sponsorId)` explores the sponsor's 1–2 hop neighbourhood, sorts candidates by XOR distance, and wires synapses to the closest ones up to the connection capacity
+3. **Warmup lookups:** the new node performs `addNodeWarmup` random lookups to integrate via LTP reinforcement and annealing — rapidly forming global connections through the mechanisms described in the routing foundation section
 
-N-10W wins on every individual metric AND on the combined total
-(relay + bcast), which represents the full end-to-end pub/sub cost.
-
-The broadcast improvement (2.569 → 1.718 hops, −33%) achieved by
-N-10W's relay pinning more than compensates for the modest relay
-regression (3.000 → 3.500 hops, +17%).
-```
-
-#### CSV Export
-
-The Pub/Sub benchmark CSV includes all measured columns plus a `# Run Parameters` footer that records: node count, K, α, ID bits, node delay, lookups per cell, warmup sessions, group size, and coverage %. This makes runs fully reproducible from the exported file alone.
+**Note on peer discovery:** the current `bootstrapJoin` uses the sponsor's synaptome + highway as its candidate pool, which is realistic. The annealing mechanism's `_globalCandidate` (which scans all nodes directly) is a simulator shortcut for the gossip protocol or rendezvous-point peer discovery that a real browser deployment would use.
 
 ### Pair Learning
 
-Assigns each node a **fixed random target** at test start. Every session, every node routes to its fixed partner. This models **persistent communication pairs** — the dominant real-world pattern in messaging, streaming, and IoT. The fixed routing demand gives the neuromorphic synaptome exactly the repeated-pair signal needed to form direct shortcuts. Y-axis starts at 1.0 (theoretical minimum) with a dashed goal line. CSV export available.
+Assigns each node a **fixed random target** at test start. Every session, every node routes to its fixed partner. This models **persistent communication pairs** — the dominant real-world pattern in messaging, streaming, and IoT. The fixed routing demand gives the neuromorphic synaptome exactly the repeated-pair signal needed to form direct shortcuts.
 
 ---
 
@@ -1072,7 +1068,9 @@ Assigns each node a **fixed random target** at test start. Every session, every 
 
 | Control | Range | Default | Description |
 |---|---|---|---|
-| Protocol | dropdown | N-8W | Which protocol to run |
+| Protocol | dropdown | NX-2W | Which protocol to run |
+| Bidirectional | checkbox | ✓ | When checked, connections are bidirectional: if node A connects to B, B also learns A as a routing candidate. Doubles effective routing candidates; significantly improves Pub/Sub relay and broadcast performance |
+| Web Limit | checkbox | ✓ | Caps each node's routing table to 50 connections — realistic for browser WebRTC/WebSocket deployments. Without Web Limit, `buildXorRoutingTable` fills up to k×64 entries (e.g. ~223 for k=20, 5K nodes) |
 | Nodes | 20–100,000 | 5,000 | Number of nodes in the network |
 | K | 1–50 | 20 | Bucket / synaptome seed width |
 | α | 1–10 | 3 | Lookup parallelism |
@@ -1086,31 +1084,27 @@ Assigns each node a **fixed random target** at test start. Every session, every 
 | Count | 50–5,000 | 500 | Messages per test session |
 | Hot% | 1–100 | 2 | % of nodes used as sources/destinations |
 
+### Add Nodes
+
+| Control | Range | Default | Description |
+|---|---|---|---|
+| Count | 1–1,000 | 1 | Number of nodes to add organically |
+| Warm | 0–500 | 50 | Warmup lookups per new node after joining |
+
 ### Churn
 
 | Control | Range | Default | Description |
 |---|---|---|---|
-| Rate | 1–30% | 5 | % of nodes replaced per churn event (also used as Benchmark churn column rate) |
+| Rate | 1–30% | 5 | % of nodes replaced per churn event |
 | Int | 2–30 | 10 | Number of churn intervals |
 | L/Int | 20–500 | 100 | Lookups measured per interval |
-
-### Filters
-
-| Control | Description |
-|---|---|
-| □ Region | Constrain source/target to within R km |
-| Region (km) | Regional radius |
-| □ Src | Enable source-population clustering |
-| Src% | % of traffic from a geographic cluster |
-| □ Dest | Enable destination-population clustering |
-| Dest% | % of traffic to a geographic cluster |
 
 ### Pub/Sub
 
 | Control | Range | Default | Description |
 |---|---|---|---|
 | Group size | 4–256 | 32 | Total pub/sub group membership |
-| Coverage % | 1–100 | 25 | Percentage of the group that are active subscribers |
+| Coverage % | 1–100 | 10 | Percentage of the group that are active subscribers |
 
 ### Hotspot
 
@@ -1125,14 +1119,8 @@ Assigns each node a **fixed random target** at test start. Every session, every 
 | Control | Range | Default | Description |
 |---|---|---|---|
 | Warmup | 1–99 | 4 | Training sessions (× 500 lookups) before scoring |
-| Protocols | multi-select | all | Which protocols to include in the benchmark run |
-| Tests | multi-select | all | Which test scenarios to include (global, regional, pub/sub, churn, etc.) |
-
-### Globe
-
-| Control | Description |
-|---|---|
-| □ Rotate | Auto-rotate globe (toggle in top-right of globe panel) |
+| Protocols | multi-select | all | Which protocols to include |
+| Tests | multi-select | all | Which test scenarios to include |
 
 ---
 
@@ -1143,16 +1131,16 @@ Node dots **scale automatically with population density**:
 ```
 dot radius = min(0.007, max(0.0018, 0.007 × √(5000 / N)))
 
-N=    100 → radius 0.007 (cap — same as default)
-N=  1,000 → radius 0.007 (cap)
+N=    100 → radius 0.007 (cap)
 N=  5,000 → radius 0.007 (default reference)
-N= 10,000 → radius 0.0050
 N= 25,000 → radius 0.0031
 N= 50,000 → radius 0.0022
 N=100,000 → radius 0.0018 (floor)
 ```
 
-At 50,000+ nodes the dots are fine-grained enough to show population density as a visual heat map. Click any node to display its routing table connections as arcs.
+At 50,000+ nodes the dots show population density as a visual heat map. Click any node to display its routing table connections as arcs. The globe supports rotation (left-drag) and zoom (scroll) but not pan — the globe cannot be dragged off-centre.
+
+**Theme:** The globe always renders with light-mode blue colouring (sky blue background, medium blue ocean, visible continent outlines) regardless of the UI theme setting. The sidebar and results panels switch between dark and light themes independently.
 
 ---
 
@@ -1177,16 +1165,17 @@ To implement any neuromorphic protocol from scratch:
 ```javascript
 class NeuronNode {
   constructor(id, lat, lng) {
-    this.id           = id          // BigInt (64-bit G-ID)
-    this.lat          = lat
-    this.lng          = lng
-    this.alive        = true
-    this.synaptome    = new Map()   // peerId → Synapse (local tier)
-    this.highway      = new Map()   // peerId → Synapse (highway tier, N-6W+)
-    this.transitCache = new Map()   // "fromId_toId" → count
-    this.temperature  = 1.0         // annealing temperature (N-5+)
-    this.loadEMA      = 0           // relay load signal (N-7W+)
-    this.loadLastEpoch = 0
+    this.id               = id          // BigInt (64-bit G-ID)
+    this.lat              = lat
+    this.lng              = lng
+    this.alive            = true
+    this.synaptome        = new Map()   // peerId → Synapse (local tier)
+    this.highway          = new Map()   // peerId → Synapse (highway tier, N-6W+)
+    this.incomingSynapses = new Map()   // peerId → lightweight reverse entry (NX series)
+    this.transitCache     = new Map()   // "fromId_toId" → count
+    this.temperature      = 1.0         // annealing temperature (N-5+)
+    this.loadEMA          = 0           // relay load signal (N-7W+, off in NX-2W)
+    this.loadLastEpoch    = 0
   }
 }
 ```

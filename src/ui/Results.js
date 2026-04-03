@@ -1350,15 +1350,16 @@ export class Results {
                             : s.type === 'pubsub'     ? 'pubsub'
                             : 'global';
 
-    // Build header: Protocol, then two columns per spec
-    // (pub/sub expands to four columns; all others use hops + ms)
+    // Build header: Protocol, then columns per spec.
+    // Non-pub/sub cells emit: hops, ms, success%.
+    // Pub/sub cells emit:     relay hops, relay ms, bcast hops, bcast ms.
     const headerCols = ['Protocol'];
     for (const s of testSpecs) {
       const lbl = csvSpecLabel(s);
       if (s.type === 'pubsub') {
         headerCols.push(`${lbl} →relay hops`, `${lbl} →relay ms`, `${lbl} bcast hops`, `${lbl} bcast ms`);
       } else {
-        headerCols.push(`${lbl} hops`, `${lbl} ms`);
+        headerCols.push(`${lbl} hops`, `${lbl} ms`, `${lbl} success%`);
       }
     }
 
@@ -1378,8 +1379,9 @@ export class Results {
           );
         } else {
           cols.push(
-            cell?.hops?.mean  != null ? cell.hops.mean.toFixed(3)  : '',
-            cell?.time?.mean  != null ? cell.time.mean.toFixed(2)  : '',
+            cell?.hops?.mean        != null ? cell.hops.mean.toFixed(3)                     : '',
+            cell?.time?.mean        != null ? cell.time.mean.toFixed(2)                     : '',
+            cell?.successRate       != null ? (cell.successRate * 100).toFixed(1) + '%'     : '',
           );
         }
       }

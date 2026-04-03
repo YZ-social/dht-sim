@@ -108,52 +108,132 @@ export function clz64(n) {
 }
 
 /**
+ * Collect up to k nodes from XOR-bucket b relative to selfId.
+ * Internal helper — extracts the binary-search + range scan used by
+ * buildXorRoutingTable so it can be called per-bucket during stratified
+ * allocation.
+ *
+ * @param {BigInt}   selfId  Source node ID (64-bit BigInt).
+ * @param {object[]} sorted  All nodes sorted ascending by .id.
+ * @param {number}   b       Bucket index 0–63 (highest differing bit).
+ * @param {number}   k       Max nodes to return.
+ * @returns {object[]}       Up to k peers whose XOR distance puts them in bucket b.
+ */
+function _collectBucket(selfId, sorted, b, k) {
+  const bBig = BigInt(b);
+  let rangeStart, rangeEnd;
+
+  if (b < 63) {
+    const highBits    = selfId >> (bBig + 1n);
+    const flippedBitB = ((selfId >> bBig) & 1n) ^ 1n;
+    const peerPfx     = (highBits << 1n) | flippedBitB;
+    rangeStart        = peerPfx << bBig;
+    rangeEnd          = rangeStart | ((1n << bBig) - 1n);
+  } else {
+    // b = 63: MSB differs — peers live in the opposite half of the ID space.
+    rangeStart = (selfId >> 63n) === 0n ? (1n << 63n) : 0n;
+    rangeEnd   = (selfId >> 63n) === 0n ? 0xFFFFFFFFFFFFFFFFn : ((1n << 63n) - 1n);
+  }
+
+  // Binary search for the first index >= rangeStart.
+  let lo = 0, hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (sorted[mid].id < rangeStart) lo = mid + 1; else hi = mid;
+  }
+
+  // Collect up to k peers from [rangeStart, rangeEnd].
+  const nodes = [];
+  for (let i = lo; i < sorted.length && nodes.length < k; i++) {
+    if (sorted[i].id > rangeEnd) break;
+    nodes.push(sorted[i]);
+  }
+  return nodes;
+}
+
+/**
  * O(n log n) XOR-bucket routing table builder for 64-bit BigInt node IDs.
  *
- * Given all nodes pre-sorted ascending by .id (BigInt), returns up to k peers
- * per XOR-distance bucket for the node with the given selfId.
+ * WITHOUT a connection budget (maxTotal = Infinity):
+ *   Sequential fill — up to k peers per bucket, b=0 through b=63.
+ *   All protocols use this path when no web-limit is set.
  *
- * @param {BigInt}   selfId  64-bit unsigned BigInt node ID.
- * @param {object[]} sorted  Nodes sorted ascending by .id (BigInt).
- * @param {number}   k       Max peers per bucket.
- * @returns {object[]}       Peer nodes to add (never includes selfId).
+ * WITH a connection budget (maxTotal finite, i.e. web-limit mode):
+ *   Stratified two-phase allocation applied to ALL protocols.
+ *
+ *   Why sequential fill fails under a budget cap:
+ *
+ *   For random-ID protocols (Kademlia): buckets b=0–55 are sparse but b=56–63
+ *   each have ~N/2^(64-b) nodes.  With N=5000 and maxTotal=50, sequential fill
+ *   stops around b=57, leaving b=58–63 completely empty.  Lookups then fail to
+ *   reach nodes whose IDs differ in the top bits, which — for a random network —
+ *   is essentially everyone.  The new exact-match `found` metric exposes this
+ *   as a ~2% success rate.
+ *
+ *   For geo-prefix protocols (geo8, geo16): buckets b=0–55 are ALL within the
+ *   same geographic cell, so sequential fill exhausts the entire budget on
+ *   local nodes before reaching the inter-cell buckets (b=56–63) that provide
+ *   continental and global connectivity.
+ *
+ *   Stratified fix — two phases:
+ *   Phase 1 — breadth: 1 peer per non-empty bucket (full XOR-range coverage,
+ *                       guarantees at least one connection at every occupied
+ *                       XOR-distance level including global b=63 buckets).
+ *   Phase 2 — depth:   remaining budget to the highest-b buckets first (b=63
+ *                       down), maximising global-reach diversity.
+ *
+ * @param {BigInt}   selfId              64-bit unsigned BigInt node ID.
+ * @param {object[]} sorted              Nodes sorted ascending by .id (BigInt).
+ * @param {number}   k                   Max peers per bucket.
+ * @param {number}   [maxTotal=Infinity] Hard cap on total connections (web-limit).
+ * @returns {object[]}                   Peer nodes to add (never includes selfId).
  */
 export function buildXorRoutingTable(selfId, sorted, k, maxTotal = Infinity) {
-  const result = [];
 
+  // ── No budget cap: sequential fill (unchanged behaviour) ─────────────────
+  if (!isFinite(maxTotal)) {
+    const result = [];
+    for (let b = 0; b <= 63; b++) {
+      result.push(..._collectBucket(selfId, sorted, b, k));
+    }
+    return result;
+  }
+
+  // ── Budget-capped: stratified allocation for all protocols ────────────────
+  // Step 1: collect up to k candidates per bucket (O(n) total via binary search).
+  const buckets = [];
   for (let b = 0; b <= 63; b++) {
-    const bBig = BigInt(b);
-    let rangeStart, rangeEnd;
+    buckets.push(_collectBucket(selfId, sorted, b, k));
+  }
 
-    if (b < 63) {
-      const highBits    = selfId >> (bBig + 1n);
-      const flippedBitB = ((selfId >> bBig) & 1n) ^ 1n;
-      const peerPfx     = (highBits << 1n) | flippedBitB;
-      rangeStart        = peerPfx << bBig;
-      rangeEnd          = rangeStart | ((1n << bBig) - 1n);
-    } else {
-      // b = 63: MSB differs — peers live in the opposite half of the ID space.
-      rangeStart = (selfId >> 63n) === 0n ? (1n << 63n) : 0n;
-      rangeEnd   = (selfId >> 63n) === 0n ? 0xFFFFFFFFFFFFFFFFn : ((1n << 63n) - 1n);
-    }
+  const allotted = new Array(64).fill(0);
+  let remaining = maxTotal;
 
-    // Binary search for the first index >= rangeStart.
-    let lo = 0, hi = sorted.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >>> 1;
-      if (sorted[mid].id < rangeStart) lo = mid + 1; else hi = mid;
-    }
-
-    // Collect up to k peers from [rangeStart, rangeEnd].
-    let taken = 0;
-    for (let i = lo; i < sorted.length && taken < k; i++) {
-      if (sorted[i].id > rangeEnd) break;
-      result.push(sorted[i]);
-      taken++;
-      if (result.length >= maxTotal) return result;  // web-limit early exit
+  // Phase 1: 1 per non-empty bucket — guarantees at least one connection at
+  // every XOR-distance level including the global high-b buckets.
+  for (let b = 0; b <= 63 && remaining > 0; b++) {
+    if (buckets[b].length > 0) {
+      allotted[b] = 1;
+      remaining--;
     }
   }
 
+  // Phase 2: fill highest-b buckets first with remaining budget.
+  // Prioritises global-reach diversity (large XOR distance) over local
+  // redundancy (small XOR distance).
+  for (let b = 63; b >= 0 && remaining > 0; b--) {
+    const canAdd = Math.min(buckets[b].length - allotted[b], k - allotted[b], remaining);
+    if (canAdd > 0) {
+      allotted[b] += canAdd;
+      remaining   -= canAdd;
+    }
+  }
+
+  // Step 3: assemble in bucket order (b=0 first, b=63 last).
+  const result = [];
+  for (let b = 0; b <= 63; b++) {
+    for (let i = 0; i < allotted[b]; i++) result.push(buckets[b][i]);
+  }
   return result;
 }
 

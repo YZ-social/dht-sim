@@ -336,11 +336,23 @@ export class KademliaDHT extends DHT {
       }
     }
 
+    // In ID-XOR mode the target IS a real node's ID (receiver.id from the engine).
+    // A lookup truly succeeds only when that exact node is in the final shortlist
+    // (XOR distance 0 is the unique minimum — it can never be beaten or evicted).
+    // If the routing got stuck in a local cluster that doesn't include the target
+    // (e.g. geo8 + web limit routing only through same-cell nodes), the target
+    // will be absent and found = false, accurately reflecting the routing failure.
+    //
+    // In geo-key mode the target is an S2 cell key, not a node ID; any non-empty
+    // result is valid (keep original behaviour).
+    const found = shortlist.length > 0 &&
+      (useGeo || shortlist.some(n => n.id === targetKey));
+
     return {
       path,
       hops: totalHops,
       time: totalTimeMs,
-      found: shortlist.length > 0,
+      found,
     };
   }
 

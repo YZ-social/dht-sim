@@ -136,6 +136,7 @@ async function init() {
 
   // Wire buttons
   document.getElementById('btnInit')?.addEventListener('click', onInit);
+  document.getElementById('btnBootstrap')?.addEventListener('click', onBootstrap);
   document.getElementById('btnLookupTest')?.addEventListener('click', onLookupTest);
   document.getElementById('btnAddNodes')?.addEventListener('click', onAddNodes);
   document.getElementById('btnThemeToggle')?.addEventListener('click', () => {
@@ -302,6 +303,114 @@ async function onInit() {
   }
   controls.setStatus(
     `Network ready: ${nodes.length} nodes, ${params.protocol} ` +
+    `(k=${params.k}, α=${params.alpha}, ${params.bits}-bit IDs)` +
+    (nodes.length > GLOBE_NODE_LIMIT ? ' — globe hidden for large network' : ''),
+    'success'
+  );
+  controls.updateNodeCount(nodes.length);
+  controls.setRunning(false);
+  controls.setProgress(0);
+  sweep.notifyInitComplete();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bootstrap Network — build incrementally via sponsor-based join
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function onBootstrap() {
+  trainingActive = false;
+  controls.setTraining(false);
+  pubsubActive = false;
+  controls.setPubSub(false);
+  pairActive = false;
+  controls.setPairLearning(false);
+  hotspotActive = false;
+  controls.setHotspotTesting(false);
+  controls.setRunning(true);
+  controls.setProgress(0);
+  results.clear();
+  results.clearTraining();
+  results.clearPubSub();
+  results.clearPairLearning();
+  globe.clearArcs();
+  globe.clearConnections();
+  globe.clearRegionalBoundary();
+
+  const params = controls.snapshot();
+  controls.setStatus(
+    `Bootstrapping ${params.nodeCount}-node ${params.protocol} network…`, 'info'
+  );
+
+  const { maxPropagation } = getLatencyParams();
+  setLatencyParams(maxPropagation, params.nodeDelay);
+
+  // Dispose previous DHT
+  if (dht) {
+    dht.dispose();
+    dht = null;
+    await yieldUI();
+  }
+
+  dht = createDHT(params);
+
+  // Build incrementally: first node has no peers, each subsequent node
+  // joins through the live network via a sponsor.
+  const nodes = [];
+  for (let i = 0; i < params.nodeCount; i++) {
+    const { lat, lng } = globe.randomLandPoint();
+    const node = await dht.addNode(lat, lng);
+    nodes.push(node);
+
+    // Every node after the first joins via sponsor
+    if (i > 0) {
+      const sponsor = findSponsor(dht, node);
+      if (sponsor && dht.bootstrapJoin) {
+        dht.bootstrapJoin(node.id, sponsor.id);
+      }
+    }
+
+    if ((i + 1) % 50 === 0) {
+      controls.setProgress((i + 1) / params.nodeCount * 0.8);
+      await yieldUI();
+    }
+  }
+
+  // Refresh phase — early joiners have sparse tables because few peers existed
+  // when they joined.  A single self-lookup per node (as real Kademlia does
+  // periodically) lets every node discover the full set of peers now available.
+  controls.setStatus('Refreshing routing tables…', 'info');
+  controls.setProgress(0.85);
+  await yieldUI();
+
+  if (dht.bootstrapJoin) {
+    const allIds = [...dht.nodeMap.keys()];
+    for (let i = 0; i < nodes.length; i++) {
+      const node = nodes[i];
+      // Pick a random existing node as refresh sponsor (not self)
+      let sponsorId = node.id;
+      while (sponsorId === node.id) {
+        sponsorId = allIds[Math.floor(Math.random() * allIds.length)];
+      }
+      dht.bootstrapJoin(node.id, sponsorId);
+
+      if ((i + 1) % 100 === 0) {
+        controls.setProgress(0.85 + (i + 1) / nodes.length * 0.15);
+        await yieldUI();
+      }
+    }
+  }
+
+  controls.setProgress(1);
+  await yieldUI();
+
+  const GLOBE_NODE_LIMIT = 10_000;
+  if (nodes.length <= GLOBE_NODE_LIMIT) {
+    globe.setNodes(dht.getNodes());
+  } else {
+    globe.setNodes([]);
+  }
+  controls.setStatus(
+    `Network bootstrapped: ${nodes.length} nodes, ${params.protocol} ` +
     `(k=${params.k}, α=${params.alpha}, ${params.bits}-bit IDs)` +
     (nodes.length > GLOBE_NODE_LIMIT ? ' — globe hidden for large network' : ''),
     'success'
@@ -1121,9 +1230,9 @@ async function onBenchmark() {
 
   const PROTOCOL_DEFS = [
     { key: 'kademlia', label: 'Kademlia' },
-    { key: 'geo8',     label: 'G-DHT-8'  },
+    { key: 'geo',      label: `G-DHT-${params.geoBits}` },
     // Neuromorphic protocols need a warmup burst so synaptic shortcuts form
-    // before measurement.  Without warmup their weights are identical to G-DHT-8.
+    // before measurement.  Without warmup their weights are identical to G-DHT.
     { key: 'ngdht',     label: 'N-1',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht2',    label: 'N-2',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht2bp',  label: 'N-2-BP',  warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
@@ -1262,19 +1371,12 @@ async function onBenchmark() {
 
 function createDHT(params) {
   switch (params.protocol) {
-    case 'geo8':
+    case 'geo':
       return new GeographicDHT({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
-        geoBits: 8,
-      });
-    case 'geo16':
-      return new GeographicDHT({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-        geoBits: 16,
+        geoBits: params.geoBits ?? 8,
       });
     case 'ngdht':
       return new NeuromorphicDHT({

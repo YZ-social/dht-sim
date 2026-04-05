@@ -11,7 +11,7 @@
  *
  * Each run is an object with any subset of:
  *   { nodeCount, pubsubCoverage, pubsubGroupSize, warmupSessions,
- *     protocols: ['kademlia','geo8','ngdht10w'],
+ *     protocols: ['kademlia','geo','ngdht10w'],
  *     tests:     ['global','r2000','pubsub'] }
  */
 export class BenchmarkSweep {
@@ -180,9 +180,11 @@ export class BenchmarkSweep {
     };
 
     setNum('nodeCount',           run.nodeCount);
+    setNum('geoBits',             run.geoBits);
     setNum('pubsubCoverage',      run.pubsubCoverage);
     setNum('pubsubGroupSize',     run.pubsubGroupSize);
     setNum('benchWarmupSessions', run.warmupSessions);
+    setChk('webLimit',            run.webLimit);
     setMultiSelect('benchProtocols', run.protocols, 'dht-bench-protocols');
     setMultiSelect('benchTests',     run.tests,     'dht-bench-tests');
 

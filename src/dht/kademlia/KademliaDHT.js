@@ -160,6 +160,10 @@ export class KademliaDHT extends DHT {
     this.k = config.k ?? 20;
     this.alpha = config.alpha ?? 3;
     this.bits = config.bits ?? 64;
+    // How many consecutive no-progress rounds before lookup terminates.
+    // Standard Kademlia uses 2. Geo-structured variants may set higher to
+    // allow longer inter-cell routing chains under tight connection budgets.
+    this.noProgressLimit = config.noProgressLimit ?? 2;
     /** @type {Map<number, KademliaNode>} */
     this.nodeMap = new Map();
   }
@@ -199,6 +203,75 @@ export class KademliaDHT extends DHT {
         // Bidirectional: also make peer aware of node (reverse edge).
         if (bidirectional) peer.addToBucket(node);
       }
+    }
+  }
+
+  // ── Bootstrap join ───────────────────────────────────────────────────────
+
+  /**
+   * Integrate a freshly-created node into an existing network through a
+   * sponsor, simulating real Kademlia bootstrap.
+   *
+   * The new node performs an iterative self-lookup (FIND_NODE for its own ID)
+   * starting from the sponsor.  Every peer discovered along the way is added
+   * to the new node's routing table, and if bidirectional is enabled those
+   * peers also learn about the new node.
+   *
+   * @param {BigInt} newNodeId  ID of the freshly-created node (already in nodeMap).
+   * @param {BigInt} sponsorId  ID of an existing live node.
+   */
+  bootstrapJoin(newNodeId, sponsorId) {
+    const newNode = this.nodeMap.get(newNodeId);
+    const sponsor = this.nodeMap.get(sponsorId);
+    if (!newNode || !sponsor) return;
+
+    const bidir = this.bidirectional ?? true;
+
+    const addPeer = (peer) => {
+      if (peer.id === newNode.id) return;
+      newNode.addToBucket(peer);                    // k-bucket limit per bucket
+      if (bidir) peer.addToBucket(newNode);
+    };
+
+    // 1. Connect to sponsor
+    addPeer(sponsor);
+
+    // 2. Iterative self-lookup: FIND_NODE(newNode.id)
+    //    Mirrors the real Kademlia join — each round queries α unqueried nodes
+    //    for their k closest peers and merges them into the shortlist.
+    const queried = new Set([newNode.id]);
+    let shortlist = sponsor.findClosest(newNode.id, this.k);
+    for (const peer of shortlist) addPeer(peer);
+
+    for (let round = 0; round < 10; round++) {
+      const unqueried = shortlist.filter(n => !queried.has(n.id)).slice(0, this.alpha);
+      if (unqueried.length === 0) break;
+
+      let improved = false;
+      for (const peer of unqueried) {
+        queried.add(peer.id);
+        const found = peer.findClosest(newNode.id, this.k);
+        for (const candidate of found) {
+          if (candidate.id !== newNode.id && !queried.has(candidate.id)) {
+            addPeer(candidate);
+            // Merge into shortlist if not already present
+            if (!shortlist.some(n => n.id === candidate.id)) {
+              shortlist.push(candidate);
+              improved = true;
+            }
+          }
+        }
+      }
+
+      // Re-sort by XOR distance to new node
+      shortlist.sort((a, b) => {
+        const da = a.id ^ newNode.id;
+        const db = b.id ^ newNode.id;
+        return da < db ? -1 : da > db ? 1 : 0;
+      });
+      shortlist = shortlist.slice(0, this.k);
+
+      if (!improved) break;  // converged
     }
   }
 
@@ -309,7 +382,7 @@ export class KademliaDHT extends DHT {
       // Termination: stop when no closer node is found after 2 fruitless rounds
       const newClosest = shortlist.length ? xorTo(shortlist[0].id) : (useGeo ? 0xffffffff : 0xFFFFFFFFFFFFFFFFn);
       if (newClosest >= closestDist) {
-        if (++noProgressRounds >= 2) break;
+        if (++noProgressRounds >= this.noProgressLimit) break;
       } else {
         noProgressRounds = 0;
         closestDist = newClosest;

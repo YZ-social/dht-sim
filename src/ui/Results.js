@@ -47,6 +47,8 @@ export class Results {
       rows.push(`Alpha (parallel queries),${p.alpha ?? ''}`);
       rows.push(`ID bits,${p.bits ?? ''}`);
       rows.push(`Node delay (ms),${p.nodeDelay ?? ''}`);
+      if (p.webLimit != null) rows.push(`Web limit,${p.webLimit ? 'yes' : 'no'}`);
+      if (p.geoBits  != null) rows.push(`G-DHT Bits,${p.geoBits}`);
     }
     for (const [k, v] of extraRows) rows.push(`${k},${v}`);
     return rows.join('\r\n');
@@ -1150,7 +1152,7 @@ export class Results {
     // Protocol row tooltip descriptions.
     const protoTips = {
       kademlia:  'Classic Kademlia: XOR-metric k-bucket routing with α-parallel iterative node lookups. No geographic awareness.',
-      geo8:      'Geo-DHT-8: XOR routing with an 8-bit S2 geographic cell prefix embedded in node IDs. Biases routing toward physically nearby nodes.',
+      geo:       'G-DHT: XOR routing with an S2 geographic cell prefix embedded in node IDs. Biases routing toward physically nearby nodes. Prefix width set by G-DHT Bits.',
       ngdht:     'Neuromorphic-1 (N-1): Hebbian synapse weighting layered on top of geographic routing. Synapses strengthen on frequently used paths. First-generation adaptive DHT.',
       ngdht2:    'Neuromorphic-2 (N-2): Adds two-hop lookahead AP (advance-per-latency) selection and triadic-closure hop caching to N-1. Learns shortcut connections through intermediate nodes.',
       ngdht2bp:  'Ablation — N-2 + Cascade Backpropagation only (N-2-BP): when a direct-to-target shortcut fires at a gateway node, all upstream path nodes learn a synapse to that gateway. Marginally better than N-2 alone because shortcuts must already exist to trigger the cascade.',

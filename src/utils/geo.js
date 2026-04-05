@@ -237,6 +237,69 @@ export function buildXorRoutingTable(selfId, sorted, k, maxTotal = Infinity) {
   return result;
 }
 
+/**
+ * Collect peers from the intra-cell XOR buckets b=0 through b<numBuckets.
+ * These are nodes that share the same geographic prefix in their IDs
+ * (same S2 cell for G-DHT), giving locally clustered connections.
+ *
+ * @param {BigInt}   selfId      64-bit unsigned BigInt node ID.
+ * @param {object[]} sorted      All nodes sorted ascending by .id.
+ * @param {number}   k           Max peers per bucket.
+ * @param {number}   numBuckets  Number of low-order XOR buckets to collect
+ *                               (geo8 → 56, geo16 → 48).
+ * @returns {object[]}           Peers from buckets 0 through numBuckets-1.
+ */
+export function buildIntraCellTable(selfId, sorted, k, numBuckets) {
+  const result = [];
+  for (let b = 0; b < numBuckets; b++) {
+    result.push(..._collectBucket(selfId, sorted, b, k));
+  }
+  return result;
+}
+
+/**
+ * Collect peers from the inter-cell XOR buckets b=startBucket through b=63.
+ * These buckets cover nodes whose geographic prefix differs from selfId, giving
+ * one representative per geographic-prefix bit — the Kademlia halving guarantee
+ * applied to the inter-cell key space.
+ *
+ * With k=1 this guarantees exactly one peer per bucket (8 peers for geo8),
+ * enough to ensure every target in the global key space is reachable.
+ *
+ * @param {BigInt}   selfId       64-bit unsigned BigInt node ID.
+ * @param {object[]} sorted       All nodes sorted ascending by .id.
+ * @param {number}   k            Max peers per bucket.
+ * @param {number}   startBucket  First inter-cell bucket index (64 - geoBits).
+ *                                geo8 → 56, geo16 → 48.
+ * @returns {object[]}            Peers from buckets startBucket through 63.
+ */
+export function buildInterCellTable(selfId, sorted, k, startBucket) {
+  const result = [];
+  for (let b = startBucket; b <= 63; b++) {
+    result.push(..._collectBucket(selfId, sorted, b, k));
+  }
+  return result;
+}
+
+/**
+ * Uniform random sample from a pool of nodes, excluding any IDs in excludeIds.
+ * Uses a partial Fisher-Yates shuffle — O(count) time, O(pool.length) space.
+ *
+ * @param {object[]} pool        All candidate nodes.
+ * @param {number}   count       How many to select.
+ * @param {Set}      excludeIds  Node IDs to skip (already selected or self).
+ * @returns {object[]}           Up to count randomly chosen live nodes.
+ */
+export function reservoirSample(pool, count, excludeIds = new Set()) {
+  const available = pool.filter(n => n.alive && !excludeIds.has(n.id));
+  const take = Math.min(count, available.length);
+  for (let i = 0; i < take; i++) {
+    const j = i + Math.floor(Math.random() * (available.length - i));
+    const tmp = available[i]; available[i] = available[j]; available[j] = tmp;
+  }
+  return available.slice(0, take);
+}
+
 // ── Continent classification ──────────────────────────────────────────────
 
 /**

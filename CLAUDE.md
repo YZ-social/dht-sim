@@ -22,9 +22,9 @@ curl -s -X POST http://localhost:3000/api/experiment \
     "label": "Coverage sweep 10-50%",
     "hypothesis": "Higher coverage should increase broadcast hops for N-10W",
     "runs": [
-      {"nodeCount":50000,"pubsubCoverage":10,"protocols":["kademlia","geo8","ngdht10w"],"tests":["global","r2000","pubsub"]},
-      {"nodeCount":50000,"pubsubCoverage":25,"protocols":["kademlia","geo8","ngdht10w"],"tests":["global","r2000","pubsub"]},
-      {"nodeCount":50000,"pubsubCoverage":50,"protocols":["kademlia","geo8","ngdht10w"],"tests":["global","r2000","pubsub"]}
+      {"nodeCount":50000,"pubsubCoverage":10,"protocols":["kademlia","geo","ngdht10w"],"tests":["global","r2000","pubsub"]},
+      {"nodeCount":50000,"pubsubCoverage":25,"protocols":["kademlia","geo","ngdht10w"],"tests":["global","r2000","pubsub"]},
+      {"nodeCount":50000,"pubsubCoverage":50,"protocols":["kademlia","geo","ngdht10w"],"tests":["global","r2000","pubsub"]}
     ]
   }'
 ```
@@ -85,14 +85,14 @@ Each run object in the `runs` array supports:
 | `pubsubCoverage` | current UI value | % of nodes to reach in pub/sub broadcast |
 | `pubsubGroupSize` | current UI value | Pub/Sub group size |
 | `warmupSessions` | current UI value | Neuromorphic warmup sessions (auto-scales with nodeCount) |
-| `protocols` | current UI selection | Array of protocol keys: `kademlia`, `geo8`, `ngdht10w`, etc. |
+| `protocols` | current UI selection | Array of protocol keys: `kademlia`, `geo`, `ngdht10w`, etc. |
 | `tests` | current UI selection | Array of test keys: `global`, `r2000`, `r500`, `pubsub`, `churn`, etc. |
 
 Omitting a field leaves the current UI value unchanged.
 
 ## Protocol Keys
 - `kademlia` — Kademlia DHT
-- `geo8` — Geographic DHT (8-bit geo prefix)
+- `geo` — Geographic DHT (prefix width set by G-DHT Bits parameter, default 8)
 - `ngdht10w` — Neuromorphic DHT v10 (best performer)
 - `ngdht`, `ngdht2`…`ngdht13w` — other neuromorphic variants
 - `ngdhtnx1w` — NX-1W configurable research protocol
@@ -112,7 +112,7 @@ Omitting a field leaves the current UI value unchanged.
 # DHT Benchmark — N nodes · 500 lookups/cell
 Protocol,global hops,global ms,2000km hops,2000km ms,pubsub →relay hops,...
 Kademlia,...
-G-DHT-8,...
+G-DHT,...
 N-10W,...
 
 # Run Parameters

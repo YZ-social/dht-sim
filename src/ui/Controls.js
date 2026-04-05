@@ -163,6 +163,7 @@ export class Controls {
   get kParam()      { return parseInt(this._el('kParam')?.value ?? 20); }
   get alphaParam()  { return parseInt(this._el('alphaParam')?.value ?? 3); }
   get idBits()      { return parseInt(this._el('idBits')?.value ?? 64); }
+  get geoBits()     { return Math.max(1, Math.min(32, parseInt(this._el('geoBits')?.value ?? 8))); }
   get nodeDelay()   { return parseInt(this._el('nodeDelay')?.value ?? 10); }
   get msgCount()    { return parseInt(this._el('msgCount')?.value ?? 500); }
   get hotPct()      { return parseInt(this._el('hotPct')?.value  ?? 100); }
@@ -209,6 +210,7 @@ export class Controls {
       k: this.kParam,
       alpha: this.alphaParam,
       bits: this.idBits,
+      geoBits: this.geoBits,
       nodeDelay: this.nodeDelay,
       msgCount: this.msgCount,
       hotPct:   this.hotPct,

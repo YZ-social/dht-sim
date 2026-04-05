@@ -40,8 +40,7 @@
       <div class="sb-sec-lbl">Network</div>
       <select id="dhtProtocol" class="sb-select-full" data-tip="Kademlia: random node IDs, XOR distance metric. Classic baseline DHT.">
         <option value="kademlia">Kademlia</option>
-        <option value="geo8">G-DHT-8</option>
-        <option value="geo16">G-DHT-16</option>
+        <option value="geo">G-DHT</option>
         <option value="ngdhtnx1w">NX-1W ✦</option>
         <option value="ngdhtnx2w">NX-2W ✦</option>
         <option value="ngdht">N-1</option>
@@ -93,8 +92,15 @@
         <input type="number" id="nodeDelay" class="sb-num" value="10" min="0" max="500" step="1" style="width:40px">
         <span class="sb-lbl">ms</span>
       </div>
+      <div class="sb-row">
+        <span class="sb-lbl" data-tip="Number of high-order bits in G-DHT node IDs that encode the geographic S2 cell. More bits = finer geographic resolution (2^n cells worldwide). Only affects G-DHT protocols.">G-DHT Bits</span>
+        <input type="number" id="geoBits" class="sb-num" value="8" min="1" max="32" step="1" style="width:36px">
+      </div>
       <div class="sb-btns">
         <button class="btn btn-primary btn-action" id="btnInit" data-tip="Build the network: place nodes on land, assign random IDs, and populate all routing tables. Re-clicking resets everything.">&#9632; Init Network</button>
+        <button class="btn btn-action" id="btnBootstrap" data-tip="Build the network incrementally: start from one node, each new node discovers peers through the live network — like a real DHT bootstrap.">&#9632; Bootstrap Network</button>
+      </div>
+      <div class="sb-btns">
         <button class="btn btn-action" id="btnDemoLookup" disabled data-tip="Animate random lookups continuously on the globe: each hop is traced with arcs. Loops automatically with a 1-second pause between lookups. Press again to stop.">&#9654; Demo</button>
       </div>
     </div>
@@ -208,7 +214,7 @@
           </div>
           <select id="benchProtocols" multiple size="6">
             <option value="kademlia"   selected>Kademlia</option>
-            <option value="geo8"       selected>G-DHT-8</option>
+            <option value="geo"        selected>G-DHT</option>
             <option value="ngdhtnx1w" selected>NX-1W</option>
             <option value="ngdhtnx2w" selected>NX-2W</option>
             <option value="ngdht"     selected>N-1</option>
@@ -957,7 +963,7 @@
           <thead><tr><th>Protocol</th><th>Key idea</th></tr></thead>
           <tbody>
             <tr><td>Kademlia</td><td>Classical DHT baseline. XOR distance metric; O(log N) hops. K-bucket routing table, α parallel queries per round.</td></tr>
-            <tr><td>Geographic-8 / 16</td><td>Assigns IDs from physical location using an S2 Hilbert-curve prefix. Nearby nodes share high-order bits — routing paths naturally follow geographic clusters. Higher prefix bits = finer resolution.</td></tr>
+            <tr><td>G-DHT</td><td>Assigns IDs from physical location using an S2 Hilbert-curve prefix. Nearby nodes share high-order bits — routing paths naturally follow geographic clusters. Prefix width configurable via the G-DHT Bits parameter.</td></tr>
             <tr><td>N-1</td><td>First neuromorphic variant. Adds a synaptome (learned routing table) on top of Kademlia. Every hop caches the path — heavily-used routes get stronger synapses; idle ones decay.</td></tr>
             <tr><td>N-2 / N-2-BP / N-2-SHC</td><td>Adds learning algorithms: backpropagation credit assignment and stochastic hill-climbing to guide which synapses reinforce.</td></tr>
             <tr><td>N-3</td><td>Triadic closure — if A routes through B to reach C, A tentatively wires a direct synapse to C, shortcutting B over time.</td></tr>
@@ -1012,8 +1018,7 @@
   // ── Protocol selector tooltip ────────────────────────────────────────────
   const PROTOCOL_TIPS = {
     kademlia:   'Kademlia: random node IDs, XOR distance metric. Classic baseline DHT with O(log N) routing.',
-    geo8:       'G-DHT-8: geographic IDs from S2 Hilbert prefix (8-bit). Nearby nodes share high-order bits so lookups follow geographic clusters.',
-    geo16:      'G-DHT-16: geographic IDs (16-bit prefix). Finer geographic resolution than G-DHT-8; better regional routing, slightly larger routing tables.',
+    geo:        'G-DHT: geographic IDs from S2 Hilbert prefix. Nearby nodes share high-order bits so lookups follow geographic clusters. Prefix width set by G-DHT Bits parameter.',
     ngdht:      'N-1: first-generation neuromorphic DHT. Synaptic shortcuts form on heavily-used paths and decay on idle ones. No highway layer.',
     ngdht2:     'N-2: neuromorphic v2. Improved synapse weight update rule with faster convergence on hot paths.',
     ngdht2bp:   'N-2-BP: N-2 with backpropagation-style weight correction. Penalises long paths more aggressively.',

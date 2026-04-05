@@ -12,26 +12,10 @@ import { Globe }              from './globe/Globe.js';
 import { KademliaDHT }        from './dht/kademlia/KademliaDHT.js';
 import { GeographicDHT }      from './dht/geographic/GeographicDHT.js';
 import { NeuromorphicDHT }    from './dht/neuromorphic/NeuromorphicDHT.js';
-import { NeuromorphicDHT2 }   from './dht/neuromorphic/NeuromorphicDHT2.js';
-import { NeuromorphicDHT2BP }  from './dht/neuromorphic/NeuromorphicDHT2BP.js';
-import { NeuromorphicDHT2SHC } from './dht/neuromorphic/NeuromorphicDHT2SHC.js';
-import { NeuromorphicDHT3 }    from './dht/neuromorphic/NeuromorphicDHT3.js';
-import { NeuromorphicDHT4 }    from './dht/neuromorphic/NeuromorphicDHT4.js';
-import { NeuromorphicDHT5 }    from './dht/neuromorphic/NeuromorphicDHT5.js';
-import { NeuromorphicDHT5W }   from './dht/neuromorphic/NeuromorphicDHT5W.js';
-import { NeuromorphicDHT6W }   from './dht/neuromorphic/NeuromorphicDHT6W.js';
-import { NeuromorphicDHT7W }   from './dht/neuromorphic/NeuromorphicDHT7W.js';
-import { NeuromorphicDHT8W }   from './dht/neuromorphic/NeuromorphicDHT8W.js';
-import { NeuromorphicDHT9W }   from './dht/neuromorphic/NeuromorphicDHT9W.js';
-import { NeuromorphicDHT10W }  from './dht/neuromorphic/NeuromorphicDHT10W.js';
-import { NeuromorphicDHT11W }  from './dht/neuromorphic/NeuromorphicDHT11W.js';
-import { NeuromorphicDHT12W }  from './dht/neuromorphic/NeuromorphicDHT12W.js';
-import { NeuromorphicDHT13W }  from './dht/neuromorphic/NeuromorphicDHT13W.js';
 import { NeuromorphicDHT15W }  from './dht/neuromorphic/NeuromorphicDHT15W.js';
 import { NeuromorphicDHTNX1W } from './dht/neuromorphic/NeuromorphicDHTNX1W.js';
 import { NeuromorphicDHTNX2W } from './dht/neuromorphic/NeuromorphicDHTNX2W.js';
 import { NeuromorphicDHTNX3 }  from './dht/neuromorphic/NeuromorphicDHTNX3.js';
-// NeuromorphicDHT14W retired — superseded by N-15W. Source kept in neuromorphic/ for reference.
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -1236,21 +1220,6 @@ async function onBenchmark() {
     // Neuromorphic protocols need a warmup burst so synaptic shortcuts form
     // before measurement.  Without warmup their weights are identical to G-DHT.
     { key: 'ngdht',     label: 'N-1',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht2',    label: 'N-2',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht2bp',  label: 'N-2-BP',  warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht2shc', label: 'N-2-SHC', warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht3',    label: 'N-3',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht4',    label: 'N-4',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht5',    label: 'N-5',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht5w',   label: 'N-5W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht6w',   label: 'N-6W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht7w',   label: 'N-7W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht8w',   label: 'N-8W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht9w',   label: 'N-9W',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht10w',  label: 'N-10W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht11w',  label: 'N-11W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht12w',  label: 'N-12W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
-    { key: 'ngdht13w',  label: 'N-13W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdht15w',  label: 'N-15W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdhtnx1w', label: 'NX-1W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdhtnx2w', label: 'NX-2W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
@@ -1383,96 +1352,6 @@ function createDHT(params) {
       });
     case 'ngdht':
       return new NeuromorphicDHT({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht2':
-      return new NeuromorphicDHT2({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht2bp':
-      return new NeuromorphicDHT2BP({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht2shc':
-      return new NeuromorphicDHT2SHC({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht3':
-      return new NeuromorphicDHT3({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht4':
-      return new NeuromorphicDHT4({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht5':
-      return new NeuromorphicDHT5({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht5w':
-      return new NeuromorphicDHT5W({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht6w':
-      return new NeuromorphicDHT6W({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht7w':
-      return new NeuromorphicDHT7W({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht8w':
-      return new NeuromorphicDHT8W({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht9w':
-      return new NeuromorphicDHT9W({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht10w':
-      return new NeuromorphicDHT10W({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht11w':
-      return new NeuromorphicDHT11W({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht12w':
-      return new NeuromorphicDHT12W({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-      });
-    case 'ngdht13w':
-      return new NeuromorphicDHT13W({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,

@@ -13,11 +13,12 @@ export class Synapse {
    * @param {number} opts.stratum   - Number of matching G-ID prefix bits
    */
   constructor({ peerId, latencyMs, stratum }) {
-    this.peerId   = peerId;
-    this.weight   = 0.5;      // reliability score [0, 1]
-    this.latency  = latencyMs; // EMA of round-trip latency (ms)
-    this.inertia  = 0;         // epoch lock: immune to decay while simEpoch < inertia
-    this.stratum  = stratum;   // higher = more shared geographic prefix bits
+    this.peerId    = peerId;
+    this.weight    = 0.5;      // reliability score [0, 1]
+    this.latency   = latencyMs; // EMA of round-trip latency (ms)
+    this.inertia   = 0;         // epoch lock: immune to decay while simEpoch < inertia
+    this.stratum   = stratum;   // higher = more shared geographic prefix bits
+    this.bootstrap = false;     // true for initial routing table synapses (slower decay)
   }
 
   /**

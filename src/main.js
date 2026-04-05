@@ -30,6 +30,7 @@ import { NeuromorphicDHT13W }  from './dht/neuromorphic/NeuromorphicDHT13W.js';
 import { NeuromorphicDHT15W }  from './dht/neuromorphic/NeuromorphicDHT15W.js';
 import { NeuromorphicDHTNX1W } from './dht/neuromorphic/NeuromorphicDHTNX1W.js';
 import { NeuromorphicDHTNX2W } from './dht/neuromorphic/NeuromorphicDHTNX2W.js';
+import { NeuromorphicDHTNX3 }  from './dht/neuromorphic/NeuromorphicDHTNX3.js';
 // NeuromorphicDHT14W retired — superseded by N-15W. Source kept in neuromorphic/ for reference.
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
@@ -126,6 +127,7 @@ async function init() {
     // topojson-client is loaded as a global <script> tag
     const geoJSON = topojson.feature(topoData, topoData.objects.countries);
     await globe.loadCountries(geoJSON);
+    globe.setTheme(_startLight);   // re-apply after texture is built
     controls.setStatus('Ready – configure parameters and click Init Network.', 'info');
   } catch (err) {
     console.error('Failed to load world map:', err);
@@ -1252,6 +1254,7 @@ async function onBenchmark() {
     { key: 'ngdht15w',  label: 'N-15W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdhtnx1w', label: 'NX-1W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdhtnx2w', label: 'NX-2W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdhtnx3',  label: 'NX-3',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1493,6 +1496,13 @@ function createDHT(params) {
         alpha: params.alpha,
         bits: params.bits,
         rules: params.nx2wRules,
+      });
+    case 'ngdhtnx3':
+      return new NeuromorphicDHTNX3({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
       });
     case 'kademlia':
     default:

@@ -15,9 +15,13 @@ function nodeRadius(n) {
 }
 
 const C = {
-  ocean:      '#061626',
-  land:       '#1e4060',
-  border:     '#4499ee',
+  ocean:      '#0a2040',
+  land:       '#2a5580',
+  border:     '#55aaff',
+  // Light-mode globe colours
+  oceanLight: '#88b8dd',
+  landLight:  '#6aaa88',
+  borderLight:'#3a6a50',
   atmosphere: 0x1a5090,
   nodeAlive:  0x00ff88,
   nodeDead:   0xff3333,
@@ -43,6 +47,7 @@ class LandMask {
   }
 
   async build(geoJSON) {
+    this._geoJSON = geoJSON;
     // Binary mask for isLand() queries
     const mask = document.createElement('canvas');
     mask.width = this.maskW; mask.height = this.maskH;
@@ -51,14 +56,22 @@ class LandMask {
     mCtx.fillStyle = '#fff'; this._fill(mCtx, geoJSON, this.maskW, this.maskH);
     this.maskData = mCtx.getImageData(0, 0, this.maskW, this.maskH).data;
 
+    this._buildTexture(false);
+  }
+
+  _buildTexture(isLight) {
+    const geoJSON = this._geoJSON;
     // Coloured canvas texture for the sphere
     const texW = 2048, texH = 1024;
     const tex = document.createElement('canvas');
     tex.width = texW; tex.height = texH;
     const tCtx = tex.getContext('2d');
-    tCtx.fillStyle = C.ocean;  tCtx.fillRect(0, 0, texW, texH);
-    tCtx.fillStyle = C.land;   this._fill(tCtx, geoJSON, texW, texH);
-    tCtx.strokeStyle = C.border; tCtx.lineWidth = 0.8;
+    tCtx.fillStyle = isLight ? C.oceanLight : C.ocean;
+    tCtx.fillRect(0, 0, texW, texH);
+    tCtx.fillStyle = isLight ? C.landLight : C.land;
+    this._fill(tCtx, geoJSON, texW, texH);
+    tCtx.strokeStyle = isLight ? C.borderLight : C.border;
+    tCtx.lineWidth = 0.8;
     this._stroke(tCtx, geoJSON, texW, texH);
     this.texture = new THREE.CanvasTexture(tex);
   }
@@ -218,10 +231,11 @@ export class Globe {
   // ── Base scene ────────────────────────────────────────────────────────────
 
   _buildBaseScene() {
-    this.scene.add(new THREE.AmbientLight(0x4466aa, 2.5));
-    const sun = new THREE.DirectionalLight(0xffffff, 2.5);
-    sun.position.set(5, 3, 5);
-    this.scene.add(sun);
+    this._ambientLight = new THREE.AmbientLight(0x4466aa, 2.5);
+    this.scene.add(this._ambientLight);
+    this._sunLight = new THREE.DirectionalLight(0xffffff, 2.5);
+    this._sunLight.position.set(5, 3, 5);
+    this.scene.add(this._sunLight);
 
     // Stars
     const sp = new Float32Array(8000 * 3);
@@ -233,7 +247,7 @@ export class Globe {
 
     this._globeMesh = new THREE.Mesh(
       new THREE.SphereGeometry(GLOBE_RADIUS, 64, 32),
-      new THREE.MeshPhongMaterial({ color: 0x061626, specular: 0x112244, shininess: 5 })
+      new THREE.MeshPhongMaterial({ color: 0x0a2040, specular: 0x1a3a60, shininess: 5 })
     );
     this.globeGroup.add(this._globeMesh);
 
@@ -248,16 +262,27 @@ export class Globe {
   // ── Country texture ───────────────────────────────────────────────────────
 
   async loadCountries(geoJSON) {
+    this._geoJSON = geoJSON;
     await this.landMask.build(geoJSON);
     this._globeMesh.material = new THREE.MeshPhongMaterial({
-      map: this.landMask.texture, specular: 0x0a1e38, shininess: 4,
+      map: this.landMask.texture, specular: 0x1a3a60, shininess: 4,
     });
-    this._renderBorderLines(geoJSON);
+    this._renderBorderLines(geoJSON, false);
   }
 
-  _renderBorderLines(geoJSON) {
+  _renderBorderLines(geoJSON, isLight) {
+    // Remove old border lines if any
+    if (this._borderGroup) {
+      this.globeGroup.remove(this._borderGroup);
+      this._borderGroup.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material) c.material.dispose(); });
+    }
+    this._borderGroup = new THREE.Group();
+    this.globeGroup.add(this._borderGroup);
+
     const R   = GLOBE_RADIUS * 1.001;
-    const mat = new THREE.LineBasicMaterial({ color: 0x4499ee, transparent: true, opacity: 0.4 });
+    const borderColor = isLight ? 0x3a6a50 : 0x4499ee;
+    const borderOpacity = isLight ? 0.5 : 0.4;
+    const mat = new THREE.LineBasicMaterial({ color: borderColor, transparent: true, opacity: borderOpacity });
     for (const f of geoJSON.features) {
       const g = f.geometry; if (!g) continue;
       const polys = g.type === 'Polygon' ? [g.coordinates]
@@ -296,7 +321,7 @@ export class Globe {
     }
     for (const seg of segs) {
       if (seg.length < 2) continue;
-      this.globeGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(seg), mat));
+      (this._borderGroup || this.globeGroup).add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(seg), mat));
     }
   }
 
@@ -815,9 +840,18 @@ export class Globe {
   setAutoRotate(v) { this.controls.autoRotate = v; }
 
   setTheme(isLight) {
-    // Background follows UI theme; globe sphere keeps light-mode colours.
-    this.renderer.setClearColor(isLight ? 0xaac8e8 : 0x010810);
-    if (this._globeMesh) this._globeMesh.material.color.setHex(0x3a7ab8);
+    this.renderer.setClearColor(isLight ? 0x6ab0e8 : 0x010810);
+
+    if (this._globeMesh && this._geoJSON) {
+      // Same globe colours for both themes — only background differs
+      this.landMask._buildTexture(true);
+      this._globeMesh.material.map = this.landMask.texture;
+      this._globeMesh.material.color.setHex(0x88b8dd);
+      this._globeMesh.material.specular.setHex(0x446688);
+      this._globeMesh.material.shininess = 4;
+      this._globeMesh.material.needsUpdate = true;
+      this._renderBorderLines(this._geoJSON, true);
+    }
   }
 
   dispose() {

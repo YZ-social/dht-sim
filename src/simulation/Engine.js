@@ -346,13 +346,26 @@ export class SimulationEngine {
       // any measurement cells are recorded.  Warmup counts are specified on the
       // protocol def; non-neuromorphic protocols leave warmupLookups undefined/0.
       if (def.warmupLookups > 0) {
-        onStart(`${tag} · warming up (${def.warmupLookups.toLocaleString()} lookups)…`);
+        onStart(`${tag} · warming up (${def.warmupLookups.toLocaleString()} regional lookups)…`);
         await this.runLookupTest(dht, {
           numMessages:    def.warmupLookups,
           captureLastPath: false,
           regional:       true,
           regionalRadius: def.warmupRadius ?? 2000,
           hotPct:         def.warmupHotPct ?? 10,
+          managed:        true,
+        });
+      }
+
+      // NX-5+: additional global warmup so learning mechanisms can exercise
+      // and repair long-range routes that bootstrap may have missed.
+      if (def.warmupGlobalLookups > 0) {
+        onStart(`${tag} · global warmup (${def.warmupGlobalLookups.toLocaleString()} lookups)…`);
+        await this.runLookupTest(dht, {
+          numMessages:    def.warmupGlobalLookups,
+          captureLastPath: false,
+          regional:       false,
+          hotPct:         100,
           managed:        true,
         });
       }
@@ -748,8 +761,8 @@ export class SimulationEngine {
     const sender = alive[Math.floor(Math.random() * alive.length)];
 
     // sender → relay
-    let msgHops = 0;
-    let msgMs   = 0;
+    let msgHops = null;
+    let msgMs   = null;
     try {
       const r = await dht.lookup(sender.id, relay.id);
       if (r?.found) {
@@ -788,7 +801,7 @@ export class SimulationEngine {
 
     const bcastStats  = computeStats(bcastHops);
     const bcastMsStats = computeStats(bcastMsArr);
-    const totalHops   = msgHops + bcastHops.reduce((a, b) => a + b, 0);
+    const totalHops   = (msgHops ?? 0) + bcastHops.reduce((a, b) => a + b, 0);
 
     return {
       groupId:        group.id,
@@ -803,7 +816,7 @@ export class SimulationEngine {
       bcastMsArr,    // raw per-participant ms values (used by runPubSubSession)
       bcastMsStats,
       totalHops,
-      simMs: msgMs + Math.round((bcastMsStats?.mean ?? 0)),
+      simMs: (msgMs ?? 0) + Math.round((bcastMsStats?.mean ?? 0)),
     };
   }
 
@@ -838,8 +851,8 @@ export class SimulationEngine {
     for (let m = 0; m < messagesPerSession; m++) {
       const tick = await this.runPubSubTick(dht, groups);
       if (!tick) continue;
-      allRelayHops.push(tick.msgHops);
-      allRelayMs.push(tick.msgMs);
+      if (tick.msgHops != null) allRelayHops.push(tick.msgHops);
+      if (tick.msgMs   != null) allRelayMs.push(tick.msgMs);
       allBcastHops.push(...tick.bcastHops);
       allBcastMs.push(...tick.bcastMsArr);
       lastRelayNode        = tick.relayNode;
@@ -874,7 +887,9 @@ export class SimulationEngine {
 
     // Use buildXorRoutingTable (O(k·log N)) — fills only the K-closest peers
     // per XOR bucket, matching real Kademlia self-lookup semantics.
-    for (const peer of buildXorRoutingTable(newNode.id, sorted, k)) {
+    // Respect the node's global connection cap when selecting initial peers.
+    const maxConn = newNode.maxConnections ?? Infinity;
+    for (const peer of buildXorRoutingTable(newNode.id, sorted, k, maxConn)) {
       newNode.addToBucket(peer);
       peer.addToBucket(newNode);
     }

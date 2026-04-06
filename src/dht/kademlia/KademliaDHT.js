@@ -46,11 +46,13 @@ export class KademliaNode extends DHTNode {
    * @param {number} opts.lng
    * @param {number} opts.k     - Bucket size (default 20)
    * @param {number} opts.bits  - Key-space bit width (default 32)
+   * @param {number} opts.maxConnections - Global connection cap (Infinity = no limit)
    */
-  constructor({ id, lat, lng, k = 20, bits = 64 }) {
+  constructor({ id, lat, lng, k = 20, bits = 64, maxConnections = Infinity }) {
     super({ id, lat, lng });
     this.k = k;
     this.bits = bits;
+    this.maxConnections = maxConnections;
     // One bucket per bit in the key space
     this.buckets = Array.from({ length: bits }, () => new KBucket(k));
   }
@@ -70,12 +72,46 @@ export class KademliaNode extends DHTNode {
 
   // ── Routing table management ─────────────────────────────────────────────
 
+  /** Total number of peers across all buckets (including dead, matches real WebSocket count). */
+  get totalConnections() {
+    let n = 0;
+    for (const b of this.buckets) n += b.size;
+    return n;
+  }
+
   addToBucket(node) {
     if (node.id === this.id) return;
     const idx = this.bucketIndex(node.id);
-    if (idx >= 0 && idx < this.bits) {
+    if (idx < 0 || idx >= this.bits) return;
+
+    // Already in this bucket — no-op (doesn't cost a new connection)
+    if (this.buckets[idx].nodes.some(n => n.id === node.id)) return;
+
+    // Under the global cap — add freely (per-bucket k-limit still applies)
+    if (!isFinite(this.maxConnections) || this.totalConnections < this.maxConnections) {
       this.buckets[idx].add(node);
+      return;
     }
+
+    // At the cap — only add if this bucket is empty (preserves XOR-stratum
+    // coverage, which is critical for routability).  Evict the last entry
+    // from the largest bucket to make room.
+    if (this.buckets[idx].size === 0) {
+      let maxB = -1, maxSize = 0;
+      for (let b = 0; b < this.bits; b++) {
+        if (this.buckets[b].size > maxSize) {
+          maxSize = this.buckets[b].size;
+          maxB = b;
+        }
+      }
+      if (maxB >= 0 && maxSize > 1) {
+        // Evict the last (most recently added, least established) entry
+        this.buckets[maxB].nodes.pop();
+        this.buckets[idx].add(node);
+      }
+    }
+    // Otherwise: at cap and bucket is non-empty — silently drop (matches
+    // real-world Kademlia behaviour of ignoring new peers when bucket is full).
   }
 
   removeFromBucket(nodeId) {
@@ -174,6 +210,7 @@ export class KademliaDHT extends DHT {
     const id = randomU64();
     const node = new KademliaNode({
       id, lat, lng, k: this.k, bits: this.bits,
+      maxConnections: this.maxConnections ?? Infinity,
     });
     this.nodeMap.set(id, node);
     this.network.addNode(node);
@@ -197,6 +234,8 @@ export class KademliaDHT extends DHT {
     super.buildRoutingTables({ bidirectional, maxConnections });
     const k      = this.k;
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    // Propagate global connection cap to every node
+    for (const node of sorted) node.maxConnections = maxConnections;
     for (const node of sorted) {
       for (const peer of buildXorRoutingTable(node.id, sorted, k, maxConnections)) {
         node.addToBucket(peer);

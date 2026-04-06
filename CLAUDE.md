@@ -97,6 +97,9 @@ Omitting a field leaves the current UI value unchanged.
 - `ngdht`, `ngdht2`…`ngdht13w` — other neuromorphic variants
 - `ngdhtnx1w` — NX-1W configurable research protocol
 - `ngdhtnx2w` — NX-2W broadcast-tree protocol (NX-1W + Rule 15: proximity-ordered fan-out tree) (pass `nx1wRules` to configure)
+- `ngdhtnx3` — NX-3 G-DHT three-layer init
+- `ngdhtnx4` — NX-4 iterative fallback routing
+- `ngdhtnx5` — NX-5 stratified bootstrap + global warmup + incoming promotion (current SOTA)
 
 ## Test Keys
 - `global` — random global lookups

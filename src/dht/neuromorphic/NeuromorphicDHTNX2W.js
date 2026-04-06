@@ -224,66 +224,98 @@ export class NeuromorphicDHTNX2W extends DHT {
    * @param {BigInt} sponsorId  ID of the existing entry-point node.
    * @returns {number} Number of synapses wired.
    */
+  _synaptomeFindClosest(node, targetId, k) {
+    const seen = new Set();
+    const peers = [];
+    for (const syn of node.synaptome.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (peer?.alive && !seen.has(peer.id)) { seen.add(peer.id); peers.push(peer); }
+    }
+    if (this.EN_TWO_TIER) {
+      for (const syn of node.highway.values()) {
+        const peer = this.nodeMap.get(syn.peerId);
+        if (peer?.alive && !seen.has(peer.id)) { seen.add(peer.id); peers.push(peer); }
+      }
+    }
+    for (const syn of node.incomingSynapses.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (peer?.alive && !seen.has(peer.id)) { seen.add(peer.id); peers.push(peer); }
+    }
+    peers.sort((a, b) => {
+      const da = a.id ^ targetId;
+      const db = b.id ^ targetId;
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+    return peers.slice(0, k);
+  }
+
   bootstrapJoin(newNodeId, sponsorId) {
     const newNode = this.nodeMap.get(newNodeId);
     const sponsor = this.nodeMap.get(sponsorId);
     if (!newNode || !sponsor) return 0;
 
-    const seen = new Set([newNodeId]);
-    const candidates = [];
+    const k     = this._k;
+    const alpha = this._alpha ?? 3;
 
-    const visit = (node) => {
-      if (!node?.alive || seen.has(node.id)) return;
-      seen.add(node.id);
-      candidates.push(node);
-    };
-
-    // Layer 0: sponsor
-    visit(sponsor);
-
-    // Layer 1: sponsor's direct synaptome + highway
-    const layer1 = [];
-    for (const syn of sponsor.synaptome.values()) {
-      const peer = this.nodeMap.get(syn.peerId);
-      if (peer?.alive && !seen.has(peer.id)) { layer1.push(peer); visit(peer); }
-    }
-    if (this.EN_TWO_TIER) {
-      for (const syn of sponsor.highway.values()) {
-        const peer = this.nodeMap.get(syn.peerId);
-        if (peer?.alive && !seen.has(peer.id)) { layer1.push(peer); visit(peer); }
-      }
-    }
-
-    // Layer 2: peers of layer-1 peers (2-hop discovery)
-    for (const peer of layer1) {
-      for (const syn of peer.synaptome.values()) {
-        const peer2 = this.nodeMap.get(syn.peerId);
-        if (peer2) visit(peer2);
-      }
-    }
-
-    // Sort by XOR distance to new node — closest first
-    candidates.sort((a, b) => {
-      const da = newNode.id ^ a.id;
-      const db = newNode.id ^ b.id;
-      return da < db ? -1 : da > db ? 1 : 0;
-    });
-
-    // Wire synapses up to synaptome capacity
-    const capacity = this.MAX_SYNAPTOME_SIZE + (this.EN_TWO_TIER ? this.HIGHWAY_SLOTS : 0);
-    let wired = 0;
-    for (const peer of candidates) {
-      if (wired >= capacity) break;
+    const synCap = isFinite(this.maxConnections) ? this.maxConnections : this.MAX_SYNAPTOME_SIZE;
+    const addPeer = (peer) => {
+      if (peer.id === newNodeId || newNode.synaptome.has(peer.id)) return;
+      if (newNode.synaptome.size >= synCap) return;
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
       newNode.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
       peer.addIncomingSynapse(newNode.id, latMs, stratum);
-      wired++;
+    };
+
+    const iterativeLookup = (targetId, startNode, maxRounds) => {
+      const queried = new Set([newNodeId]);
+      let shortlist = this._synaptomeFindClosest(startNode, targetId, k);
+      for (const peer of shortlist) addPeer(peer);
+
+      for (let round = 0; round < maxRounds; round++) {
+        const unqueried = shortlist.filter(n => !queried.has(n.id)).slice(0, alpha);
+        if (unqueried.length === 0) break;
+
+        let improved = false;
+        for (const peer of unqueried) {
+          queried.add(peer.id);
+          const found = this._synaptomeFindClosest(peer, targetId, k);
+          for (const candidate of found) {
+            if (candidate.id !== newNodeId && !queried.has(candidate.id)) {
+              addPeer(candidate);
+              if (!shortlist.some(n => n.id === candidate.id)) {
+                shortlist.push(candidate);
+                improved = true;
+              }
+            }
+          }
+        }
+
+        shortlist.sort((a, b) => {
+          const da = a.id ^ targetId;
+          const db = b.id ^ targetId;
+          return da < db ? -1 : da > db ? 1 : 0;
+        });
+        shortlist = shortlist.slice(0, k);
+
+        if (!improved) break;
+      }
+    };
+
+    // Phase 1: Connect to sponsor + self-lookup for close peers
+    addPeer(sponsor);
+    iterativeLookup(newNodeId, sponsor, 10);
+
+    // Phase 2: Inter-cell discovery — flip each geo-prefix bit
+    const shift = BigInt(64 - this.GEO_BITS);
+    for (let bit = 0; bit < this.GEO_BITS; bit++) {
+      const targetId = newNodeId ^ (1n << (shift + BigInt(bit)));
+      iterativeLookup(targetId, sponsor, 5);
     }
 
     newNode._nodeMapRef = this.nodeMap;
     newNode.temperature = this.EN_ANNEALING ? this.T_INIT : 1.0;
-    return wired;
+    return newNode.synaptome.size;
   }
 
   // ── Routing ─────────────────────────────────────────────────────────────────

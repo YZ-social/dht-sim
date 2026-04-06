@@ -192,8 +192,9 @@ export class Controls {
     const sel = [...el.options].filter(o => o.selected).map(o => o.value);
     return sel.length ? new Set(sel) : null;
   }
-  get bidirectional() { return this._el('bidirectional')?.checked ?? true; }
-  get webLimit()      { return this._el('webLimit')?.checked ?? false; }
+  get bidirectional()    { return this._el('bidirectional')?.checked ?? true; }
+  get webLimit()         { return this._el('webLimit')?.checked ?? false; }
+  get benchBootstrap()   { return this._el('benchBootstrap')?.checked ?? false; }
   get showAnimation() { return this._el('showAnimation')?.checked ?? true; }
   get autoRotate()  { return this._el('autoRotate')?.checked ?? false; }
   get pubsubGroupSize() { return Math.max(4, Math.min(256, parseInt(this._el('pubsubGroupSize')?.value ?? 32))); }
@@ -235,8 +236,9 @@ export class Controls {
       addNodeCount:  this.addNodeCount,
       addNodeWarmup: this.addNodeWarmup,
       showAnimation: this.showAnimation,
-      bidirectional: this.bidirectional,
-      webLimit:      this.webLimit,
+      bidirectional:   this.bidirectional,
+      webLimit:         this.webLimit,
+      benchBootstrap:   this.benchBootstrap,
       nx1wRules: this.getNX1WRules(),
       nx2wRules: this.getNX2WRules(),
     };

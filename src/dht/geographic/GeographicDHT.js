@@ -61,6 +61,7 @@ export class GeographicDHT extends KademliaDHT {
 
     const node = new KademliaNode({
       id, lat, lng, k: this.k, bits: this.bits,
+      maxConnections: this.maxConnections ?? Infinity,
     });
     this.nodeMap.set(id, node);
     this.network.addNode(node);
@@ -105,6 +106,9 @@ export class GeographicDHT extends KademliaDHT {
       .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     const allNodes     = [...this.nodeMap.values()];
 
+    // Propagate global connection cap to every node
+    for (const node of sorted) node.maxConnections = maxConnections;
+
     for (const node of sorted) {
       const selected = new Set([node.id]);
 
@@ -146,6 +150,74 @@ export class GeographicDHT extends KademliaDHT {
       for (const peer of globalPeers) {
         node.addToBucket(peer);
         if (bidirectional) peer.addToBucket(node);
+      }
+    }
+  }
+
+  /**
+   * G-DHT bootstrap join — extends Kademlia's iterative self-lookup with
+   * additional lookups targeting diverse geographic prefixes.
+   *
+   * The standard self-lookup finds XOR-close peers (same geo cell), but
+   * G-DHT's routing strength comes from inter-cell structured peers and
+   * random global reach.  We simulate this by doing extra FIND_NODE lookups
+   * for synthetic target IDs with flipped geographic prefix bits, which
+   * discovers peers in distant cells.
+   */
+  bootstrapJoin(newNodeId, sponsorId) {
+    // Phase 1: standard Kademlia self-lookup for close peers
+    super.bootstrapJoin(newNodeId, sponsorId);
+
+    const newNode = this.nodeMap.get(newNodeId);
+    const sponsor = this.nodeMap.get(sponsorId);
+    if (!newNode || !sponsor) return;
+
+    const bidir = this.bidirectional ?? true;
+    const addPeer = (peer) => {
+      if (peer.id === newNode.id) return;
+      newNode.addToBucket(peer);
+      if (bidir) peer.addToBucket(newNode);
+    };
+
+    // Phase 2: inter-cell discovery — lookup synthetic targets with
+    // different geographic prefixes to find peers in distant cells.
+    // Flip each geo-prefix bit one at a time to target each inter-cell bucket.
+    const shift = BigInt(64 - this.geoBits);
+    for (let bit = 0; bit < this.geoBits; bit++) {
+      const targetId = newNode.id ^ (1n << (shift + BigInt(bit)));
+
+      // Iterative lookup toward this target starting from sponsor
+      const queried = new Set([newNode.id]);
+      let shortlist = sponsor.findClosest(targetId, this.k);
+      for (const peer of shortlist) addPeer(peer);
+
+      for (let round = 0; round < 5; round++) {
+        const unqueried = shortlist.filter(n => !queried.has(n.id)).slice(0, this.alpha);
+        if (unqueried.length === 0) break;
+
+        let improved = false;
+        for (const peer of unqueried) {
+          queried.add(peer.id);
+          const found = peer.findClosest(targetId, this.k);
+          for (const candidate of found) {
+            if (candidate.id !== newNode.id && !queried.has(candidate.id)) {
+              addPeer(candidate);
+              if (!shortlist.some(n => n.id === candidate.id)) {
+                shortlist.push(candidate);
+                improved = true;
+              }
+            }
+          }
+        }
+
+        shortlist.sort((a, b) => {
+          const da = a.id ^ targetId;
+          const db = b.id ^ targetId;
+          return da < db ? -1 : da > db ? 1 : 0;
+        });
+        shortlist = shortlist.slice(0, this.k);
+
+        if (!improved) break;
       }
     }
   }

@@ -44,6 +44,8 @@
         <option value="ngdhtnx1w">NX-1W ✦</option>
         <option value="ngdhtnx2w">NX-2W ✦</option>
         <option value="ngdhtnx3">NX-3 ✦</option>
+        <option value="ngdhtnx4">NX-4 ✦</option>
+        <option value="ngdhtnx5">NX-5 ✦</option>
         <option value="ngdht">N-1</option>
         <option value="ngdht15w">N-15W</option>
       </select>
@@ -191,6 +193,12 @@
         <input type="number" id="benchWarmupSessions" class="sb-num" value="4" min="1" max="99" step="1" style="width:40px">
         <span class="sb-lbl">sess</span>
       </div>
+      <div class="sb-row">
+        <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
+          <input type="checkbox" id="benchBootstrap">
+          <span data-tip="Use bootstrapped initialization: each node joins the network through a sponsor node via iterative self-lookup, instead of bulk routing-table construction. Slower but more realistic.">Bootstrap Init</span>
+        </label>
+      </div>
       <div class="sb-multisel-row">
         <div class="sb-multisel" data-tip="Select which protocols to include in the benchmark run. Ctrl/Cmd+click to toggle individual items.">
           <div class="sb-multisel-hd">
@@ -204,6 +212,8 @@
             <option value="ngdhtnx1w" selected>NX-1W</option>
             <option value="ngdhtnx2w" selected>NX-2W</option>
             <option value="ngdhtnx3"  selected>NX-3</option>
+            <option value="ngdhtnx4"  selected>NX-4</option>
+            <option value="ngdhtnx5"  selected>NX-5</option>
             <option value="ngdht"     selected>N-1</option>
             <option value="ngdht15w"  selected>N-15W</option>
           </select>
@@ -847,7 +857,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.39.04</div>
+    <div id="legend">Version: 0.40.00</div>
   </div>
 
   </div><!-- /mainRow -->

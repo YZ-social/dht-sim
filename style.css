@@ -551,6 +551,7 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
 .bench-table .time-cell.win { color: #ffdd44; background: #2a2000; font-weight: 700; }
 .bench-table .no-data { color: #334455; text-align: center; }
 .bench-table .sr { color: #cc4444; font-size: 9px; }
+.bench-table .low-sr { box-shadow: inset 0 0 0 2px #cc3333; }
 .bench-table tbody tr:hover td { background: #0a1e38; }
 /* Destination-mode column — cyan accent to distinguish from regional/global */
 .bench-table thead th.dest-col { color: #44ddff; border-top: 1px solid #224455; }
@@ -1007,6 +1008,7 @@ body.light .bench-table .hops-cell.win { color: #004418; background: #c8f0d8; fo
 body.light .bench-table .time-cell.win { color: #5a2e00; background: #fcecc4; font-weight: 700; }
 body.light .bench-table .no-data { color: #9a8a68; }
 body.light .bench-table .sr { color: #aa1818; }
+body.light .bench-table .low-sr { box-shadow: inset 0 0 0 2px #cc2222; }
 body.light .bench-table tbody tr:hover td { background: #ece4c8; }
 body.light .bench-table .p95 { color: #7a6a48; }
 

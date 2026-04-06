@@ -2,7 +2,7 @@
 
 An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — designed for real-world browser WebRTC deployment.
 
-The primary research focus is **publish/subscribe (pub/sub) overlay networks**: we believe pub/sub will be the dominant use case for decentralised peer-to-peer networks, enabling real-time messaging, collaborative applications, live media, and event streaming without centralised infrastructure. The current state-of-the-art protocol is **NX-2W**, which introduces a configurable broadcast tree delivery mechanism and has been empirically tuned to outperform all previous protocols on pub/sub workloads under realistic browser connection constraints.
+The primary research focus is **publish/subscribe (pub/sub) overlay networks**: we believe pub/sub will be the dominant use case for decentralised peer-to-peer networks, enabling real-time messaging, collaborative applications, live media, and event streaming without centralised infrastructure. The current state-of-the-art protocol is **NX-5**, which adds stratified bootstrap allocation, global warmup lookups, and incoming synapse promotion on top of NX-4's iterative fallback routing — achieving the best balance of global routing, regional performance, and churn resilience under realistic browser connection constraints.
 
 The simulator renders a live WebGL globe of up to 100,000 nodes distributed according to real-world population density, routes messages between them in real time, and benchmarks every protocol side by side — measuring hop counts, latency, churn resilience, regional performance, load distribution, and learning convergence over time.
 
@@ -36,7 +36,7 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 │              ▼            ▼             ▼                          │
 │  ┌──────────────┐  ┌──────────┐  ┌───────────────┐                │
 │  │  Globe.js    │  │ Engine   │  │  DHT Protocol │                │
-│  │  (Three.js   │  │ (test    │  │  (one of 21   │                │
+│  │  (Three.js   │  │ (test    │  │  (one of 24   │                │
 │  │   WebGL)     │  │  runner) │  │   protocols)  │                │
 │  └──────────────┘  └──────────┘  └───────────────┘                │
 │                                                                    │
@@ -46,7 +46,7 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 │  │   N-1 · N-2 · N-2-BP · N-2-SHC · N-3 · N-4 · N-5          │   │
 │  │   N-5W · N-6W · N-7W · N-8W · N-9W · N-10W                 │   │
 │  │   N-11W · N-12W · N-13W · N-15W                             │   │
-│  │   NX-1W · NX-2W ★                                           │   │
+│  │   NX-1W · NX-2W · NX-3 · NX-4 · NX-5 ★                      │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 └────────────────────────────────────────────────────────────────────┘
          ▲
@@ -84,7 +84,10 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 | `src/dht/neuromorphic/NeuromorphicDHT13W.js` | N-13W + load awareness + local pins (experimental) |
 | `src/dht/neuromorphic/NeuromorphicDHT15W.js` | N-15W + highway synapse preservation |
 | `src/dht/neuromorphic/NeuromorphicDHTNX1W.js` | NX-1W fully configurable research protocol |
-| `src/dht/neuromorphic/NeuromorphicDHTNX2W.js` | **NX-2W ★ broadcast tree delivery — current SOTA** |
+| `src/dht/neuromorphic/NeuromorphicDHTNX2W.js` | NX-2W broadcast tree delivery |
+| `src/dht/neuromorphic/NeuromorphicDHTNX3.js` | NX-3 G-DHT three-layer init |
+| `src/dht/neuromorphic/NeuromorphicDHTNX4.js` | NX-4 iterative fallback routing |
+| `src/dht/neuromorphic/NeuromorphicDHTNX5.js` | **NX-5 ★ stratified bootstrap + global warmup — current SOTA** |
 | `src/dht/neuromorphic/NeuronNode.js` | Per-node state: synaptome, transit cache, incoming synapses |
 | `src/dht/neuromorphic/Synapse.js` | Synapse data model (weight, latency, stratum, useCount) |
 | `src/utils/geo.js` | Great-circle distance, latency model, population sampling, XOR routing table |
@@ -222,7 +225,10 @@ graph TD
     N10W --> N13W["N-13W: Load + Local Pins\nN-10W + load-aware restored\nBcast improves vs N-9W\n⚠ Relay regresses vs N-10W"]
     N10W --> N15W["N-15W\nHighway synapse preservation\nRenewal-based lifetime tracking\nStatic highway outperforms refresh"]
     N15W --> NX1W["NX-1W: Fully Configurable\nEvery rule on/off via UI\nEvery param exposed\nDefaults reproduce N-15W"]
-    NX1W --> NX2W["NX-2W ★ CURRENT SOTA\nBroadcast tree delivery\nProximity-ordered fan-out\nEmpirical default tuning"]
+    NX1W --> NX2W["NX-2W\nBroadcast tree delivery\nProximity-ordered fan-out\nEmpirical default tuning"]
+    NX2W --> NX3["NX-3\nG-DHT three-layer init\nIntra-cell + inter-cell + global\nBootstrap diversity"]
+    NX3 --> NX4["NX-4\nIterative fallback routing\nKademlia-style dead-end recovery\nQueried-set loop prevention"]
+    NX4 --> NX5["NX-5 ★ CURRENT SOTA\nStratified bootstrap allocation\nGlobal warmup lookups\nIncoming synapse promotion"]
 
     style K fill:#0a1e3e,stroke:#2a5ea0,color:#88c4f0
     style G fill:#0a1e3e,stroke:#2a5ea0,color:#88c4f0
@@ -244,7 +250,10 @@ graph TD
     style N13W fill:#0e0e0e,stroke:#444444,color:#888888
     style N15W fill:#081428,stroke:#2a5088,color:#88aadd
     style NX1W fill:#0a1c10,stroke:#2a6040,color:#88ddaa
-    style NX2W fill:#1c0a00,stroke:#cc6600,color:#ffaa44
+    style NX2W fill:#0a1c10,stroke:#2a6040,color:#88ddaa
+    style NX3 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
+    style NX4 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
+    style NX5 fill:#1c0a00,stroke:#cc6600,color:#ffaa44
 ```
 
 ### The Synaptome
@@ -879,6 +888,148 @@ EN_HIGHWAY_REFRESH    = false  // ★ static highway outperforms periodic refres
 
 ---
 
+## Protocol 22 — NX-3: G-DHT Three-Layer Init
+
+**File:** `src/dht/neuromorphic/NeuromorphicDHTNX3.js`
+
+NX-3 replaces the flat `buildXorRoutingTable` used by all previous neuromorphic protocols with G-DHT's three-layer routing table construction: (1) intra-cell local peers, (2) inter-cell structured peers, and (3) random global peers. This produces a more diverse initial synaptome, particularly at scale where the flat XOR table exhausts the connection budget on nearby peers before reaching distant strata.
+
+All NX-2W mechanisms (broadcast tree delivery, incoming synapses, organic join) are inherited unchanged.
+
+---
+
+## Protocol 23 — NX-4: Iterative Fallback Routing
+
+**File:** `src/dht/neuromorphic/NeuromorphicDHTNX4.js`
+
+NX-4 adds **Kademlia-style iterative fallback** when greedy AP routing hits a dead end (no synapse makes strict XOR progress toward the target). Instead of failing, the lookup queries the closest known peer to the target — even if it doesn't reduce XOR distance — and continues the iterative search from there.
+
+### Fallback mechanism
+
+```
+Standard AP routing (inherited from NX-3):
+  At each hop, select the candidate that makes strict XOR progress
+  and has the highest two-hop AP score.
+
+  If no candidate makes XOR progress → DEAD END
+
+NX-4 fallback:
+  1. Maintain a `queried` Set of all visited node IDs
+  2. When no forward-progress candidate exists:
+     - Scan synaptome + highway + incomingSynapses
+     - Skip any peer already in `queried`
+     - Find the unvisited peer closest to the target (by XOR)
+     - Continue routing from that peer
+  3. If no unvisited peer exists → lookup fails
+```
+
+This mirrors Kademlia's multi-path fault tolerance: when the greedy path dead-ends, the lookup explores alternative branches of the XOR tree rather than giving up. The `queried` set prevents cycles. AP-based selection is still used when forward progress is available, so the typical fast path is unchanged.
+
+---
+
+## Protocol 24 — NX-5: Stratified Bootstrap + Global Warmup + Incoming Promotion ★
+
+**File:** `src/dht/neuromorphic/NeuromorphicDHTNX5.js`
+
+NX-5 is the **current state-of-the-art** protocol. It addresses the root cause of NX-4's weakness at scale: with only 48 synapse slots, the bootstrap phase fills the budget with XOR-close peers, leaving no room for distant-cell peers needed for cross-continental routing. NX-5 adds three mechanisms on top of NX-4.
+
+### Mechanism 1: Stratified Bootstrap Allocation
+
+During `bootstrapJoin`, when the synaptome is at capacity, incoming peers compete via stratum-aware eviction rather than being silently dropped. The eviction algorithm counts peers per stratum group (16 groups) and evicts from the most over-represented group to make room for under-represented ones — mirroring K-DHT's empty-bucket priority in `addToBucket`.
+
+```
+addPeer(peer) during bootstrapJoin:
+  1. If synaptome not full → add directly
+  2. Compute stratum group of new peer
+  3. Count peers per stratum group in current synaptome
+  4. Find the most over-represented group (excluding new peer's group)
+  5. If over-represented group has more members than new peer's group + 1:
+     → evict weakest synapse from over-represented group
+     → add new peer
+  6. Otherwise → drop the new peer (already well-represented)
+```
+
+This ensures that Phase 2 inter-cell peers can displace excess Phase 1 local peers, producing a bootstrap synaptome with coverage across all XOR strata.
+
+### Mechanism 2: Global Warmup Lookups
+
+Previous protocols warmed up with regional-only lookups (within 2000 km), which never exercise broken long-range routes. NX-5 adds a second warmup pass with global (non-regional) lookups. This allows the learning mechanisms (hop caching, annealing, LTP) to discover and repair long-range routes that bootstrap may have missed.
+
+### Mechanism 3: Incoming Synapse Promotion
+
+In all previous NX protocols, `incomingSynapses` (reverse connections from peers that route through this node) carry a fixed weight of 0.1 and never receive training. NX-5 tracks a `useCount` on each incoming synapse during routing. When an incoming synapse is selected as the next hop in a lookup and its `useCount` reaches the promotion threshold (default: 2), it is promoted to a full `Synapse` via `_stratifiedAdd` at weight 0.5 — entering the regular LTP/LTD lifecycle.
+
+```
+At each hop, after selecting nextId:
+  if nextId is in current.incomingSynapses AND not in synaptome:
+    increment useCount on that incoming synapse
+    if useCount ≥ INCOMING_PROMOTE_THRESHOLD (2):
+      create full Synapse with weight 0.5
+      attempt _stratifiedAdd (stratum-aware insertion)
+      if successful: remove from incomingSynapses
+```
+
+### Benchmark results (10,000 nodes · Bootstrap Init · Web Limit)
+
+| Metric | NX-4 | NX-5 | Change |
+|---|---|---|---|
+| Global hops | 4.45 | **3.87** | −13% |
+| Global ms | 251 | **236** | −6% |
+| 500 km hops | 2.90 | **2.32** | −20% |
+| 1000 km hops | 3.07 | **2.55** | −17% |
+| 5000 km hops | 3.91 | **3.41** | −13% |
+| 10%→10% hops | 1.12 | **1.05** | −6% |
+| Churn success | 80.0% | 78.2% | −2% |
+
+NX-5's stratified bootstrap produces a more balanced initial synaptome, and the global warmup pass repairs remaining gaps — reducing hop counts across all distance ranges while maintaining comparable churn resilience.
+
+---
+
+## Web Limit Enforcement
+
+### The problem
+
+Prior to v0.39.14, K-DHT and G-DHT did not enforce the Web Limit (50 connections) correctly. The `addToBucket` method only checked per-bucket capacity (`k = 20`), not the global connection cap. Bidirectional reverse edges and `bootstrapJoin` added unlimited connections, allowing K-DHT and G-DHT nodes to accumulate 200–400+ connections even with Web Limit enabled. This gave them an unfair advantage in benchmarks.
+
+### The fix
+
+K-DHT's `KademliaNode.addToBucket` now checks a `totalConnections` getter (sum of all bucket sizes) against `maxConnections` before adding any peer. When the node is at capacity:
+
+- If the target bucket is **empty** (new stratum group with zero coverage), the node evicts one peer from the largest bucket to make room — preserving keyspace diversity
+- If the target bucket is non-empty, the new peer is dropped
+
+G-DHT received the same fix. All neuromorphic protocols already enforced their `MAX_SYNAPTOME_SIZE` cap correctly, and `bootstrapJoin` in all 6 neuromorphic protocols now also respects the synaptome cap.
+
+### Impact on benchmark results
+
+With proper Web Limit enforcement, K-DHT's churn resilience dropped from near-100% to 57–64% at 10,000 nodes — revealing its true performance under browser-realistic connection constraints. G-DHT experienced similar corrections.
+
+---
+
+## Bootstrap Init vs Omniscient Init
+
+The benchmark supports two initialisation modes, selectable via the **Bootstrap** checkbox:
+
+### Omniscient Init (default)
+
+`buildRoutingTables()` / `buildXorRoutingTable()` constructs each node's routing table with global knowledge of all nodes in the network. This produces an ideal initial state but is unrealistic for real-world deployment where nodes join incrementally.
+
+### Bootstrap Init
+
+Each node joins organically via `bootstrapJoin()` — discovering peers through a sponsor node's 1–2 hop neighbourhood — mimicking real peer-to-peer network formation. The bootstrap path enforces the same Web Limit and bidirectional connection rules as normal operation.
+
+### Key findings
+
+At 10,000 nodes with Web Limit enabled:
+
+- **K-DHT under bootstrap achieves 92% churn resilience vs 64% under omniscient** — organic peer discovery creates more resilient, diverse connections than algorithmic allocation
+- **G-DHT shows the same pattern**: 97.6% bootstrap vs 63% omniscient at 25,000 nodes
+- **NX-5 global hops**: 3.44 omniscient vs 3.87 bootstrap — omniscient still has a slight edge for raw routing quality, but bootstrap produces more robust networks
+
+Bootstrap Init is the more realistic and recommended test mode for evaluating protocol deployments.
+
+---
+
 ## Protocol Comparison
 
 ### Parameters at a glance
@@ -905,42 +1056,50 @@ EN_HIGHWAY_REFRESH    = false  // ★ static highway outperforms periodic refres
 | N-13W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | Yes | 48 | 4 local | — |
 | N-15W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | No | 48 | 4 local | — |
 | NX-1W | configurable | α=5 | adaptive | 0.05 | 1 | 6+2/**1★** | Yes | Yes | 48+12 | No | 48 | off★ | — |
-| **NX-2W ★** | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/**1★** | Yes | **No★** | 48+12 | No | 48 | off★ | **Yes** |
+| NX-2W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/**1★** | Yes | **No★** | 48+12 | No | 48 | off★ | **Yes** |
+| NX-3 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes | No | 48+12 | No | 48 | off | Yes |
+| NX-4 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes | No | 48+12 | No | 48 | off | Yes |
+| **NX-5 ★** | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes | No | 48+12 | No | 48 | off | Yes |
 
 ★ = empirically tuned divergence from N-15W defaults
 
 ### Additive mechanism matrix
 
-| Mechanism | N-1 | N-2 | N-2-BP | N-2-SHC | N-3 | N-4 | N-5 | N-5W | N-6W | N-7W | N-8W | N-9W | N-10W | N-11W | N-12W | N-13W | N-15W | NX-1W | **NX-2W ★** |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 2-hop AP routing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| LTP reinforcement | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Triadic closure | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| LTD decay + pruning | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Two-tier AP tiers | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cascade backpropagation | — | — | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Source hop caching | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Passive dead-node eviction | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Lateral shortcut propagation | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Stratified synaptome | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — ★ |
-| Simulated annealing | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Browser connection cap | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Highway tier | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Adaptive temporal decay | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Markov hot-destination learning | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Per-node load tracking | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | — | — | — |
-| Load-aware AP scoring | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | — | — | — |
-| Extended randomised hub pool | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Adaptive Markov weight | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Cascading lateral spread (depth-2) | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — ★ |
-| Synaptome floor protection | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Relay pinning (eviction-immune) | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — | ✓ | ✓ | ✓ | — ★ |
-| Relay pinning (freq-weighted 24) | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — | — | — | — |
-| Relay pinning (highway-tier) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — | — | — |
-| Highway synapse preservation | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ |
-| Incoming synapses (reverse routing) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ |
-| Organic join (bootstrapJoin) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ |
-| Broadcast tree delivery | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | **✓** |
+| Mechanism | N-1 | N-2 | N-2-BP | N-2-SHC | N-3 | N-4 | N-5 | N-5W | N-6W | N-7W | N-8W | N-9W | N-10W | N-11W | N-12W | N-13W | N-15W | NX-1W | NX-2W | NX-3 | NX-4 | **NX-5 ★** |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 2-hop AP routing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| LTP reinforcement | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Triadic closure | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| LTD decay + pruning | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Two-tier AP tiers | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cascade backpropagation | — | — | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Source hop caching | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Passive dead-node eviction | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Lateral shortcut propagation | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Stratified synaptome | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — ★ | — | — | — |
+| Simulated annealing | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Browser connection cap | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Highway tier | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Adaptive temporal decay | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Markov hot-destination learning | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Per-node load tracking | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | — | — | — | — | — | — |
+| Load-aware AP scoring | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | — | — | ✓ | ✓ | — | — | — | — | — | — |
+| Extended randomised hub pool | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Adaptive Markov weight | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Cascading lateral spread (depth-2) | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — ★ | — | — | — |
+| Synaptome floor protection | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Relay pinning (eviction-immune) | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — | ✓ | ✓ | ✓ | — ★ | — | — | — |
+| Relay pinning (freq-weighted 24) | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — | — | — | — | — | — | — |
+| Relay pinning (highway-tier) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | — | — | — | — | — | — | — |
+| Highway synapse preservation | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Incoming synapses (reverse routing) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Organic join (bootstrapJoin) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
+| Broadcast tree delivery | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
+| G-DHT three-layer init | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ |
+| Iterative fallback routing | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ |
+| Stratified bootstrap allocation | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | **✓** |
+| Global warmup lookups | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | **✓** |
+| Incoming synapse promotion | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | **✓** |
 
 ★ = disabled by default in NX-2W based on empirical testing
 
@@ -1068,7 +1227,7 @@ Assigns each node a **fixed random target** at test start. Every session, every 
 
 | Control | Range | Default | Description |
 |---|---|---|---|
-| Protocol | dropdown | NX-2W | Which protocol to run |
+| Protocol | dropdown | NX-5 | Which protocol to run |
 | Bidirectional | checkbox | ✓ | When checked, connections are bidirectional: if node A connects to B, B also learns A as a routing candidate. Doubles effective routing candidates; significantly improves Pub/Sub relay and broadcast performance |
 | Web Limit | checkbox | ✓ | Caps each node's routing table to 50 connections — realistic for browser WebRTC/WebSocket deployments. Without Web Limit, `buildXorRoutingTable` fills up to k×64 entries (e.g. ~223 for k=20, 5K nodes) |
 | Nodes | 20–100,000 | 5,000 | Number of nodes in the network |

@@ -1158,12 +1158,15 @@ export class Results {
       ngdhtnx1w: 'NX-1W: Configurable research protocol with modular neuromorphic rules (Markov annealing, hop caching, triadic closure, LTP). Rule parameters individually tunable.',
       ngdhtnx2w: 'NX-2W: NX-1W + Rule 15 proximity-ordered fan-out tree for optimised pub/sub broadcast routing.',
       ngdhtnx3:  'NX-3: Dual-path init — three-layer geographic init when uncapped (best latency), flat XOR init when web-limited (reliable coverage). Bootstrap synapse protection for structural synapses.',
+      ngdhtnx4:  'NX-4: NX-3 + iterative fallback routing. When greedy AP routing hits a dead end, falls back to Kademlia-style iterative search querying closest unvisited peers, preventing dead-end failures.',
+      ngdhtnx5:  'NX-5: NX-4 + stratified bootstrap allocation + global warmup. Bootstrap uses stratum-aware eviction (like K-DHT) so Phase 2 distant-cell peers can displace over-represented close peers. Global warmup lookups exercise long-range learning.',
     };
 
     // Header row
+    const initMode = params.benchBootstrap ? 'Bootstrap Init' : 'Omniscient Init';
     let html = `
       <div class="panel-title-bar">
-        <span class="panel-title">Benchmark — ${nodeCount.toLocaleString()} nodes · 500 lookups/cell <span class="bench-title-note">· each cell: mean / p95</span></span>
+        <span class="panel-title">Benchmark — ${nodeCount.toLocaleString()} nodes · ${initMode} · 500 lookups/cell <span class="bench-title-note">· each cell: mean / p95</span></span>
         <button class="chart-dl-btn" id="benchCsvBtn">&#8595; CSV</button>
       </div>
       <div class="bench-table-wrap">
@@ -1287,12 +1290,13 @@ export class Results {
 
         const hopsWin = cell.hops.mean <= minHops[k] + 0.005;
         const timeWin = cell.time?.mean != null && cell.time.mean <= minTime[k] + 0.5;
+        const lowSr   = cell.successRate < 0.95 ? ' low-sr' : '';
 
         const p95HopsStr = p95hops ? `<span class="p95">${p95hops}</span>` : '';
         const p95MsStr   = p95ms   ? `<span class="p95">${p95ms}</span>`   : '';
 
-        html += `<td class="hops-cell${hopsWin ? ' win' : ''}${specCls}">${hops}${sr}${p95HopsStr}</td>`;
-        html += `<td class="time-cell${timeWin ? ' win' : ''}${specCls}">${ms}${p95MsStr}</td>`;
+        html += `<td class="hops-cell${hopsWin ? ' win' : ''}${specCls}${lowSr}">${hops}${sr}${p95HopsStr}</td>`;
+        html += `<td class="time-cell${timeWin ? ' win' : ''}${specCls}${lowSr}">${ms}${p95MsStr}</td>`;
       }
       html += `</tr>`;
     }
@@ -1341,6 +1345,9 @@ export class Results {
                             : s.type === 'pubsub'     ? 'pubsub'
                             : 'global';
 
+    // Comment line: init mode
+    const initLine = `# DHT Benchmark — ${nodeCount.toLocaleString()} nodes · ${params.benchBootstrap ? 'Bootstrap Init' : 'Omniscient Init'}`;
+
     // Build header: Protocol, then columns per spec.
     // Non-pub/sub cells emit: hops, ms, success%.
     // Pub/sub cells emit:     relay hops, relay ms, bcast hops, bcast ms.
@@ -1355,7 +1362,7 @@ export class Results {
     }
 
     // Data rows — one per protocol
-    const rows = [headerCols.join(',')];
+    const rows = [initLine, headerCols.join(',')];
     for (const proto of protocolDefs) {
       const cols = [proto.label ?? proto.key];
       for (const s of testSpecs) {

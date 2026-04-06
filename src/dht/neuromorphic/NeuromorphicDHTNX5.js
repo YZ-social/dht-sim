@@ -1,9 +1,23 @@
 /**
- * NeuromorphicDHTNX1W (NX-1W) – Fully Configurable Neuromorphic DHT
+ * NeuromorphicDHTNX5 (NX-5) – Stratified Bootstrap + Global Warmup
  *
- * Derived from N-15W. Every rule can be independently enabled/disabled and
- * every parameter is configurable at construction time via config.rules.
- * Default values reproduce N-15W exactly.
+ * Derived from NX-4.  Two improvements over NX-4:
+ *
+ * 1. Stratified bootstrap allocation: instead of filling all synaptome slots
+ *    greedily (Phase 1 consumes budget before Phase 2 can add distant peers),
+ *    NX-5 reserves GEO_BITS slots for Phase 2 inter-cell discovery.  When at
+ *    capacity during Phase 1, incoming peers compete via stratum-aware eviction
+ *    (evict from the most-populated stratum to make room for underrepresented
+ *    ones), mirroring K-DHT's empty-bucket priority in addToBucket.
+ *
+ * 2. The benchmark warmup includes global lookups (not just regional), so the
+ *    learning mechanisms (hop caching, annealing, LTP) can exercise and repair
+ *    the long-range routes that bootstrap may have missed.
+ *
+ * Both changes address the core weakness exposed at 10k-25k nodes: with only
+ * 48 synapse slots, Phase 1 fills the budget with XOR-close peers and Phase 2
+ * can't add distant-cell peers, leaving routing dead-ends that only NX-4's
+ * fallback can compensate for.  NX-5 fixes the root cause.
  *
  * config.rules shape:
  *   {
@@ -12,14 +26,12 @@
  *     apRouting:          { lookaheadAlpha, weightScale, geoRegionBits,
  *                           explorationEpsilon, maxGreedyHops }
  *     ltp:                { enabled, inertiaDuration }
- *     triadicClosure:     { enabled, introductionThreshold }
  *     hopCaching:         { enabled, cascadeWeight }
  *     lateralSpread:      { enabled, lateralK, lateralK2, lateralMaxDepth }
  *     stratifiedEviction: { enabled, strataGroups, stratumFloor }
  *     annealing:          { enabled, tInit, tMin, annealCooling, globalBias,
  *                           annealLocalSample }
- *     relayPinning:       { enabled, relayPinThreshold, relayPinWindow,
- *                           relayPinMax, relayPinWeight }
+ *     triadicClosure:     { enabled, introductionThreshold }
  *     markov:             { enabled, markovWindow, markovHotThreshold,
  *                           markovBaseWeight, markovMaxWeight }
  *     adaptiveDecay:      { enabled, decayInterval, pruneThreshold,
@@ -38,11 +50,13 @@ import { Synapse }           from './Synapse.js';
 import { NeuronNode }        from './NeuronNode.js';
 import { randomU64, clz64,
          roundTripLatency,
-         buildXorRoutingTable } from '../../utils/geo.js';
+         buildXorRoutingTable,
+         buildIntraCellTable, buildInterCellTable,
+         reservoirSample }      from '../../utils/geo.js';
 import { geoCellId }         from '../../utils/s2.js';
 
-export class NeuromorphicDHTNX1W extends DHT {
-  static get protocolName() { return 'Neuromorphic-NX1W'; }
+export class NeuromorphicDHTNX5 extends DHT {
+  static get protocolName() { return 'Neuromorphic-NX5'; }
 
   constructor(config = {}) {
     super(config);
@@ -75,12 +89,11 @@ export class NeuromorphicDHTNX1W extends DHT {
     this.EN_TRIADIC         = e('triadicClosure');
     this.EN_HOP_CACHING     = e('hopCaching');
     this.EN_LATERAL_SPREAD  = e('lateralSpread');
-    this.EN_STRATIFIED      = e('stratifiedEviction');
+    this.EN_STRATIFIED      = e('stratifiedEviction', false);  // off by default: simple eviction outperforms
     this.EN_ANNEALING       = e('annealing');
-    this.EN_RELAY_PINNING   = e('relayPinning');
     this.EN_MARKOV          = e('markov');
     this.EN_ADAPTIVE_DECAY  = e('adaptiveDecay');
-    this.EN_HIGHWAY_REFRESH = e('highwayRefresh');
+    this.EN_HIGHWAY_REFRESH = e('highwayRefresh', false);  // off by default: static highway outperforms periodic refresh
     this.EN_LOAD_BALANCING  = e('loadBalancing', false);  // off by default
 
     // ── Rule 1: Bootstrap ─────────────────────────────────────────────────────
@@ -111,7 +124,7 @@ export class NeuromorphicDHTNX1W extends DHT {
     // ── Rule 7: Cascading Lateral Spread ──────────────────────────────────────
     this.LATERAL_K         = p('lateralSpread', 'lateralK', 6);
     this.LATERAL_K2        = p('lateralSpread', 'lateralK2', 2);
-    this.LATERAL_MAX_DEPTH = p('lateralSpread', 'lateralMaxDepth', 2);
+    this.LATERAL_MAX_DEPTH = p('lateralSpread', 'lateralMaxDepth', 1);
 
     // ── Rule 8: Stratified Eviction ───────────────────────────────────────────
     this.STRATA_GROUPS = p('stratifiedEviction', 'strataGroups', 16);
@@ -122,14 +135,8 @@ export class NeuromorphicDHTNX1W extends DHT {
     this.T_MIN               = p('annealing', 'tMin', 0.05);
     this.ANNEAL_COOLING      = p('annealing', 'annealCooling', 0.9997);
     this.GLOBAL_BIAS         = p('annealing', 'globalBias', 0.5);
-    this.ANNEAL_LOCAL_SAMPLE = p('annealing', 'annealLocalSample', 20);
+    this.ANNEAL_LOCAL_SAMPLE = p('annealing', 'annealLocalSample', 50);
     this.ANNEAL_BUF_REBUILD  = 200;
-
-    // ── Rule 10: Relay Pinning ────────────────────────────────────────────────
-    this.RELAY_PIN_THRESHOLD = p('relayPinning', 'relayPinThreshold', 5);
-    this.RELAY_PIN_WINDOW    = p('relayPinning', 'relayPinWindow', 64);
-    this.RELAY_PIN_MAX       = p('relayPinning', 'relayPinMax', 4);
-    this.RELAY_PIN_WEIGHT    = p('relayPinning', 'relayPinWeight', 0.95);
 
     // ── Rule 11: Markov Pre-learning ──────────────────────────────────────────
     this.MARKOV_WINDOW        = p('markov', 'markovWindow', 16);
@@ -155,6 +162,11 @@ export class NeuromorphicDHTNX1W extends DHT {
     this.HUB_MIN_DIVERSITY    = p('highwayRefresh', 'hubMinDiversity', 5);
     this.HUB_NOISE            = p('highwayRefresh', 'hubNoise', 1.0);
 
+    // ── Rule 14 (NX-5): Incoming Synapse Promotion ─────────────────────────────
+    // Promote an incomingSynapse to a full synapse after it's been used as a
+    // routing hop this many times.  Low threshold = aggressive promotion.
+    this.INCOMING_PROMOTE_THRESHOLD = p('incomingPromotion', 'threshold', 2);
+
     // ── Optional: Load-Aware AP Scoring (from N-7W/N-9W, off by default) ──────
     this.LOAD_DECAY      = p('loadBalancing', 'loadDecay', 0.995);
     this.LOAD_PENALTY    = p('loadBalancing', 'loadPenalty', 0.40);
@@ -176,9 +188,6 @@ export class NeuromorphicDHTNX1W extends DHT {
     node.hubRefreshCount = 0;
     node.recentDests     = [];
     node.recentDestFreq  = new Map();
-    node.pinnedDests     = new Set();
-    node.pinWindow       = [];
-    node.pinWindowFreq   = new Map();
     if (this.EN_LOAD_BALANCING) {
       node.loadEMA       = 0;
       node.loadLastEpoch = 0;
@@ -206,22 +215,74 @@ export class NeuromorphicDHTNX1W extends DHT {
     if (maxConnections < this.MAX_SYNAPTOME_SIZE) {
       this.MAX_SYNAPTOME_SIZE = maxConnections;
     }
+
+    const k            = this._k * this.K_BOOT_FACTOR;
+    const intraBuckets = 64 - this.GEO_BITS;
     const sorted = [...this.nodeMap.values()].sort(
       (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0
     );
-    for (const node of sorted) {
-      for (const peer of buildXorRoutingTable(node.id, sorted, this._k * this.K_BOOT_FACTOR, maxConnections)) {
-        const latMs   = roundTripLatency(node, peer);
-        const stratum = clz64(node.id ^ peer.id);
-        node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
-        if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
+
+    const wireSynapse = (node, peer, isStructural) => {
+      const latMs   = roundTripLatency(node, peer);
+      const stratum = clz64(node.id ^ peer.id);
+      const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
+      if (isStructural) { syn.weight = 0.9; syn.bootstrap = true; }
+      node.addSynapse(syn);
+      if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
+    };
+
+    if (isFinite(maxConnections)) {
+      // ── Web-limited: flat XOR init (same as NX-2W) for reliable coverage ──
+      for (const node of sorted) {
+        for (const peer of buildXorRoutingTable(node.id, sorted, k, maxConnections)) {
+          wireSynapse(node, peer, false);
+        }
+        node._nodeMapRef = this.nodeMap;
       }
-      node._nodeMapRef = this.nodeMap;
+    } else {
+      // ── Uncapped: three-layer geographic init for best latency ──
+      const allNodes = [...this.nodeMap.values()];
+      for (const node of sorted) {
+        const selected = new Set([node.id]);
+
+        // Layer 2: inter-cell structured (bootstrap-protected)
+        const interCellPeers = buildInterCellTable(node.id, sorted, k, intraBuckets);
+        for (const peer of interCellPeers) {
+          wireSynapse(node, peer, true);
+          selected.add(peer.id);
+        }
+
+        // Layer 1: intra-cell local
+        const localPeers = buildIntraCellTable(node.id, sorted, k, intraBuckets);
+        for (const peer of localPeers) {
+          wireSynapse(node, peer, false);
+          selected.add(peer.id);
+        }
+
+        // Layer 3: random global
+        const globalPeers = reservoirSample(allNodes, k, selected);
+        for (const peer of globalPeers) {
+          wireSynapse(node, peer, false);
+        }
+
+        node._nodeMapRef = this.nodeMap;
+      }
     }
   }
 
+  // ── Organic join ────────────────────────────────────────────────────────────
+
   /**
-   * Query a node's synaptome + highway for the k closest peers to targetId.
+   * Bootstrap a newly-added node into the live network via a known sponsor.
+   *
+   * Explores the sponsor's 1-2 hop neighbourhood, sorts candidates by XOR
+   * distance to the new node, and wires synapses to the closest ones.
+   * Existing peers learn about the new node via addIncomingSynapse so they
+   * can route to it without disrupting their trained weights.
+   *
+   * @param {BigInt} newNodeId  ID of the freshly-created node (already in nodeMap).
+   * @param {BigInt} sponsorId  ID of the existing entry-point node.
+   * @returns {number} Number of synapses wired.
    */
   _synaptomeFindClosest(node, targetId, k) {
     const seen = new Set();
@@ -248,15 +309,6 @@ export class NeuromorphicDHTNX1W extends DHT {
     return peers.slice(0, k);
   }
 
-  /**
-   * Bootstrap join — iterative self-lookup + multi-prefix discovery.
-   *
-   * Phase 1: standard FIND_NODE(self) discovers XOR-close peers (same geo cell).
-   * Phase 2: additional lookups targeting synthetic IDs with flipped geographic
-   *          prefix bits, discovering peers in distant cells — same strategy as
-   *          G-DHT's bootstrap.  This gives the synaptome initial coverage across
-   *          all XOR strata, so annealing and warmup have a solid foundation.
-   */
   bootstrapJoin(newNodeId, sponsorId) {
     const newNode = this.nodeMap.get(newNodeId);
     const sponsor = this.nodeMap.get(sponsorId);
@@ -264,17 +316,67 @@ export class NeuromorphicDHTNX1W extends DHT {
 
     const k     = this._k;
     const alpha = this._alpha ?? 3;
-
     const synCap = isFinite(this.maxConnections) ? this.maxConnections : this.MAX_SYNAPTOME_SIZE;
+
+    // ── NX-5: Stratum-aware addPeer with eviction ─────────────────────────
+    // Like K-DHT's addToBucket: when at capacity, accept a peer for an
+    // underrepresented stratum by evicting from the most-populated one.
+    // Groups use the same STRATA_GROUPS (16) as the runtime _stratifiedAdd.
+    const GROUPS = this.STRATA_GROUPS;
+    const stratumGroup = (s) => Math.min(Math.floor(s / 4), GROUPS - 1);
+
     const addPeer = (peer) => {
       if (peer.id === newNodeId || newNode.synaptome.has(peer.id)) return;
-      if (newNode.synaptome.size >= synCap) return;
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
-      newNode.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
-      if (this.bidirectional) peer.addIncomingSynapse(newNode.id, latMs, stratum);
+      const newSyn  = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
+
+      // Under cap — add freely
+      if (newNode.synaptome.size < synCap) {
+        newNode.addSynapse(newSyn);
+        peer.addIncomingSynapse(newNode.id, latMs, stratum);
+        return;
+      }
+
+      // At cap — stratum-aware eviction: only add if we improve coverage
+      const newGroup = stratumGroup(stratum);
+
+      // Count peers per stratum group
+      const counts = new Array(GROUPS).fill(0);
+      for (const syn of newNode.synaptome.values()) {
+        counts[stratumGroup(syn.stratum)]++;
+      }
+
+      // Only evict if the new peer's group is underrepresented
+      // Find the most-populated group (that isn't the new peer's group)
+      let evictGroup = -1, maxCount = 0;
+      for (let g = 0; g < GROUPS; g++) {
+        if (g !== newGroup && counts[g] > maxCount) {
+          maxCount = counts[g];
+          evictGroup = g;
+        }
+      }
+
+      // Evict if the donor group has more peers than the new peer's group + 1
+      // (guarantees net improvement in coverage balance)
+      if (evictGroup >= 0 && maxCount > counts[newGroup] + 1) {
+        // Evict the weakest (lowest weight) in the donor group
+        let victim = null, victimW = Infinity;
+        for (const syn of newNode.synaptome.values()) {
+          if (stratumGroup(syn.stratum) === evictGroup && syn.weight < victimW) {
+            victimW = syn.weight;
+            victim = syn;
+          }
+        }
+        if (victim) {
+          newNode.synaptome.delete(victim.peerId);
+          newNode.addSynapse(newSyn);
+          peer.addIncomingSynapse(newNode.id, latMs, stratum);
+        }
+      }
     };
 
+    // ── Iterative lookup (shared by both phases) ──────────────────────────
     const iterativeLookup = (targetId, startNode, maxRounds) => {
       const queried = new Set([newNodeId]);
       let shortlist = this._synaptomeFindClosest(startNode, targetId, k);
@@ -314,8 +416,9 @@ export class NeuromorphicDHTNX1W extends DHT {
     addPeer(sponsor);
     iterativeLookup(newNodeId, sponsor, 10);
 
-    // Phase 2: Inter-cell discovery — flip each geo-prefix bit to find
-    // peers in distant geographic cells (mirrors G-DHT bootstrap strategy)
+    // Phase 2: Inter-cell discovery — flip each geo-prefix bit
+    // With stratum-aware eviction, Phase 2 peers can now displace
+    // over-represented close peers from Phase 1.
     const shift = BigInt(64 - this.GEO_BITS);
     for (let bit = 0; bit < this.GEO_BITS; bit++) {
       const targetId = newNodeId ^ (1n << (shift + BigInt(bit)));
@@ -358,13 +461,9 @@ export class NeuromorphicDHTNX1W extends DHT {
       }
     }
 
-    // Rule 10: Relay pin tracking
-    if (this.EN_RELAY_PINNING) {
-      this._updatePins(source, targetKey);
-    }
-
-    const path  = [sourceId];
-    const trace = [];
+    const path    = [sourceId];
+    const trace   = [];
+    const queried = new Set([sourceId]);   // NX-4: track visited nodes
     let currentId   = sourceId;
     let totalTimeMs = 0;
     let reached     = false;
@@ -398,7 +497,31 @@ export class NeuromorphicDHTNX1W extends DHT {
         if (!peer?.alive) continue;
         candidates.push(s);
       }
-      if (candidates.length === 0) break;
+
+      // NX-4: Iterative fallback — when no forward-progress candidate exists,
+      // find the closest unvisited peer to the target (regardless of XOR progress)
+      if (candidates.length === 0) {
+        let bestSyn = null;
+        let bestDist = null;
+        const scanPeer = (s) => {
+          if (queried.has(s.peerId)) return;
+          const peer = this.nodeMap.get(s.peerId);
+          if (!peer?.alive) return;
+          const d = s.peerId ^ targetKey;
+          if (bestDist === null || d < bestDist) {
+            bestDist = d;
+            bestSyn = s;
+          }
+        };
+        for (const s of current.synaptome.values()) scanPeer(s);
+        if (this.EN_TWO_TIER) {
+          for (const s of current.highway.values()) scanPeer(s);
+        }
+        for (const s of current.incomingSynapses.values()) scanPeer(s);
+
+        if (!bestSyn) break;          // truly exhausted — no unvisited peers
+        candidates.push(bestSyn);     // use as sole candidate for hop selection
+      }
 
       const inTargetRegion =
         ((current.id ^ targetKey) >> BigInt(64 - this.GEO_REGION_BITS)) === 0n;
@@ -414,14 +537,7 @@ export class NeuromorphicDHTNX1W extends DHT {
         nextSyn = directSyn;
       }
 
-      // Priority 2: pinned destination at source (first hop only)
-      if (!nextSyn && this.EN_RELAY_PINNING && hop === 0 && current.pinnedDests.has(targetKey)) {
-        const ps = current.synaptome.get(targetKey)
-                ?? (this.EN_TWO_TIER ? current.highway.get(targetKey) : undefined);
-        if (ps && this.nodeMap.get(ps.peerId)?.alive) nextSyn = ps;
-      }
-
-      // Priority 3: explore randomly (first hop, epsilon-greedy)
+      // Priority 2: explore randomly (first hop, epsilon-greedy)
       if (!nextSyn && hop === 0 && Math.random() < this.EXPLORATION_EPSILON) {
         nextSyn = candidates[Math.floor(Math.random() * candidates.length)];
       }
@@ -436,6 +552,26 @@ export class NeuromorphicDHTNX1W extends DHT {
       const nextNode = this.nodeMap.get(nextId);
       if (!nextNode) break;
 
+      // NX-5: Incoming synapse promotion — when an incomingSynapse proves
+      // its routing value through repeated use, promote it to a full synapse.
+      // This lets the network organically discover and cement the connections
+      // that actually carry traffic, similar to Hebbian "fire together, wire
+      // together" learning.
+      if (current.incomingSynapses.has(nextId) && !current.synaptome.has(nextId)) {
+        const inc = current.incomingSynapses.get(nextId);
+        inc.useCount = (inc.useCount ?? 0) + 1;
+        if (inc.useCount >= this.INCOMING_PROMOTE_THRESHOLD) {
+          const latMs   = inc.latency;
+          const stratum = inc.stratum;
+          const promoted = new Synapse({ peerId: nextId, latencyMs: latMs, stratum });
+          promoted.weight = 0.5;  // start at mid-weight — already proven useful
+          if (this._stratifiedAdd(current, promoted)) {
+            current.incomingSynapses.delete(nextId);
+          }
+        }
+      }
+
+      queried.add(nextId);           // NX-4: mark visited
       path.push(nextId);
       trace.push({ fromId: currentId, synapse: nextSyn });
       totalTimeMs += nextSyn.latency;
@@ -598,19 +734,6 @@ export class NeuromorphicDHTNX1W extends DHT {
     return bestSyn ?? current.bestByAP(candidates, targetKey, wScale);
   }
 
-  // ── Triadic closure ─────────────────────────────────────────────────────────
-
-  _recordTransit(node, originId, nextId) {
-    const key   = `${originId}_${nextId}`;
-    const count = (node.transitCache.get(key) ?? 0) + 1;
-    if (count >= this.INTRODUCTION_THRESHOLD) {
-      node.transitCache.delete(key);
-      this._introduce(originId, nextId);
-    } else {
-      node.transitCache.set(key, count);
-    }
-  }
-
   // ── Standard introduce ──────────────────────────────────────────────────────
 
   _introduce(aId, cId, initialWeight = 0.5) {
@@ -673,14 +796,16 @@ export class NeuromorphicDHTNX1W extends DHT {
     }
 
     if (!this.EN_STRATIFIED) {
-      // Simple eviction: weakest non-pinned connection
+      // Simple eviction: weakest non-bootstrap connection preferred
       let weakest = null, weakestW = Infinity;
+      let weakestAny = null, weakestAnyW = Infinity;
       for (const syn of node.synaptome.values()) {
-        if (this.EN_RELAY_PINNING && node.pinnedDests.has(syn.peerId)) continue;
-        if (syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
+        if (syn.weight < weakestAnyW) { weakestAnyW = syn.weight; weakestAny = syn; }
+        if (!syn.bootstrap && syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
       }
-      if (!weakest) return false;
-      node.synaptome.delete(weakest.peerId);
+      const victim = weakest ?? weakestAny;
+      if (!victim) return false;
+      node.synaptome.delete(victim.peerId);
       node.addSynapse(newSyn);
       return true;
     }
@@ -694,13 +819,15 @@ export class NeuromorphicDHTNX1W extends DHT {
     if (evictGroup === -1) return false;
 
     let weakest = null, weakestW = Infinity;
+    let weakestAny = null, weakestAnyW = Infinity;
     for (const syn of byGroup[evictGroup]) {
-      if (this.EN_RELAY_PINNING && node.pinnedDests.has(syn.peerId)) continue;
-      if (syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
+      if (syn.weight < weakestAnyW) { weakestAnyW = syn.weight; weakestAny = syn; }
+      if (!syn.bootstrap && syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
     }
-    if (!weakest) return false;
+    const victim = weakest ?? weakestAny;
+    if (!victim) return false;
 
-    node.synaptome.delete(weakest.peerId);
+    node.synaptome.delete(victim.peerId);
     node.addSynapse(newSyn);
     return true;
   }
@@ -765,30 +892,16 @@ export class NeuromorphicDHTNX1W extends DHT {
     }
   }
 
-  // ── Relay pin tracking ──────────────────────────────────────────────────────
+  // ── Triadic closure ─────────────────────────────────────────────────────────
 
-  _updatePins(node, targetKey) {
-    node.pinWindow.push(targetKey);
-    node.pinWindowFreq.set(targetKey, (node.pinWindowFreq.get(targetKey) ?? 0) + 1);
-    if (node.pinWindow.length > this.RELAY_PIN_WINDOW) {
-      const evicted = node.pinWindow.shift();
-      const f = node.pinWindowFreq.get(evicted) - 1;
-      if (f <= 0) node.pinWindowFreq.delete(evicted);
-      else        node.pinWindowFreq.set(evicted, f);
-    }
-
-    const freq = node.pinWindowFreq.get(targetKey) ?? 0;
-    if (freq >= this.RELAY_PIN_THRESHOLD && !node.pinnedDests.has(targetKey)) {
-      if (node.pinnedDests.size < this.RELAY_PIN_MAX) {
-        node.pinnedDests.add(targetKey);
-        const syn = node.synaptome.get(targetKey) ?? node.highway.get(targetKey);
-        if (syn && syn.weight < this.RELAY_PIN_WEIGHT) syn.weight = this.RELAY_PIN_WEIGHT;
-      }
-    }
-
-    for (const dest of node.pinnedDests) {
-      if ((node.pinWindowFreq.get(dest) ?? 0) < this.RELAY_PIN_THRESHOLD)
-        node.pinnedDests.delete(dest);
+  _recordTransit(node, originId, nextId) {
+    const key   = `${originId}_${nextId}`;
+    const count = (node.transitCache.get(key) ?? 0) + 1;
+    if (count >= this.INTRODUCTION_THRESHOLD) {
+      node.transitCache.delete(key);
+      this._introduce(originId, nextId);
+    } else {
+      node.transitCache.set(key, count);
     }
   }
 
@@ -800,6 +913,8 @@ export class NeuromorphicDHTNX1W extends DHT {
 
     let weakest = null, weakestW = Infinity;
     let targetLo = 0, targetHi = 63;
+
+    let weakestAny = null, weakestAnyW = Infinity;
 
     if (this.EN_STRATIFIED) {
       const { counts, byGroup } = this._buildGroupCounts(node);
@@ -818,16 +933,17 @@ export class NeuromorphicDHTNX1W extends DHT {
       targetHi = targetLo + 3;
 
       for (const syn of byGroup[evictGroup]) {
-        if (this.EN_RELAY_PINNING && node.pinnedDests.has(syn.peerId)) continue;
-        if (syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
+        if (syn.weight < weakestAnyW) { weakestAnyW = syn.weight; weakestAny = syn; }
+        if (!syn.bootstrap && syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
       }
     } else {
       for (const syn of node.synaptome.values()) {
-        if (this.EN_RELAY_PINNING && node.pinnedDests.has(syn.peerId)) continue;
-        if (syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
+        if (syn.weight < weakestAnyW) { weakestAnyW = syn.weight; weakestAny = syn; }
+        if (!syn.bootstrap && syn.weight < weakestW) { weakestW = syn.weight; weakest = syn; }
       }
     }
-    if (!weakest) return;
+    const victim = weakest ?? weakestAny;
+    if (!victim) return;
 
     const useGlobal = Math.random() < ((node.temperature ?? 0.5) * this.GLOBAL_BIAS);
     const candidate = useGlobal
@@ -836,7 +952,7 @@ export class NeuromorphicDHTNX1W extends DHT {
 
     if (!candidate || this._hasAny(node, candidate.id)) return;
 
-    node.synaptome.delete(weakest.peerId);
+    node.synaptome.delete(victim.peerId);
     const latMs   = roundTripLatency(node, candidate);
     const stratum = clz64(node.id ^ candidate.id);
     const newSyn  = new Synapse({ peerId: candidate.id, latencyMs: latMs, stratum });
@@ -920,13 +1036,6 @@ export class NeuromorphicDHTNX1W extends DHT {
     for (const syn of tierMap.values()) {
       if (syn.inertia > this.simEpoch) continue;
 
-      // Pinned destinations decay at max rate with weight floor
-      if (this.EN_RELAY_PINNING && node.pinnedDests?.has(syn.peerId)) {
-        syn.decay(this.DECAY_GAMMA_MAX);
-        if (syn.weight < this.RELAY_PIN_WEIGHT) syn.weight = this.RELAY_PIN_WEIGHT;
-        continue;
-      }
-
       let gamma;
       if (isHighway) {
         if (this.EN_ADAPTIVE_DECAY) {
@@ -944,6 +1053,8 @@ export class NeuromorphicDHTNX1W extends DHT {
           gamma = this.DECAY_GAMMA_MIN;   // fixed rate when adaptive decay off
         }
       }
+      // Bootstrap synapses decay more slowly — blend toward GAMMA_MAX
+      if (syn.bootstrap) gamma = gamma + (this.DECAY_GAMMA_MAX - gamma) * 0.5;
       syn.decay(gamma);
 
       if (syn.weight < this.PRUNE_THRESHOLD) toPrune.push(syn);
@@ -973,8 +1084,11 @@ export class NeuromorphicDHTNX1W extends DHT {
     }
 
     if (!this.EN_STRATIFIED) {
-      // Simple: delete below-threshold directly
-      for (const syn of toPrune) tierMap.delete(syn.peerId);
+      // Simple: delete below-threshold, but spare bootstrap synapses
+      for (const syn of toPrune) {
+        if (syn.bootstrap) { syn.weight = this.PRUNE_THRESHOLD; continue; }
+        tierMap.delete(syn.peerId);
+      }
       return;
     }
 
@@ -1009,19 +1123,15 @@ export class NeuromorphicDHTNX1W extends DHT {
     const avgTemp   = nodes.length
       ? (nodes.reduce((a, n) => a + (n.temperature ?? this.T_INIT), 0) / nodes.length).toFixed(3)
       : '—';
-    const avgPinned = nodes.length
-      ? (nodes.reduce((a, n) => a + (n.pinnedDests?.size ?? 0), 0) / nodes.length).toFixed(2)
-      : '0.00';
 
     return {
       ...base,
-      protocol:      'Neuromorphic-NX1W',
+      protocol:      'Neuromorphic-NX4',
       epoch:         this.simEpoch,
       avgSynapses:   nodes.length ? ((localSyn + hwSyn) / nodes.length).toFixed(1) : 0,
       avgLocalSyn:   nodes.length ? (localSyn / nodes.length).toFixed(1) : 0,
       avgHighwaySyn: nodes.length ? (hwSyn / nodes.length).toFixed(1) : 0,
       avgTemp,
-      avgPinned,
     };
   }
 }

@@ -16,6 +16,8 @@ import { NeuromorphicDHT15W }  from './dht/neuromorphic/NeuromorphicDHT15W.js';
 import { NeuromorphicDHTNX1W } from './dht/neuromorphic/NeuromorphicDHTNX1W.js';
 import { NeuromorphicDHTNX2W } from './dht/neuromorphic/NeuromorphicDHTNX2W.js';
 import { NeuromorphicDHTNX3 }  from './dht/neuromorphic/NeuromorphicDHTNX3.js';
+import { NeuromorphicDHTNX4 }  from './dht/neuromorphic/NeuromorphicDHTNX4.js';
+import { NeuromorphicDHTNX5 }  from './dht/neuromorphic/NeuromorphicDHTNX5.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -1224,6 +1226,8 @@ async function onBenchmark() {
     { key: 'ngdhtnx1w', label: 'NX-1W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdhtnx2w', label: 'NX-2W',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdhtnx3',  label: 'NX-3',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdhtnx4',  label: 'NX-4',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
+    { key: 'ngdhtnx5',  label: 'NX-5',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1281,11 +1285,53 @@ async function onBenchmark() {
       }
 
       if (!benchmarkActive) return null;
-      controls.setStatus(`${tag} — building routing tables…`, 'bench');
-      benchDHT.buildRoutingTables({
-        bidirectional:  params.bidirectional,
-        maxConnections: params.webLimit ? 50 : Infinity,
-      });
+
+      if (params.benchBootstrap && benchDHT.bootstrapJoin) {
+        // Propagate connection cap + bidirectional flag (normally done by
+        // buildRoutingTables, which the bootstrap path skips).
+        const maxConn = params.webLimit ? 50 : Infinity;
+        benchDHT.maxConnections = maxConn;
+        benchDHT.bidirectional  = params.bidirectional;
+        // Propagate cap to all existing nodes so addToBucket enforces it
+        for (const node of benchDHT.nodeMap.values()) {
+          if (node.maxConnections !== undefined) node.maxConnections = maxConn;
+        }
+
+        // Bootstrapped init: each node joins via sponsor + refresh pass
+        controls.setStatus(`${tag} — bootstrap joining…`, 'bench');
+        const allNodes = [...benchDHT.nodeMap.values()];
+        for (let i = 1; i < allNodes.length; i++) {
+          if (!benchmarkActive) return null;
+          const sponsor = findSponsor(benchDHT, allNodes[i]);
+          if (sponsor) benchDHT.bootstrapJoin(allNodes[i].id, sponsor.id);
+          if ((i + 1) % 100 === 0) {
+            controls.setProgress(stepFrac(completedSteps, (0.8 + (i + 1) / allNodes.length * 0.1)));
+            await yieldUI();
+          }
+        }
+        // Refresh pass — early joiners had sparse tables
+        controls.setStatus(`${tag} — refreshing routing tables…`, 'bench');
+        const allIds = [...benchDHT.nodeMap.keys()];
+        for (let i = 0; i < allNodes.length; i++) {
+          if (!benchmarkActive) return null;
+          let sponsorId = allNodes[i].id;
+          while (sponsorId === allNodes[i].id) {
+            sponsorId = allIds[Math.floor(Math.random() * allIds.length)];
+          }
+          benchDHT.bootstrapJoin(allNodes[i].id, sponsorId);
+          if ((i + 1) % 100 === 0) {
+            controls.setProgress(stepFrac(completedSteps, (0.9 + (i + 1) / allNodes.length * 0.1)));
+            await yieldUI();
+          }
+        }
+      } else {
+        // Bulk routing-table construction (default)
+        controls.setStatus(`${tag} — building routing tables…`, 'bench');
+        benchDHT.buildRoutingTables({
+          bidirectional:  params.bidirectional,
+          maxConnections: params.webLimit ? 50 : Infinity,
+        });
+      }
       completedSteps++;
       controls.setProgress(stepFrac(completedSteps));
       await yieldUI();
@@ -1378,6 +1424,20 @@ function createDHT(params) {
       });
     case 'ngdhtnx3':
       return new NeuromorphicDHTNX3({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
+      });
+    case 'ngdhtnx4':
+      return new NeuromorphicDHTNX4({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
+      });
+    case 'ngdhtnx5':
+      return new NeuromorphicDHTNX5({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,

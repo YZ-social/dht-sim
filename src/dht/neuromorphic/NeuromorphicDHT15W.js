@@ -239,6 +239,108 @@ export class NeuromorphicDHT15W extends DHT {
     }
   }
 
+  /**
+   * Query a node's synaptome + highway for the k closest peers to targetId.
+   */
+  _synaptomeFindClosest(node, targetId, k) {
+    const seen = new Set();
+    const peers = [];
+    for (const syn of node.synaptome.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (peer?.alive && !seen.has(peer.id)) { seen.add(peer.id); peers.push(peer); }
+    }
+    for (const syn of node.highway.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (peer?.alive && !seen.has(peer.id)) { seen.add(peer.id); peers.push(peer); }
+    }
+    for (const syn of node.incomingSynapses.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (peer?.alive && !seen.has(peer.id)) { seen.add(peer.id); peers.push(peer); }
+    }
+    peers.sort((a, b) => {
+      const da = a.id ^ targetId;
+      const db = b.id ^ targetId;
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+    return peers.slice(0, k);
+  }
+
+  /**
+   * Bootstrap join — iterative self-lookup + multi-prefix discovery.
+   *
+   * Phase 1: FIND_NODE(self) for XOR-close peers (same geo cell).
+   * Phase 2: lookups targeting flipped geo-prefix bits to discover peers
+   *          in distant cells (G-DHT bootstrap strategy).
+   */
+  bootstrapJoin(newNodeId, sponsorId) {
+    const newNode = this.nodeMap.get(newNodeId);
+    const sponsor = this.nodeMap.get(sponsorId);
+    if (!newNode || !sponsor) return 0;
+
+    const k     = this._k;
+    const alpha = this._alpha ?? 3;
+
+    const synCap = isFinite(this.maxConnections) ? this.maxConnections : MAX_SYNAPTOME_SIZE;
+    const addPeer = (peer) => {
+      if (peer.id === newNodeId || newNode.synaptome.has(peer.id)) return;
+      if (newNode.synaptome.size >= synCap) return;
+      const latMs   = roundTripLatency(newNode, peer);
+      const stratum = clz64(newNode.id ^ peer.id);
+      newNode.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
+      if (this.bidirectional) peer.addIncomingSynapse(newNode.id, latMs, stratum);
+    };
+
+    const iterativeLookup = (targetId, startNode, maxRounds) => {
+      const queried = new Set([newNodeId]);
+      let shortlist = this._synaptomeFindClosest(startNode, targetId, k);
+      for (const peer of shortlist) addPeer(peer);
+
+      for (let round = 0; round < maxRounds; round++) {
+        const unqueried = shortlist.filter(n => !queried.has(n.id)).slice(0, alpha);
+        if (unqueried.length === 0) break;
+
+        let improved = false;
+        for (const peer of unqueried) {
+          queried.add(peer.id);
+          const found = this._synaptomeFindClosest(peer, targetId, k);
+          for (const candidate of found) {
+            if (candidate.id !== newNodeId && !queried.has(candidate.id)) {
+              addPeer(candidate);
+              if (!shortlist.some(n => n.id === candidate.id)) {
+                shortlist.push(candidate);
+                improved = true;
+              }
+            }
+          }
+        }
+
+        shortlist.sort((a, b) => {
+          const da = a.id ^ targetId;
+          const db = b.id ^ targetId;
+          return da < db ? -1 : da > db ? 1 : 0;
+        });
+        shortlist = shortlist.slice(0, k);
+
+        if (!improved) break;
+      }
+    };
+
+    // Phase 1: Connect to sponsor + self-lookup for close peers
+    addPeer(sponsor);
+    iterativeLookup(newNodeId, sponsor, 10);
+
+    // Phase 2: Inter-cell discovery — flip each geo-prefix bit
+    const shift = BigInt(64 - GEO_BITS);
+    for (let bit = 0; bit < GEO_BITS; bit++) {
+      const targetId = newNodeId ^ (1n << (shift + BigInt(bit)));
+      iterativeLookup(targetId, sponsor, 5);
+    }
+
+    newNode._nodeMapRef = this.nodeMap;
+    newNode.temperature = T_INIT;
+    return newNode.synaptome.size;
+  }
+
   // ── Routing ───────────────────────────────────────────────────────────────
 
   async lookup(sourceId, targetKey) {

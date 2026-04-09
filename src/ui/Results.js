@@ -709,7 +709,8 @@ export class Results {
       row.innerHTML =
         `<span class="cl-session">#${s.tick}</span>` +
         `<span class="cl-to">relay ${s.msgHops != null ? s.msgHops.toFixed(1) : '—'} hops · ${s.relayMs ?? '—'} ms</span>` +
-        `<span class="cl-from">bcast ${s.bcastAvg != null ? s.bcastAvg.toFixed(1) : '—'} hops · ${s.bcastMs ?? '—'} ms</span>`;
+        `<span class="cl-from">bcast ${s.bcastAvg != null ? s.bcastAvg.toFixed(1) : '—'} hops · ${s.bcastMs ?? '—'} ms</span>` +
+        (s.maxFanout != null ? `<span class="cl-from" style="opacity:0.7">fan-out ${s.maxFanout}${s.treeDepth ? ` · depth ${s.treeDepth}` : ''}${s.avgSubsPerNode != null ? ` · ${s.avgSubsPerNode.toFixed(1)} subs/n` : ''}</span>` : '');
       log.appendChild(row);
       log.scrollTop = log.scrollHeight;
     }
@@ -1160,6 +1161,11 @@ export class Results {
       ngdhtnx3:  'NX-3: Dual-path init — three-layer geographic init when uncapped (best latency), flat XOR init when web-limited (reliable coverage). Bootstrap synapse protection for structural synapses.',
       ngdhtnx4:  'NX-4: NX-3 + iterative fallback routing. When greedy AP routing hits a dead end, falls back to Kademlia-style iterative search querying closest unvisited peers, preventing dead-end failures.',
       ngdhtnx5:  'NX-5: NX-4 + stratified bootstrap allocation + global warmup. Bootstrap uses stratum-aware eviction (like K-DHT) so Phase 2 distant-cell peers can displace over-represented close peers. Global warmup lookups exercise long-range learning.',
+      ngdhtnx6:  'NX-6: NX-5 + churn-resilience. Dead-peer detection triggers annealing temperature reheat (T_REHEAT=0.5) for aggressive route repair, plus immediate dead-synapse eviction with local-candidate replacement in the same stratum range.',
+      ngdhtnx7:  'NX-7: NX-6 + dendritic pub/sub v1 (25% peel-off split). Hierarchical relay tree distributes broadcast across branch nodes. Can produce tall trees at large group sizes.',
+      ngdhtnx8:  'NX-8: NX-6 + dendritic pub/sub v2 (balanced binary split). When a branch overflows, ALL subscribers split 50/50 into two new children; parent becomes pure relay. Depth ≈ log₂(N/capacity).',
+      ngdhtnx9:  'NX-9: NX-6 + geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell, recruits same-cell branch nodes for direct 1-hop delivery. Root→branch: DHT routing; branch→subscriber: direct.',
+      ngdhtnx10: 'NX-10: NX-6 + routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free. Fan-out bounded by capacity.',
     };
 
     // Header row
@@ -1186,6 +1192,9 @@ export class Results {
         const tip = specTip(s);
         html += `<th colspan="2" class="pubsub-col"  data-tip="${tip}">Relay Pub/Sub</th>`;
         html += `<th colspan="2" class="pubsub-bcol" data-tip="${tip}">B&#x2019;cast Pub/Sub</th>`;
+        html += `<th class="pubsub-bcol" data-tip="Max lookups performed by any single node in one broadcast tick. Flat protocols = group size. Dendritic tree distributes this across branch nodes.">Fan-out</th>`;
+        html += `<th class="pubsub-bcol" data-tip="Maximum depth of dendritic relay tree. 0 = flat broadcast (no tree). Higher depth means more routing legs per subscriber.">Depth</th>`;
+        html += `<th class="pubsub-bcol" data-tip="Average subscribers per branch node. Lower = better distribution. Flat protocols show group size (all on relay).">Subs/N</th>`;
       } else {
         html += `<th colspan="2"${cls} data-tip="${specTip(s)}">${specLabel(s)}</th>`;
       }
@@ -1204,6 +1213,9 @@ export class Results {
       if (s.type === 'pubsub') {
         html += `<th class="sub pubsub-sub">hops</th><th class="sub pubsub-sub">ms</th>`;
         html += `<th class="sub pubsub-bsub">hops</th><th class="sub pubsub-bsub">ms</th>`;
+        html += `<th class="sub pubsub-bsub">max</th>`;
+        html += `<th class="sub pubsub-bsub">lvl</th>`;
+        html += `<th class="sub pubsub-bsub">avg</th>`;
       } else {
         html += `<th class="sub${sub}">hops</th><th class="sub${sub}">ms</th>`;
       }
@@ -1251,11 +1263,11 @@ export class Results {
         const isPubSub    = s.type === 'pubsub';
         const specCls     = isSrc ? ' src-cell' : isDest ? ' dest-cell' : isSrcDest ? ' srcdest-cell' : isChurn ? ' churn-cell' : isContinent ? ' continent-cell' : isPubSub ? ' pubsub-cell' : '';
 
-        // Pub/Sub: four separate cells — relay hops, relay ms, bcast hops, bcast ms
+        // Pub/Sub: five separate cells — relay hops, relay ms, bcast hops, bcast ms, max fan-out
         if (isPubSub) {
           if (!cell || !cell.msgHops) {
             html += `<td class="no-data pubsub-cell"  colspan="2">—</td>`;
-            html += `<td class="no-data pubsub-bcell" colspan="2">—</td>`;
+            html += `<td class="no-data pubsub-bcell" colspan="5">—</td>`;
             continue;
           }
           const msgH    = cell.msgHops.mean.toFixed(2);
@@ -1274,6 +1286,12 @@ export class Results {
           html += `<td class="time-cell${msgMsWin ? ' win' : ''} pubsub-cell">${msgMs}${p95msgMs ? `<span class="p95">${p95msgMs}</span>` : ''}</td>`;
           html += `<td class="hops-cell${bcastHWin  ? ' win' : ''} pubsub-bcell">${bcastH}${p95bcast ? `<span class="p95">${p95bcast}</span>` : ''}</td>`;
           html += `<td class="time-cell${bcastMsWin ? ' win' : ''} pubsub-bcell">${bcastMs}${p95bcastMs ? `<span class="p95">${p95bcastMs}</span>` : ''}</td>`;
+          const fanout = cell.maxFanout?.mean != null ? Math.round(cell.maxFanout.mean) : '—';
+          const depth  = cell.treeDepth ?? 0;
+          html += `<td class="hops-cell pubsub-bcell">${fanout}</td>`;
+          html += `<td class="hops-cell pubsub-bcell">${depth}</td>`;
+          const avgSubs = cell.avgSubsPerNode?.mean != null ? cell.avgSubsPerNode.mean.toFixed(1) : '—';
+          html += `<td class="hops-cell pubsub-bcell">${avgSubs}</td>`;
           continue;
         }
 
@@ -1355,7 +1373,7 @@ export class Results {
     for (const s of testSpecs) {
       const lbl = csvSpecLabel(s);
       if (s.type === 'pubsub') {
-        headerCols.push(`${lbl} →relay hops`, `${lbl} →relay ms`, `${lbl} bcast hops`, `${lbl} bcast ms`);
+        headerCols.push(`${lbl} →relay hops`, `${lbl} →relay ms`, `${lbl} bcast hops`, `${lbl} bcast ms`, `${lbl} max fan-out`, `${lbl} tree depth`, `${lbl} avg subs/node`);
       } else {
         headerCols.push(`${lbl} hops`, `${lbl} ms`, `${lbl} success%`);
       }
@@ -1374,6 +1392,9 @@ export class Results {
             cell?.msgMs?.mean    != null ? Math.round(cell.msgMs.mean) + '' : '',
             cell?.bcastHops?.mean != null ? cell.bcastHops.mean.toFixed(3) : '',
             cell?.bcastMs?.mean   != null ? Math.round(cell.bcastMs.mean) + '' : '',
+            cell?.maxFanout?.mean != null ? Math.round(cell.maxFanout.mean) + '' : '',
+            cell?.treeDepth != null ? cell.treeDepth + '' : '0',
+            cell?.avgSubsPerNode?.mean != null ? cell.avgSubsPerNode.mean.toFixed(1) : '',
           );
         } else {
           cols.push(

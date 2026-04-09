@@ -18,6 +18,11 @@ import { NeuromorphicDHTNX2W } from './dht/neuromorphic/NeuromorphicDHTNX2W.js';
 import { NeuromorphicDHTNX3 }  from './dht/neuromorphic/NeuromorphicDHTNX3.js';
 import { NeuromorphicDHTNX4 }  from './dht/neuromorphic/NeuromorphicDHTNX4.js';
 import { NeuromorphicDHTNX5 }  from './dht/neuromorphic/NeuromorphicDHTNX5.js';
+import { NeuromorphicDHTNX6 }  from './dht/neuromorphic/NeuromorphicDHTNX6.js';
+import { NeuromorphicDHTNX7 }  from './dht/neuromorphic/NeuromorphicDHTNX7.js';
+import { NeuromorphicDHTNX8 }  from './dht/neuromorphic/NeuromorphicDHTNX8.js';
+import { NeuromorphicDHTNX9 }  from './dht/neuromorphic/NeuromorphicDHTNX9.js';
+import { NeuromorphicDHTNX10 } from './dht/neuromorphic/NeuromorphicDHTNX10.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -1003,6 +1008,9 @@ async function onPubSub() {
       totalHops: result.relayHops + result.bcastHops,
       relayMs:   result.relayMs,
       bcastMs:   result.bcastMs,
+      maxFanout:      result.maxFanout,
+      treeDepth:      result.treeDepth,
+      avgSubsPerNode: result.avgSubsPerNode,
     });
 
     results.showPubSubResults(history, numGroups, actualCoverage);
@@ -1228,6 +1236,11 @@ async function onBenchmark() {
     { key: 'ngdhtnx3',  label: 'NX-3',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdhtnx4',  label: 'NX-4',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
     { key: 'ngdhtnx5',  label: 'NX-5',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
+    { key: 'ngdhtnx6',  label: 'NX-6',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
+    { key: 'ngdhtnx7',  label: 'NX-7',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
+    { key: 'ngdhtnx8',  label: 'NX-8',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
+    { key: 'ngdhtnx9',  label: 'NX-9',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
+    { key: 'ngdhtnx10', label: 'NX-10',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1438,6 +1451,41 @@ function createDHT(params) {
       });
     case 'ngdhtnx5':
       return new NeuromorphicDHTNX5({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
+      });
+    case 'ngdhtnx6':
+      return new NeuromorphicDHTNX6({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
+      });
+    case 'ngdhtnx7':
+      return new NeuromorphicDHTNX7({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
+      });
+    case 'ngdhtnx8':
+      return new NeuromorphicDHTNX8({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
+      });
+    case 'ngdhtnx9':
+      return new NeuromorphicDHTNX9({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
+      });
+    case 'ngdhtnx10':
+      return new NeuromorphicDHTNX10({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,

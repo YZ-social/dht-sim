@@ -197,7 +197,7 @@ export class Controls {
   get benchBootstrap()   { return this._el('benchBootstrap')?.checked ?? false; }
   get showAnimation() { return this._el('showAnimation')?.checked ?? true; }
   get autoRotate()  { return this._el('autoRotate')?.checked ?? false; }
-  get pubsubGroupSize() { return Math.max(4, Math.min(256, parseInt(this._el('pubsubGroupSize')?.value ?? 32))); }
+  get pubsubGroupSize() { return Math.max(4, parseInt(this._el('pubsubGroupSize')?.value ?? 32)); }
   get pubsubCoverage()  { return Math.max(1, Math.min(100, parseInt(this._el('pubsubCoverage')?.value ?? 10))); }
   get hotspotLookups()  { return Math.max(100, parseInt(this._el('hotspotLookups')?.value ?? 1000)); }
   get contentCount()    { return Math.max(10,  parseInt(this._el('contentCount')?.value   ?? 50)); }

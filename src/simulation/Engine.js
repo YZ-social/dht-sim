@@ -539,10 +539,13 @@ export class SimulationEngine {
           const measTicks = Math.max(10, Math.ceil(numMessages / (groupSize + 1)));
           onStart(`${tag} · Pub/Sub (${measTicks} ticks)…`);
 
-          const allMsgHops   = [];
-          const allMsgMs     = [];
-          const allBcastHops = [];
-          const allBcastMs   = [];
+          const allMsgHops      = [];
+          const allMsgMs        = [];
+          const allBcastHops    = [];
+          const allBcastMs      = [];
+          const allMaxFanout    = [];
+          const allAvgSubs      = [];
+          let   maxTreeDepth    = 0;
           for (let t = 0; t < measTicks; t++) {
             if (!this.running) break;
             const tick = await this.runPubSubTick(dht, groups);
@@ -551,15 +554,21 @@ export class SimulationEngine {
             if (tick.msgMs > 0) allMsgMs.push(tick.msgMs);
             allBcastHops.push(...tick.bcastHops);
             if (tick.bcastMsStats?.mean != null) allBcastMs.push(tick.bcastMsStats.mean);
+            if (tick.maxNodeLookups != null) allMaxFanout.push(tick.maxNodeLookups);
+            if (tick.avgSubsPerNode != null) allAvgSubs.push(tick.avgSubsPerNode);
+            if (tick.treeDepth != null) maxTreeDepth = Math.max(maxTreeDepth, tick.treeDepth);
           }
 
           data[def.key]['pubsub'] = {
-            msgHops:    computeStats(allMsgHops),
-            msgMs:      computeStats(allMsgMs),
-            bcastHops:  computeStats(allBcastHops),
-            bcastMs:    computeStats(allBcastMs),
+            msgHops:       computeStats(allMsgHops),
+            msgMs:         computeStats(allMsgMs),
+            bcastHops:     computeStats(allBcastHops),
+            bcastMs:       computeStats(allBcastMs),
+            maxFanout:     computeStats(allMaxFanout),
+            avgSubsPerNode: computeStats(allAvgSubs),
+            treeDepth:     maxTreeDepth,
             numGroups,
-            totalTicks: measTicks,
+            totalTicks:    measTicks,
           };
           onStep(`${tag} · Pub/Sub ✓`);
           continue; // skip the normal runLookupTest path
@@ -776,12 +785,19 @@ export class SimulationEngine {
     const bcastMsArr = [];
     const targets    = alive.filter(p => p.id !== sender.id).map(p => p.id);
 
+    let maxNodeLookups = targets.length;  // flat default: relay does all lookups
+    let treeDepth      = 0;               // flat default: no tree
+    let avgSubsPerNode = targets.length;  // flat default: all on relay
+
     if (typeof dht.pubsubBroadcast === 'function' && targets.length > 0) {
-      // NX-2W tree-based broadcast: one call handles the full fan-out
+      // Tree-based broadcast: one call handles the full fan-out
       try {
         const result = await dht.pubsubBroadcast(relay.id, targets);
         bcastHops.push(...result.hops);
         bcastMsArr.push(...result.times);
+        if (result.maxNodeLookups != null) maxNodeLookups = result.maxNodeLookups;
+        if (result.treeDepth != null) treeDepth = result.treeDepth;
+        if (result.avgSubsPerNode != null) avgSubsPerNode = result.avgSubsPerNode;
       } catch { /* skip */ }
     } else {
       // Standard flat broadcast: one lookup per participant
@@ -816,6 +832,9 @@ export class SimulationEngine {
       bcastMsArr,    // raw per-participant ms values (used by runPubSubSession)
       bcastMsStats,
       totalHops,
+      maxNodeLookups,                 // max lookups by any single node in this broadcast
+      treeDepth,                       // dendritic tree depth (0 for flat)
+      avgSubsPerNode,                  // avg subscribers per branch node
       simMs: (msgMs ?? 0) + Math.round((bcastMsStats?.mean ?? 0)),
     };
   }
@@ -845,6 +864,9 @@ export class SimulationEngine {
     const allRelayMs   = [];
     const allBcastHops = [];
     const allBcastMs   = [];
+    const allMaxFanout = [];
+    const allAvgSubs   = [];
+    let   maxTreeDepth  = 0;
     let lastRelayNode        = null;
     let lastParticipantNodes = null;
 
@@ -855,6 +877,9 @@ export class SimulationEngine {
       if (tick.msgMs   != null) allRelayMs.push(tick.msgMs);
       allBcastHops.push(...tick.bcastHops);
       allBcastMs.push(...tick.bcastMsArr);
+      if (tick.maxNodeLookups != null) allMaxFanout.push(tick.maxNodeLookups);
+      if (tick.avgSubsPerNode != null) allAvgSubs.push(tick.avgSubsPerNode);
+      if (tick.treeDepth != null) maxTreeDepth = Math.max(maxTreeDepth, tick.treeDepth);
       lastRelayNode        = tick.relayNode;
       lastParticipantNodes = tick.participantNodes;
     }
@@ -868,6 +893,9 @@ export class SimulationEngine {
       relayMs:           Math.round(mean(allRelayMs)),
       bcastHops:         allBcastHops.length ? mean(allBcastHops) : 0,
       bcastMs:           allBcastMs.length   ? Math.round(mean(allBcastMs)) : 0,
+      maxFanout:         allMaxFanout.length ? Math.round(mean(allMaxFanout)) : null,
+      avgSubsPerNode:    allAvgSubs.length   ? mean(allAvgSubs) : null,
+      treeDepth:         maxTreeDepth,
       lastRelayNode,
       lastParticipantNodes,
       messagesPerSession,

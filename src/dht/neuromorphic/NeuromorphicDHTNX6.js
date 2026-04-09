@@ -1,23 +1,21 @@
 /**
- * NeuromorphicDHTNX5 (NX-5) – Stratified Bootstrap + Global Warmup
+ * NeuromorphicDHTNX6 (NX-6) – Churn-Resilient Routing
  *
- * Derived from NX-4.  Two improvements over NX-4:
+ * Derived from NX-5.  Two churn-resilience mechanisms that activate when
+ * routing encounters dead peers:
  *
- * 1. Stratified bootstrap allocation: instead of filling all synaptome slots
- *    greedily (Phase 1 consumes budget before Phase 2 can add distant peers),
- *    NX-5 reserves GEO_BITS slots for Phase 2 inter-cell discovery.  When at
- *    capacity during Phase 1, incoming peers compete via stratum-aware eviction
- *    (evict from the most-populated stratum to make room for underrepresented
- *    ones), mirroring K-DHT's empty-bucket priority in addToBucket.
+ * 1. Churn-triggered temperature reheat: when a node discovers a dead peer
+ *    during routing, its annealing temperature is spiked to T_REHEAT (0.5).
+ *    This causes annealing to fire aggressively (~50% per hop) on damaged
+ *    nodes, driving rapid synapse exploration and repair.  The temperature
+ *    naturally cools back down via ANNEAL_COOLING after repair completes.
  *
- * 2. The benchmark warmup includes global lookups (not just regional), so the
- *    learning mechanisms (hop caching, annealing, LTP) can exercise and repair
- *    the long-range routes that bootstrap may have missed.
- *
- * Both changes address the core weakness exposed at 10k-25k nodes: with only
- * 48 synapse slots, Phase 1 fills the budget with XOR-close peers and Phase 2
- * can't add distant-cell peers, leaving routing dead-ends that only NX-4's
- * fallback can compensate for.  NX-5 fixes the root cause.
+ * 2. Immediate dead-synapse eviction + replacement: instead of merely zeroing
+ *    a dead synapse's weight and waiting for the next decay tick (every 100
+ *    lookups), the dead synapse is immediately deleted and the slot is filled
+ *    with a local candidate from the 2-hop neighborhood in the same stratum
+ *    range.  This ensures the node's keyspace coverage is repaired instantly
+ *    rather than degrading until passive mechanisms clean up.
  *
  * config.rules shape:
  *   {
@@ -55,8 +53,8 @@ import { randomU64, clz64,
          reservoirSample }      from '../../utils/geo.js';
 import { geoCellId }         from '../../utils/s2.js';
 
-export class NeuromorphicDHTNX5 extends DHT {
-  static get protocolName() { return 'Neuromorphic-NX5'; }
+export class NeuromorphicDHTNX6 extends DHT {
+  static get protocolName() { return 'Neuromorphic-NX6'; }
 
   constructor(config = {}) {
     super(config);
@@ -166,6 +164,18 @@ export class NeuromorphicDHTNX5 extends DHT {
     // Promote an incomingSynapse to a full synapse after it's been used as a
     // routing hop this many times.  Low threshold = aggressive promotion.
     this.INCOMING_PROMOTE_THRESHOLD = p('incomingPromotion', 'threshold', 2);
+
+    // ── Rule 16 (NX-6): Churn-Triggered Temperature Reheat ───────────────────
+    // When routing discovers a dead peer, spike the discovering node's annealing
+    // temperature to max(current, T_REHEAT).  This causes annealing to fire
+    // aggressively on nodes damaged by churn, accelerating synapse replacement.
+    this.T_REHEAT = p('churnReheat', 'tReheat', 0.5);
+
+    // ── Rule 17 (NX-6): Immediate Dead-Synapse Eviction + Replacement ────────
+    // When routing finds a dead synapse, immediately delete it and attempt to
+    // fill the slot with a local candidate in the same stratum range, rather
+    // than zeroing the weight and waiting for passive decay.
+    this.EN_DEAD_EVICTION = e('deadEviction', true);
 
     // ── Optional: Load-Aware AP Scoring (from N-7W/N-9W, off by default) ──────
     this.LOAD_DECAY      = p('loadBalancing', 'loadDecay', 0.995);
@@ -476,18 +486,20 @@ export class NeuromorphicDHTNX5 extends DHT {
       if (currentDist === 0n) { reached = true; break; }
 
       // Collect forward-progress candidates from all tiers
+      // NX-6: collect dead synapses for deferred eviction+replacement
+      const deadSynapses = [];
       const candidates = [];
       for (const s of current.synaptome.values()) {
         if ((s.peerId ^ targetKey) >= currentDist) continue;
         const peer = this.nodeMap.get(s.peerId);
-        if (!peer?.alive) { s.weight = 0; continue; }
+        if (!peer?.alive) { deadSynapses.push({ tier: 'local', syn: s }); s.weight = 0; continue; }
         candidates.push(s);
       }
       if (this.EN_TWO_TIER) {
         for (const s of current.highway.values()) {
           if ((s.peerId ^ targetKey) >= currentDist) continue;
           const peer = this.nodeMap.get(s.peerId);
-          if (!peer?.alive) { s.weight = 0; continue; }
+          if (!peer?.alive) { deadSynapses.push({ tier: 'highway', syn: s }); continue; }
           candidates.push(s);
         }
       }
@@ -498,6 +510,27 @@ export class NeuromorphicDHTNX5 extends DHT {
         candidates.push(s);
       }
 
+      // NX-6: Process dead synapses — reheat + evict/replace
+      if (deadSynapses.length > 0) {
+        // Strategy A: Churn-triggered temperature reheat
+        if (this.EN_ANNEALING) {
+          current.temperature = Math.max(current.temperature, this.T_REHEAT);
+        }
+        // Strategy B: Immediate dead-synapse eviction + replacement
+        for (const { tier, syn } of deadSynapses) {
+          if (tier === 'local' && this.EN_DEAD_EVICTION) {
+            const newSyn = this._evictAndReplace(current, syn);
+            // Immediately reroute: if replacement makes forward progress,
+            // add it to this hop's candidates so the current lookup can use it
+            if (newSyn && (newSyn.peerId ^ targetKey) < currentDist) {
+              candidates.push(newSyn);
+            }
+          } else if (tier === 'highway') {
+            current.highway.delete(syn.peerId);
+          }
+        }
+      }
+
       // NX-4: Iterative fallback — when no forward-progress candidate exists,
       // find the closest unvisited peer to the target (regardless of XOR progress)
       if (candidates.length === 0) {
@@ -506,7 +539,13 @@ export class NeuromorphicDHTNX5 extends DHT {
         const scanPeer = (s) => {
           if (queried.has(s.peerId)) return;
           const peer = this.nodeMap.get(s.peerId);
-          if (!peer?.alive) return;
+          if (!peer?.alive) {
+            // NX-6: reheat on dead peer in fallback scan too
+            if (this.EN_ANNEALING) {
+              current.temperature = Math.max(current.temperature, this.T_REHEAT);
+            }
+            return;
+          }
           const d = s.peerId ^ targetKey;
           if (bestDist === null || d < bestDist) {
             bestDist = d;
@@ -1007,6 +1046,41 @@ export class NeuromorphicDHTNX5 extends DHT {
     return candidates[Math.floor(Math.random() * candidates.length)];
   }
 
+  // ── NX-6: Dead-synapse eviction + replacement ──────────────────────────────
+
+  /**
+   * Immediately remove a dead synapse and attempt to fill the slot with a
+   * local candidate from the 2-hop neighborhood in the same stratum range.
+   */
+  _evictAndReplace(node, deadSyn) {
+    const stratum = deadSyn.stratum;
+    node.synaptome.delete(deadSyn.peerId);
+
+    // Target the same stratum group as the dead peer
+    const group = Math.min(this.STRATA_GROUPS - 1, stratum >>> 2);
+    const lo = group * 4;
+    const hi = lo + 3;
+
+    const candidate = this._localCandidate(node, lo, hi);
+    if (!candidate || this._hasAny(node, candidate.id)) return null;
+
+    // Replacement weight = median of existing synapses (not penalised —
+    // the dead node was killed by churn, the replacement is equally stable)
+    const weights = [];
+    for (const s of node.synaptome.values()) weights.push(s.weight);
+    weights.sort((a, b) => a - b);
+    const medianW = weights.length > 0
+      ? weights[weights.length >> 1]
+      : this.PRUNE_THRESHOLD;
+
+    const latMs      = roundTripLatency(node, candidate);
+    const newStratum = clz64(node.id ^ candidate.id);
+    const newSyn     = new Synapse({ peerId: candidate.id, latencyMs: latMs, stratum: newStratum });
+    newSyn.weight    = medianW;
+    node.addSynapse(newSyn);
+    return newSyn;   // return so caller can add to current-hop candidates
+  }
+
   // ── Stratum group helpers ──────────────────────────────────────────────────
 
   _buildGroupCounts(node) {
@@ -1126,7 +1200,7 @@ export class NeuromorphicDHTNX5 extends DHT {
 
     return {
       ...base,
-      protocol:      'Neuromorphic-NX5',
+      protocol:      'Neuromorphic-NX6',
       epoch:         this.simEpoch,
       avgSynapses:   nodes.length ? ((localSyn + hwSyn) / nodes.length).toFixed(1) : 0,
       avgLocalSyn:   nodes.length ? (localSyn / nodes.length).toFixed(1) : 0,

@@ -41,13 +41,18 @@
       <select id="dhtProtocol" class="sb-select-full" data-tip="Kademlia: random node IDs, XOR distance metric. Classic baseline DHT.">
         <option value="kademlia">Kademlia</option>
         <option value="geo">G-DHT</option>
+        <option value="ngdht">N-1</option>
+        <option value="ngdht15w">N-15W</option>
         <option value="ngdhtnx1w">NX-1W ✦</option>
         <option value="ngdhtnx2w">NX-2W ✦</option>
         <option value="ngdhtnx3">NX-3 ✦</option>
         <option value="ngdhtnx4">NX-4 ✦</option>
         <option value="ngdhtnx5">NX-5 ✦</option>
-        <option value="ngdht">N-1</option>
-        <option value="ngdht15w">N-15W</option>
+        <option value="ngdhtnx6">NX-6 ✦</option>
+        <option value="ngdhtnx7">NX-7 ✦</option>
+        <option value="ngdhtnx8">NX-8 ✦</option>
+        <option value="ngdhtnx9">NX-9 ✦</option>
+        <option value="ngdhtnx10">NX-10 ✦</option>
       </select>
       <div class="sb-row" style="margin-top:4px;margin-bottom:2px;gap:12px">
         <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
@@ -158,7 +163,7 @@
       <div class="sb-sec-lbl">Pub/Sub · Pair</div>
       <div class="sb-row">
         <span class="sb-lbl" data-tip="Number of participant nodes per concordance group (one relay + this many participants). Default: 32.">Group</span>
-        <input type="number" id="pubsubGroupSize" class="sb-num" value="32" min="4" max="256" step="4" style="width:44px">
+        <input type="number" id="pubsubGroupSize" class="sb-num" value="32" min="4" step="4" style="width:54px">
         <span class="sb-lbl" data-tip="Percentage of network nodes that participate in at least one concordance group. Default: 10%.">Cover</span>
         <input type="number" id="pubsubCoverage" class="sb-num" value="10" min="1" max="100" step="1" style="width:38px">
         <span class="sb-lbl">%</span>
@@ -209,13 +214,18 @@
           <select id="benchProtocols" multiple size="6">
             <option value="kademlia"   selected>Kademlia</option>
             <option value="geo"        selected>G-DHT</option>
-            <option value="ngdhtnx1w" selected>NX-1W</option>
-            <option value="ngdhtnx2w" selected>NX-2W</option>
-            <option value="ngdhtnx3"  selected>NX-3</option>
-            <option value="ngdhtnx4"  selected>NX-4</option>
-            <option value="ngdhtnx5"  selected>NX-5</option>
-            <option value="ngdht"     selected>N-1</option>
-            <option value="ngdht15w"  selected>N-15W</option>
+            <option value="ngdht"      selected>N-1</option>
+            <option value="ngdht15w"   selected>N-15W</option>
+            <option value="ngdhtnx1w"  selected>NX-1W</option>
+            <option value="ngdhtnx2w"  selected>NX-2W</option>
+            <option value="ngdhtnx3"   selected>NX-3</option>
+            <option value="ngdhtnx4"   selected>NX-4</option>
+            <option value="ngdhtnx5"   selected>NX-5</option>
+            <option value="ngdhtnx6"   selected>NX-6</option>
+            <option value="ngdhtnx7"   selected>NX-7</option>
+            <option value="ngdhtnx8"   selected>NX-8</option>
+            <option value="ngdhtnx9"   selected>NX-9</option>
+            <option value="ngdhtnx10"  selected>NX-10</option>
           </select>
         </div>
         <div class="sb-multisel" data-tip="Select which test conditions to include in the benchmark run. Ctrl/Cmd+click to toggle individual items.">
@@ -857,7 +867,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.40.00</div>
+    <div id="legend">Version: 0.41.00</div>
   </div>
 
   </div><!-- /mainRow -->
@@ -875,7 +885,7 @@
   <div id="guideModal">
 
     <div id="guideHeader">
-      <span class="guide-title">&#9670; DHT Globe — User Guide</span>
+      <span class="guide-title">&#9670; DHT Globe — User Guide <span id="guideVersion" class="guide-version"></span></span>
       <button id="guideClose">&#x2715; Close</button>
     </div>
 
@@ -940,25 +950,51 @@
         <table class="guide-table">
           <thead><tr><th>Protocol</th><th>Key idea</th></tr></thead>
           <tbody>
-            <tr><td>Kademlia</td><td>Classical DHT baseline. XOR distance metric; O(log N) hops. K-bucket routing table, α parallel queries per round.</td></tr>
-            <tr><td>G-DHT</td><td>Assigns IDs from physical location using an S2 Hilbert-curve prefix. Nearby nodes share high-order bits — routing paths naturally follow geographic clusters. Prefix width configurable via the G-DHT Bits parameter.</td></tr>
-            <tr><td>N-1</td><td>First neuromorphic variant. Adds a synaptome (learned routing table) on top of Kademlia. Every hop caches the path — heavily-used routes get stronger synapses; idle ones decay.</td></tr>
-            <tr><td>N-2 / N-2-BP / N-2-SHC</td><td>Adds learning algorithms: backpropagation credit assignment and stochastic hill-climbing to guide which synapses reinforce.</td></tr>
-            <tr><td>N-3</td><td>Triadic closure — if A routes through B to reach C, A tentatively wires a direct synapse to C, shortcutting B over time.</td></tr>
-            <tr><td>N-4</td><td>Markov annealing — periodically scans for candidate peers and promotes or demotes synapses based on observed routing improvement.</td></tr>
-            <tr><td>N-5</td><td>Stratified routing table — maintains at most k synapses per distance stratum, ensuring broad coverage at all scales.</td></tr>
-            <tr><td>N-5W</td><td>Adds weighted synapse reinforcement calibrated to browser-style traffic patterns (bursty, with hot nodes).</td></tr>
-            <tr><td>N-6W</td><td>Adaptive load shedding via exponential moving-average (EMA) backpressure — overloaded nodes signal congestion; traffic redistributes around hotspots.</td></tr>
-            <tr><td>N-7W</td><td>Highway formation — high-traffic nodes evolve into dedicated relays. Gini-aware load balancing prevents relay monopolies.</td></tr>
-            <tr><td>N-8W</td><td>Multi-path cascade spread — lookups fan out across parallel synaptic paths; LTP (long-term potentiation) backpropagates credit to earlier hops that contributed to successful routes.</td></tr>
-            <tr><td>N-9W</td><td>Synaptome floor protection — prevents the routing table from collapsing in random global traffic. Guard A stops annealing from pruning below the floor; Guard B resets decaying entries rather than deleting them when the tier is at or below the floor.</td></tr>
-            <tr><td>N-10W</td><td>Relay pinning — frequently-targeted destinations (pub/sub relays, hot topics) are promoted to a protected set immune to eviction and decay. Load-aware routing removed (it raised per-hop latency in relay scenarios). Raised Markov seed weight restores N-6W's fast participant-entry stabilisation for near-perfect broadcast.</td></tr>
-            <tr><td>N-11W</td><td>Frequency-weighted synaptome reservation — replaces N-10W's hard 4-pin cap with a dynamic budget scaling to 50% of the local tier (24 slots). Pins are frequency-ranked: when the budget is full, a new hot destination displaces the lowest-frequency current pin. Synaptome entries that qualify by frequency are also treated as eviction-immune before formal registration, closing the coverage gap at high pub/sub load and large network scale.</td></tr>
-            <tr><td>N-12W</td><td>Highway-tier relay pinning — moves relay pins from the local synaptome into the highway tier. The local 48-slot routing table is fully restored for XOR diversity; up to 4 of the 12 highway slots are reserved for pinned relay destinations and the remaining 8 for hub nodes. Load-aware AP scoring is also restored from N-9W (removed in N-10W), which reduces relay hop count at large scale by distributing traffic away from saturated relay nodes.</td></tr>
-            <tr><td>N-13W</td><td>Relay pinning + load awareness — combines N-10W's local-tier eviction-immune relay pinning (the correct placement: 4 pins = 8.3% of 48 local slots) with N-9W's load-aware AP scoring. N-12W showed that highway-tier pins are counterproductive: displacing 33% of the 12-slot highway with geographically clustered pub/sub members removes long-range routing shortcuts and raises relay hops. N-13W reverts to N-10W's local-tier pinning and simply restores the load discount (LOAD_PENALTY=0.40) that N-10W dropped, targeting the best of both: ~3-hop relay routing from load balancing and ~1.7 bcast hops from eviction-immune relay pins.</td></tr>
+            <tr><td><strong>Kademlia</strong></td><td>Classical DHT baseline. XOR distance metric; O(log N) hops. K-bucket routing table, &alpha; parallel queries per round. Static — no learning.</td></tr>
+            <tr><td><strong>G-DHT</strong></td><td>Geographic DHT — assigns IDs from physical location using an S2 Hilbert-curve prefix. Nearby nodes share high-order bits so routing paths naturally follow geographic clusters. Prefix width configurable via the G-DHT Bits parameter.</td></tr>
+            <tr><td><strong>N-1</strong></td><td>First neuromorphic variant. Adds a synaptome (learned routing table) with 2-hop AP routing, LTP reinforcement, triadic closure, and decay. Every hop caches the path — heavily-used routes get stronger synapses; idle ones decay.</td></tr>
+            <tr><td><strong>N-15W</strong></td><td>Browser-realistic neuromorphic with highway synapse preservation. Two-tier synaptome (48 local + 12 highway), adaptive decay, Markov hot-destination learning, simulated annealing, synaptome floor protection, and relay pinning. Renewal-based highway lifetime tracking preserves active long-range connections.</td></tr>
+            <tr><td><strong>NX-1W</strong></td><td>Fully configurable research protocol. Every rule can be independently enabled/disabled and every parameter adjusted via the NX-2W Rule Engine panel. Defaults reproduce N-15W exactly. Introduces incoming synapses (reverse routing from peers that route through this node).</td></tr>
+            <tr><td><strong>NX-2W</strong></td><td>Broadcast tree delivery for pub/sub. Instead of routing independently to each subscriber, the relay builds a proximity-ordered fan-out tree through bridge nodes. Achieves ~1.6 broadcast hops regardless of group size. Adds organic join via bootstrapJoin.</td></tr>
+            <tr><td><strong>NX-3</strong></td><td>G-DHT three-layer init — replaces flat XOR routing table construction with G-DHT's intra-cell + inter-cell + global approach, producing a more diverse initial synaptome at scale.</td></tr>
+            <tr><td><strong>NX-4</strong></td><td>Iterative fallback routing — when greedy AP routing hits a dead end (no synapse makes strict XOR progress), the lookup queries the closest unvisited peer to the target and continues, Kademlia-style. Tracks queried nodes to prevent loops.</td></tr>
+            <tr><td><strong>NX-5</strong></td><td>Stratified bootstrap allocation ensures diverse keyspace coverage at init (evicts from over-represented strata to make room for under-represented ones). Global warmup lookups repair long-range routes that bootstrap missed. Incoming synapse promotion rewards reverse connections that prove useful in routing by promoting them to full synapses.</td></tr>
+            <tr><td><strong>NX-6</strong></td><td>Churn-resilient routing. When a node discovers a dead peer during routing: (A) its annealing temperature is spiked to T_REHEAT=0.5, triggering aggressive synapse exploration on damaged nodes, and (B) the dead synapse is immediately evicted and replaced with a local candidate in the same stratum range, rather than waiting for passive decay.</td></tr>
+            <tr><td><strong>NX-7</strong></td><td>Dendritic pub/sub v1 (25% peel-off split). Replaces flat relay-to-subscriber fan-out with a hierarchical relay tree. Branch nodes recruited from synaptome; each handles at most <em>capacity</em> direct subscribers. Tree grows/shrinks dynamically, self-heals on churn. Can produce tall, unbalanced trees at large group sizes.</td></tr>
+            <tr><td><strong>NX-8</strong></td><td>Dendritic pub/sub v2 (balanced binary split). When a branch overflows capacity, ALL subscribers are divided 50/50 between two new child branches recruited from the synaptome. The parent becomes a pure relay with no direct subscribers. Produces balanced binary trees with depth &asymp; log&#x2082;(N/capacity). All NX-6 churn-resilience features inherited.</td></tr>
+            <tr><td><strong>NX-9</strong></td><td>Geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell prefix, recruits same-cell branch nodes for direct 1-hop delivery. Root&rarr;branch uses DHT routing (~3 hops cross-cell); branch&rarr;subscriber is direct (same cell, no lookup). Subdivides oversized cells by additional ID bits. All NX-6 churn-resilience features inherited.</td></tr>
+            <tr><td><strong>NX-10 &#9733;</strong></td><td><strong>Current SOTA.</strong> Routing-topology forwarding tree. When a node exceeds subscriber capacity, it identifies which direct connection (synapse) would be the first hop toward the most subscribers and delegates them to that connection as a forwarder. Recursive: forwarders apply the same rule. Tree mirrors actual routing paths &mdash; forwarding hops are free (direct synapse, no DHT lookup). Fan-out per node bounded by capacity. All NX-6 churn-resilience features inherited.</td></tr>
           </tbody>
         </table>
-        <p class="guide-tip">Neuromorphic protocols are cumulative — each generation adds one mechanism on top of the previous one. N-13W contains all mechanisms from N-1 through N-9W plus local-tier relay pinning and load-aware routing.</p>
+
+        <details class="guide-deprecated">
+          <summary>Deprecated protocols (N-2 through N-13W)</summary>
+          <p class="guide-tip">These protocols were removed from the app. They are documented here for historical reference. Each was cumulative, adding one mechanism on top of the previous generation.</p>
+          <table class="guide-table">
+            <thead><tr><th>Protocol</th><th>Key idea</th></tr></thead>
+            <tbody>
+              <tr><td>N-2 / N-2-BP / N-2-SHC</td><td>Two-tier AP routing with cascade backpropagation (BP) and source-inclusive hop caching (SHC).</td></tr>
+              <tr><td>N-3</td><td>Combined BP + SHC with denser bootstrap and gentler decay parameters.</td></tr>
+              <tr><td>N-4</td><td>Lateral shortcut propagation — new shortcuts shared with geographic neighbours.</td></tr>
+              <tr><td>N-5</td><td>Stratified synaptome with simulated annealing for keyspace coverage exploration.</td></tr>
+              <tr><td>N-5W</td><td>Browser-realistic variant of N-5 (cap=60 connections).</td></tr>
+              <tr><td>N-6W</td><td>Highway tier + adaptive temporal decay + Markov hot-destination learning.</td></tr>
+              <tr><td>N-7W</td><td>Load-balanced routing with per-node load tracking and extended hub pool.</td></tr>
+              <tr><td>N-8W</td><td>Cascading lateral spread (depth-2) with tier rebalancing.</td></tr>
+              <tr><td>N-9W</td><td>Synaptome floor protection — prevents routing table erosion under random traffic.</td></tr>
+              <tr><td>N-10W</td><td>Relay pinning (eviction-immune) with raised Markov seed weight. Best pub/sub pre-NX.</td></tr>
+              <tr><td>N-11W</td><td>Frequency-weighted reservation — dynamic pin budget scaled to 50% of local tier. Regressed at high coverage.</td></tr>
+              <tr><td>N-12W</td><td>Highway-tier relay pinning — moved pins to highway tier. 33% highway diversity loss.</td></tr>
+              <tr><td>N-13W</td><td>N-10W + load-aware routing restored. Broadcast improved vs N-9W but relay regressed vs N-10W.</td></tr>
+            </tbody>
+          </table>
+        </details>
+
+        <p class="guide-tip">The NX series is cumulative: NX-7/NX-8/NX-9/NX-10 each extend NX-6 &larr; NX-5 &larr; NX-4 &larr; NX-3 &larr; NX-2W &larr; NX-1W &larr; N-15W &larr; N-1 with different dendritic tree strategies.</p>
+      </div>
+
+      <div class="guide-footer">
+        <a href="https://github.com/YZ-social/dht-sim" target="_blank" rel="noopener">github.com/YZ-social/dht-sim</a>
       </div>
 
     </div><!-- /guideBody -->
@@ -995,10 +1031,20 @@
 
   // ── Protocol selector tooltip ────────────────────────────────────────────
   const PROTOCOL_TIPS = {
-    kademlia:   'Kademlia: random node IDs, XOR distance metric. Classic baseline DHT with O(log N) routing.',
+    kademlia:   'Kademlia: random node IDs, XOR distance metric. Classic baseline DHT with O(log N) routing. Static — no learning.',
     geo:        'G-DHT: geographic IDs from S2 Hilbert prefix. Nearby nodes share high-order bits so lookups follow geographic clusters. Prefix width set by G-DHT Bits parameter.',
     ngdht:      'N-1: first-generation neuromorphic DHT. Synaptic shortcuts form on heavily-used paths and decay on idle ones. No highway layer.',
-    ngdht15w:   'N-15W: Renewal-Based Highway Protection. Highway synapses decay slowly only when recently traversed (in either direction); idle synapses decay at the cold local rate and are pruned naturally. Fixes N-14W\'s zombie entry problem without bidirectional connections.',
+    ngdht15w:   'N-15W: browser-realistic neuromorphic with highway synapse preservation. Two-tier synaptome (48 local + 12 highway), adaptive decay, Markov learning, annealing, floor protection, relay pinning.',
+    ngdhtnx1w:  'NX-1W: fully configurable research protocol. Every rule on/off via UI, every parameter exposed. Defaults reproduce N-15W. Adds incoming synapses (reverse routing).',
+    ngdhtnx2w:  'NX-2W: broadcast tree delivery for pub/sub. Proximity-ordered fan-out tree achieves ~1.6 bcast hops regardless of group size. Adds organic join via bootstrapJoin.',
+    ngdhtnx3:   'NX-3: G-DHT three-layer init. Replaces flat XOR table construction with intra-cell + inter-cell + global approach for more diverse initial synaptome.',
+    ngdhtnx4:   'NX-4: iterative fallback routing. When greedy AP hits a dead end, queries the closest unvisited peer Kademlia-style instead of failing.',
+    ngdhtnx5:   'NX-5: Stratified bootstrap allocation + global warmup lookups + incoming synapse promotion. Best balance of routing quality and churn resilience.',
+    ngdhtnx6:   'NX-6: Churn-resilient routing: dead-peer detection triggers temperature reheat (aggressive annealing) + immediate synapse eviction/replacement in the same stratum range.',
+    ngdhtnx7:   'NX-7: Dendritic pub/sub v1 (25% peel-off split). Hierarchical relay tree distributes broadcast across branch nodes. Tree grows with subscribers, shrinks on timeout, self-heals on churn.',
+    ngdhtnx8:   'NX-8: Dendritic pub/sub v2 (balanced binary split). When a branch overflows, ALL subscribers split 50/50 between two new children; parent becomes pure relay. Produces balanced trees with depth ≈ log₂(N/capacity).',
+    ngdhtnx9:   'NX-9: Geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell, recruits same-cell branch nodes for direct 1-hop delivery. Root→branch: DHT routing; branch→subscriber: direct (no lookup).',
+    ngdhtnx10:  'NX-10 ★ Current SOTA. Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). Fan-out bounded by capacity.',
   };
   (function () {
     const sel = document.getElementById('dhtProtocol');
@@ -1035,6 +1081,13 @@
   const guideOverlay = document.getElementById('guideOverlay');
   const btnAbout     = document.getElementById('btnAbout');
   const guideClose   = document.getElementById('guideClose');
+
+  // Sync version number from legend into guide header
+  const legendEl = document.getElementById('legend');
+  const guideVer = document.getElementById('guideVersion');
+  if (legendEl && guideVer) {
+    guideVer.textContent = 'v' + legendEl.textContent.replace(/^Version:\s*/i, '');
+  }
 
   function openGuide()  { guideOverlay.classList.add('visible'); }
   function closeGuide() { guideOverlay.classList.remove('visible'); }

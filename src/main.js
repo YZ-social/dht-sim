@@ -10,7 +10,7 @@
 
 import { Globe }              from './globe/Globe.js';
 import { KademliaDHT }        from './dht/kademlia/KademliaDHT.js';
-import { GeographicDHT }      from './dht/geographic/GeographicDHT.js';
+import { GeographicDHT, GeographicDHTa, GeographicDHTb } from './dht/geographic/GeographicDHT.js';
 import { NeuromorphicDHT }    from './dht/neuromorphic/NeuromorphicDHT.js';
 import { NeuromorphicDHT15W }  from './dht/neuromorphic/NeuromorphicDHT15W.js';
 import { NeuromorphicDHTNX1W } from './dht/neuromorphic/NeuromorphicDHTNX1W.js';
@@ -23,6 +23,7 @@ import { NeuromorphicDHTNX7 }  from './dht/neuromorphic/NeuromorphicDHTNX7.js';
 import { NeuromorphicDHTNX8 }  from './dht/neuromorphic/NeuromorphicDHTNX8.js';
 import { NeuromorphicDHTNX9 }  from './dht/neuromorphic/NeuromorphicDHTNX9.js';
 import { NeuromorphicDHTNX10 } from './dht/neuromorphic/NeuromorphicDHTNX10.js';
+import { NeuromorphicDHTNX11 } from './dht/neuromorphic/NeuromorphicDHTNX11.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -1227,6 +1228,8 @@ async function onBenchmark() {
   const PROTOCOL_DEFS = [
     { key: 'kademlia', label: 'Kademlia' },
     { key: 'geo',      label: `G-DHT-${params.geoBits}` },
+    { key: 'geoa',     label: 'G-DHT-a' },
+    { key: 'geob',     label: 'G-DHT-b' },
     // Neuromorphic protocols need a warmup burst so synaptic shortcuts form
     // before measurement.  Without warmup their weights are identical to G-DHT.
     { key: 'ngdht',     label: 'N-1',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
@@ -1241,6 +1244,7 @@ async function onBenchmark() {
     { key: 'ngdhtnx8',  label: 'NX-8',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
     { key: 'ngdhtnx9',  label: 'NX-9',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
     { key: 'ngdhtnx10', label: 'NX-10',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
+    { key: 'ngdhtnx11', label: 'NX-11',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1409,6 +1413,20 @@ function createDHT(params) {
         bits: params.bits,
         geoBits: params.geoBits ?? 8,
       });
+    case 'geoa':
+      return new GeographicDHTa({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        geoBits: params.geoBits ?? 8,
+      });
+    case 'geob':
+      return new GeographicDHTb({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        geoBits: params.geoBits ?? 8,
+      });
     case 'ngdht':
       return new NeuromorphicDHT({
         k: params.k,
@@ -1486,6 +1504,13 @@ function createDHT(params) {
       });
     case 'ngdhtnx10':
       return new NeuromorphicDHTNX10({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        rules: params.nx1wRules,
+      });
+    case 'ngdhtnx11':
+      return new NeuromorphicDHTNX11({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,

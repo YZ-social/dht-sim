@@ -1166,6 +1166,7 @@ export class Results {
       ngdhtnx8:  'NX-8: NX-6 + dendritic pub/sub v2 (balanced binary split). When a branch overflows, ALL subscribers split 50/50 into two new children; parent becomes pure relay. Depth ≈ log₂(N/capacity).',
       ngdhtnx9:  'NX-9: NX-6 + geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell, recruits same-cell branch nodes for direct 1-hop delivery. Root→branch: DHT routing; branch→subscriber: direct.',
       ngdhtnx10: 'NX-10: NX-6 + routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free. Fan-out bounded by capacity.',
+      ngdhtnx11: 'NX-11: NX-10 + diversified bootstrap (80% stratified + 20% random global). Random peers improve churn resilience and give annealing more diverse exploration material.',
     };
 
     // Header row

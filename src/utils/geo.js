@@ -119,7 +119,7 @@ export function clz64(n) {
  * @param {number}   k       Max nodes to return.
  * @returns {object[]}       Up to k peers whose XOR distance puts them in bucket b.
  */
-function _collectBucket(selfId, sorted, b, k) {
+export function _collectBucket(selfId, sorted, b, k) {
   const bBig = BigInt(b);
   let rangeStart, rangeEnd;
 

@@ -26,8 +26,12 @@
  */
 
 import { KademliaDHT, KademliaNode } from '../kademlia/KademliaDHT.js';
-import { randomU64, buildIntraCellTable, buildInterCellTable, reservoirSample } from '../../utils/geo.js';
+import { randomU64, buildIntraCellTable, buildInterCellTable, reservoirSample, buildXorRoutingTable, _collectBucket } from '../../utils/geo.js';
 import { geoCellId }                  from '../../utils/s2.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GeographicDHT (original G-DHT-8: three-layer bootstrap)
+// ─────────────────────────────────────────────────────────────────────────────
 
 export class GeographicDHT extends KademliaDHT {
   /**
@@ -88,8 +92,6 @@ export class GeographicDHT extends KademliaDHT {
    * Budget allocation (web-limit = 50 example for geo8):
    *   Inter-cell structured: k=1 per bucket → 8 peers (skeleton only)
    *   Remaining 42: half local (21), half random (21)
-   *   Empirically optimal: increasing inter-cell k hurts because every peer
-   *   taken from local+random reduces overall routing table density.
    *
    * Without web-limit:
    *   Local: all intra-cell peers (k per bucket)
@@ -227,6 +229,168 @@ export class GeographicDHT extends KademliaDHT {
       ...super.getStats(),
       protocol: `G-DHT-${this.geoBits}`,
       geoBits: this.geoBits,
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GeographicDHTa (G-DHT-a: stratified allocation matching Kademlia)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * G-DHT-a — fixes the reachability gap in G-DHT-8 by using Kademlia's
+ * stratified allocation under web-limit instead of the three-layer approach.
+ *
+ * The original G-DHT-8 allocated only k=1 per inter-cell bucket (8 peers
+ * for geo8), starving global reachability.  G-DHT-a uses the same
+ * buildXorRoutingTable as Kademlia (Phase 1: 1 per non-empty bucket for
+ * breadth; Phase 2: remaining budget to highest buckets first for depth),
+ * ensuring inter-cell coverage matches Kademlia's.
+ *
+ * Node IDs remain geographic (S2 prefix), preserving the latency advantage.
+ */
+export class GeographicDHTa extends GeographicDHT {
+  static get protocolName() { return 'Geographic-a'; }
+
+  buildRoutingTables({ bidirectional = true, maxConnections = Infinity } = {}) {
+    this.bidirectional  = bidirectional;
+    this.maxConnections = maxConnections;
+
+    const k            = this.k;
+    const intraBuckets = 64 - this.geoBits;
+    const sorted       = [...this.nodeMap.values()]
+      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const allNodes     = [...this.nodeMap.values()];
+
+    for (const node of sorted) node.maxConnections = maxConnections;
+
+    for (const node of sorted) {
+      if (isFinite(maxConnections)) {
+        // ── Budget-capped: use Kademlia's stratified allocation ──────────────
+        // Guarantees 1 peer per non-empty bucket (breadth) then fills highest
+        // buckets first (depth), ensuring inter-cell coverage even though
+        // geographic IDs cluster most nodes in low-b buckets.
+        for (const peer of buildXorRoutingTable(node.id, sorted, k, maxConnections)) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+        }
+      } else {
+        // ── Uncapped: three-layer for best geographic awareness ──────────────
+        const selected = new Set([node.id]);
+
+        const interCellPeers = buildInterCellTable(node.id, sorted, k, intraBuckets);
+        for (const peer of interCellPeers) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+          selected.add(peer.id);
+        }
+
+        const localPeers = buildIntraCellTable(node.id, sorted, k, intraBuckets);
+        for (const peer of localPeers) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+          selected.add(peer.id);
+        }
+
+        const globalPeers = reservoirSample(allNodes, k, selected);
+        for (const peer of globalPeers) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+        }
+      }
+    }
+  }
+
+  getStats() {
+    return {
+      ...super.getStats(),
+      protocol: 'G-DHT-a',
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GeographicDHTb (G-DHT-b: stratified core + random global supplement)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * G-DHT-b — starts from G-DHT-a's 100% reachability, then supplements
+ * with random global peers for churn resilience.
+ *
+ * Strategy: use buildXorRoutingTable for 80% of the budget (proven
+ * stratified allocation — guarantees reachability), then add random
+ * global peers with the remaining 20%.  The random peers provide
+ * diverse backup paths that the structured allocation misses.
+ *
+ * This avoids the trap of under-allocating inter-cell coverage (G-DHT-b
+ * at 40% had 9.8% success) while restoring the churn resilience that
+ * G-DHT-8's random layer provided.
+ */
+export class GeographicDHTb extends GeographicDHT {
+  static get protocolName() { return 'Geographic-b'; }
+
+  buildRoutingTables({ bidirectional = true, maxConnections = Infinity } = {}) {
+    this.bidirectional  = bidirectional;
+    this.maxConnections = maxConnections;
+
+    const k            = this.k;
+    const intraBuckets = 64 - this.geoBits;
+    const sorted       = [...this.nodeMap.values()]
+      .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const allNodes     = [...this.nodeMap.values()];
+
+    for (const node of sorted) node.maxConnections = maxConnections;
+
+    for (const node of sorted) {
+      if (isFinite(maxConnections)) {
+        // ── Core: stratified allocation for 80% of budget ─────────────────
+        const coreBudget = Math.floor(maxConnections * 0.8);
+        const selected = new Set([node.id]);
+
+        for (const peer of buildXorRoutingTable(node.id, sorted, k, coreBudget)) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+          selected.add(peer.id);
+        }
+
+        // ── Supplement: random global peers for remaining 20% ─────────────
+        const randomBudget = maxConnections - coreBudget;
+        const globalPeers = reservoirSample(allNodes, randomBudget, selected);
+        for (const peer of globalPeers) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+        }
+      } else {
+        // ── Uncapped: three-layer ───────────────────────────────────────────
+        const selected = new Set([node.id]);
+
+        const interCellPeers = buildInterCellTable(node.id, sorted, k, intraBuckets);
+        for (const peer of interCellPeers) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+          selected.add(peer.id);
+        }
+
+        const localPeers = buildIntraCellTable(node.id, sorted, k, intraBuckets);
+        for (const peer of localPeers) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+          selected.add(peer.id);
+        }
+
+        const globalPeers = reservoirSample(allNodes, k, selected);
+        for (const peer of globalPeers) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+        }
+      }
+    }
+  }
+
+  getStats() {
+    return {
+      ...super.getStats(),
+      protocol: 'G-DHT-b',
     };
   }
 }

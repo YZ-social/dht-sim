@@ -41,6 +41,8 @@
       <select id="dhtProtocol" class="sb-select-full" data-tip="Kademlia: random node IDs, XOR distance metric. Classic baseline DHT.">
         <option value="kademlia">Kademlia</option>
         <option value="geo">G-DHT</option>
+        <option value="geoa">G-DHT-a</option>
+        <option value="geob">G-DHT-b</option>
         <option value="ngdht">N-1</option>
         <option value="ngdht15w">N-15W</option>
         <option value="ngdhtnx1w">NX-1W ✦</option>
@@ -53,6 +55,7 @@
         <option value="ngdhtnx8">NX-8 ✦</option>
         <option value="ngdhtnx9">NX-9 ✦</option>
         <option value="ngdhtnx10">NX-10 ✦</option>
+        <option value="ngdhtnx11">NX-11 ✦</option>
       </select>
       <div class="sb-row" style="margin-top:4px;margin-bottom:2px;gap:12px">
         <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
@@ -214,6 +217,8 @@
           <select id="benchProtocols" multiple size="6">
             <option value="kademlia"   selected>Kademlia</option>
             <option value="geo"        selected>G-DHT</option>
+            <option value="geoa"       selected>G-DHT-a</option>
+            <option value="geob"       selected>G-DHT-b</option>
             <option value="ngdht"      selected>N-1</option>
             <option value="ngdht15w"   selected>N-15W</option>
             <option value="ngdhtnx1w"  selected>NX-1W</option>
@@ -226,6 +231,7 @@
             <option value="ngdhtnx8"   selected>NX-8</option>
             <option value="ngdhtnx9"   selected>NX-9</option>
             <option value="ngdhtnx10"  selected>NX-10</option>
+            <option value="ngdhtnx11"  selected>NX-11</option>
           </select>
         </div>
         <div class="sb-multisel" data-tip="Select which test conditions to include in the benchmark run. Ctrl/Cmd+click to toggle individual items.">
@@ -867,7 +873,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.41.00</div>
+    <div id="legend">Version: 0.42.00</div>
   </div>
 
   </div><!-- /mainRow -->
@@ -1032,7 +1038,9 @@
   // ── Protocol selector tooltip ────────────────────────────────────────────
   const PROTOCOL_TIPS = {
     kademlia:   'Kademlia: random node IDs, XOR distance metric. Classic baseline DHT with O(log N) routing. Static — no learning.',
-    geo:        'G-DHT: geographic IDs from S2 Hilbert prefix. Nearby nodes share high-order bits so lookups follow geographic clusters. Prefix width set by G-DHT Bits parameter.',
+    geo:        'G-DHT: geographic IDs from S2 Hilbert prefix. Nearby nodes share high-order bits so lookups follow geographic clusters. Three-layer bootstrap (inter-cell k=1, local, random).',
+    geoa:       'G-DHT-a: geographic IDs + Kademlia stratified allocation under web-limit. Fixes G-DHT reachability gap by using breadth-first bucket fill across all 64 XOR buckets.',
+    geob:       'G-DHT-b: stratified inter-cell (40%) + intra-cell local (30%) + random global (30%). Combines G-DHT-a reachability with G-DHT-8 low latency and churn resilience.',
     ngdht:      'N-1: first-generation neuromorphic DHT. Synaptic shortcuts form on heavily-used paths and decay on idle ones. No highway layer.',
     ngdht15w:   'N-15W: browser-realistic neuromorphic with highway synapse preservation. Two-tier synaptome (48 local + 12 highway), adaptive decay, Markov learning, annealing, floor protection, relay pinning.',
     ngdhtnx1w:  'NX-1W: fully configurable research protocol. Every rule on/off via UI, every parameter exposed. Defaults reproduce N-15W. Adds incoming synapses (reverse routing).',
@@ -1044,7 +1052,8 @@
     ngdhtnx7:   'NX-7: Dendritic pub/sub v1 (25% peel-off split). Hierarchical relay tree distributes broadcast across branch nodes. Tree grows with subscribers, shrinks on timeout, self-heals on churn.',
     ngdhtnx8:   'NX-8: Dendritic pub/sub v2 (balanced binary split). When a branch overflows, ALL subscribers split 50/50 between two new children; parent becomes pure relay. Produces balanced trees with depth ≈ log₂(N/capacity).',
     ngdhtnx9:   'NX-9: Geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell, recruits same-cell branch nodes for direct 1-hop delivery. Root→branch: DHT routing; branch→subscriber: direct (no lookup).',
-    ngdhtnx10:  'NX-10 ★ Current SOTA. Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). Fan-out bounded by capacity.',
+    ngdhtnx10:  'NX-10: Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). Fan-out bounded by capacity.',
+    ngdhtnx11:  'NX-11 ★ Current SOTA. NX-10 + diversified bootstrap (80% stratified + 20% random global). Random peers improve churn resilience and give annealing more diverse starting material.',
   };
   (function () {
     const sel = document.getElementById('dhtProtocol');

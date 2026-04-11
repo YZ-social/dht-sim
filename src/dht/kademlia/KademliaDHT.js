@@ -13,12 +13,14 @@ class KBucket {
   }
 
   add(node) {
-    if (this.nodes.some(n => n.id === node.id)) return;
+    if (this.nodes.some(n => n.id === node.id)) return false;
     if (this.nodes.length < this.maxSize) {
       this.nodes.push(node);
+      return true;
     }
     // In production Kademlia, we'd ping the tail and evict if unresponsive.
     // In simulation, buckets simply ignore nodes once full.
+    return false;
   }
 
   remove(nodeId) {
@@ -53,6 +55,7 @@ export class KademliaNode extends DHTNode {
     this.k = k;
     this.bits = bits;
     this.maxConnections = maxConnections;
+    this._totalConns = 0;   // cached connection count
     // One bucket per bit in the key space
     this.buckets = Array.from({ length: bits }, () => new KBucket(k));
   }
@@ -74,9 +77,7 @@ export class KademliaNode extends DHTNode {
 
   /** Total number of peers across all buckets (including dead, matches real WebSocket count). */
   get totalConnections() {
-    let n = 0;
-    for (const b of this.buckets) n += b.size;
-    return n;
+    return this._totalConns;
   }
 
   addToBucket(node) {
@@ -88,8 +89,8 @@ export class KademliaNode extends DHTNode {
     if (this.buckets[idx].nodes.some(n => n.id === node.id)) return;
 
     // Under the global cap — add freely (per-bucket k-limit still applies)
-    if (!isFinite(this.maxConnections) || this.totalConnections < this.maxConnections) {
-      this.buckets[idx].add(node);
+    if (!isFinite(this.maxConnections) || this._totalConns < this.maxConnections) {
+      if (this.buckets[idx].add(node)) this._totalConns++;
       return;
     }
 
@@ -107,7 +108,8 @@ export class KademliaNode extends DHTNode {
       if (maxB >= 0 && maxSize > 1) {
         // Evict the last (most recently added, least established) entry
         this.buckets[maxB].nodes.pop();
-        this.buckets[idx].add(node);
+        this._totalConns--;
+        if (this.buckets[idx].add(node)) this._totalConns++;
       }
     }
     // Otherwise: at cap and bucket is non-empty — silently drop (matches
@@ -118,7 +120,9 @@ export class KademliaNode extends DHTNode {
     const xor = this.id ^ nodeId;
     if (xor === 0n) return;
     const idx = Math.min(63 - clz64(xor), this.bits - 1);
+    const before = this.buckets[idx].size;
     this.buckets[idx].remove(nodeId);
+    this._totalConns -= (before - this.buckets[idx].size);
   }
 
   /**

@@ -332,7 +332,12 @@ export class Globe {
 
   // ── Node rendering ────────────────────────────────────────────────────────
 
+  /** Maximum nodes rendered with individual meshes.  Above this threshold
+   *  we switch to InstancedMesh for performance (single draw call). */
+  static INSTANCED_THRESHOLD = 10_000;
+
   setNodes(nodes) {
+    // ── Tear down previous render objects ────────────────────────────────
     this._nodeObjects.forEach(m => this.nodeGroup.remove(m));
     this._hitObjects.forEach(m => this.hitGroup.remove(m));
     this._nodeObjects.clear();
@@ -340,7 +345,25 @@ export class Globe {
     this._nodeDataMap.clear();
     this.clearConnections();
 
+    if (this._instancedMesh) {
+      this.nodeGroup.remove(this._instancedMesh);
+      this._instancedMesh.dispose();
+      this._instancedMesh = null;
+    }
+    this._instancedIndex = null;  // nodeId → instance index
+
     const r = nodeRadius(nodes.length);
+
+    if (nodes.length > Globe.INSTANCED_THRESHOLD) {
+      this._setNodesInstanced(nodes, r);
+    } else {
+      this._setNodesIndividual(nodes, r);
+    }
+  }
+
+  /** Individual meshes — used for ≤INSTANCED_THRESHOLD nodes.
+   *  Supports per-node color changes, click raycasting, etc. */
+  _setNodesIndividual(nodes, r) {
     const visGeo = new THREE.SphereGeometry(r, 7, 7);
     // Invisible hit sphere: 4× larger for reliable clicking even when zoomed out
     const hitGeo = new THREE.SphereGeometry(r * 4, 5, 5);
@@ -368,14 +391,78 @@ export class Globe {
     }
   }
 
+  /** Instanced rendering — one draw call for all nodes.
+   *  Used for >INSTANCED_THRESHOLD nodes.  Per-node color via instance
+   *  color attribute; click raycasting via InstancedMesh built-in support. */
+  _setNodesInstanced(nodes, r) {
+    const geo = new THREE.SphereGeometry(r, 5, 5);
+    const mat = new THREE.MeshPhongMaterial({
+      color: 0xffffff,
+      emissive: 0xffffff,
+      emissiveIntensity: 0.7,
+    });
+
+    const count = nodes.length;
+    const mesh = new THREE.InstancedMesh(geo, mat, count);
+    mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+
+    // Per-instance color
+    const colors = new Float32Array(count * 3);
+    const dummy  = new THREE.Object3D();
+    const color  = new THREE.Color();
+    const indexMap = new Map();  // nodeId → instance index
+
+    for (let i = 0; i < count; i++) {
+      const n = nodes[i];
+      const { x, y, z } = latLngToXYZ(n.lat, n.lng, GLOBE_RADIUS * 1.009);
+
+      dummy.position.set(x, y, z);
+      dummy.updateMatrix();
+      mesh.setMatrixAt(i, dummy.matrix);
+
+      const col = n.alive ? C.nodeAlive : C.nodeDead;
+      color.setHex(col);
+      colors[i * 3]     = color.r;
+      colors[i * 3 + 1] = color.g;
+      colors[i * 3 + 2] = color.b;
+
+      indexMap.set(n.id, i);
+      this._nodeDataMap.set(n.id, { lat: n.lat, lng: n.lng, alive: n.alive });
+    }
+
+    geo.setAttribute('instanceColor', new THREE.InstancedBufferAttribute(colors, 3));
+    mat.vertexColors = true;
+    mat.needsUpdate = true;
+
+    mesh.instanceMatrix.needsUpdate = true;
+    this.nodeGroup.add(mesh);
+    this._instancedMesh  = mesh;
+    this._instancedIndex = indexMap;
+  }
+
   updateNodeState(nodeId, alive) {
-    const mesh = this._nodeObjects.get(nodeId);
-    if (!mesh) return;
-    const col = alive ? C.nodeAlive : C.nodeDead;
-    mesh.material.color.setHex(col);
-    mesh.material.emissive.setHex(col);
     const data = this._nodeDataMap.get(nodeId);
     if (data) data.alive = alive;
+
+    // Individual mesh mode
+    const mesh = this._nodeObjects.get(nodeId);
+    if (mesh) {
+      const col = alive ? C.nodeAlive : C.nodeDead;
+      mesh.material.color.setHex(col);
+      mesh.material.emissive.setHex(col);
+      return;
+    }
+
+    // Instanced mode
+    if (this._instancedMesh && this._instancedIndex) {
+      const idx = this._instancedIndex.get(nodeId);
+      if (idx === undefined) return;
+      const col = alive ? C.nodeAlive : C.nodeDead;
+      const color = new THREE.Color(col);
+      const attr = this._instancedMesh.geometry.getAttribute('instanceColor');
+      attr.setXYZ(idx, color.r, color.g, color.b);
+      attr.needsUpdate = true;
+    }
   }
 
   // ── Routing-table connection display ──────────────────────────────────────
@@ -584,21 +671,43 @@ export class Globe {
    * @param {number} pulseMs   – duration of each on/off phase in ms
    */
   async _blinkNode(nodeId, times = 2, pulseMs = 260) {
-    const mesh = this._nodeObjects.get(nodeId);
     const data = this._nodeDataMap.get(nodeId);
-    if (!mesh || !data) return;
-    const normalColor = data.alive ? C.nodeAlive : C.nodeDead;
-    for (let i = 0; i < times; i++) {
-      mesh.material.color.setHex(0xff7700);
-      mesh.material.emissive.setHex(0xff7700);
-      mesh.material.emissiveIntensity = 2.0;
-      mesh.scale.setScalar(2);
-      await new Promise(r => setTimeout(r, pulseMs));
-      mesh.material.color.setHex(normalColor);
-      mesh.material.emissive.setHex(normalColor);
-      mesh.material.emissiveIntensity = 0.7;
-      mesh.scale.setScalar(1);
-      await new Promise(r => setTimeout(r, pulseMs));
+    if (!data) return;
+
+    // ── Individual mesh mode ────────────────────────────────────────────
+    const mesh = this._nodeObjects.get(nodeId);
+    if (mesh) {
+      const normalColor = data.alive ? C.nodeAlive : C.nodeDead;
+      for (let i = 0; i < times; i++) {
+        mesh.material.color.setHex(0xff7700);
+        mesh.material.emissive.setHex(0xff7700);
+        mesh.material.emissiveIntensity = 2.0;
+        mesh.scale.setScalar(2);
+        await new Promise(r => setTimeout(r, pulseMs));
+        mesh.material.color.setHex(normalColor);
+        mesh.material.emissive.setHex(normalColor);
+        mesh.material.emissiveIntensity = 0.7;
+        mesh.scale.setScalar(1);
+        await new Promise(r => setTimeout(r, pulseMs));
+      }
+      return;
+    }
+
+    // ── Instanced mode: flash via instance color ────────────────────────
+    if (this._instancedMesh && this._instancedIndex) {
+      const idx = this._instancedIndex.get(nodeId);
+      if (idx === undefined) return;
+      const attr = this._instancedMesh.geometry.getAttribute('instanceColor');
+      const normalColor = new THREE.Color(data.alive ? C.nodeAlive : C.nodeDead);
+      const flashColor  = new THREE.Color(0xff7700);
+      for (let i = 0; i < times; i++) {
+        attr.setXYZ(idx, flashColor.r, flashColor.g, flashColor.b);
+        attr.needsUpdate = true;
+        await new Promise(r => setTimeout(r, pulseMs));
+        attr.setXYZ(idx, normalColor.r, normalColor.g, normalColor.b);
+        attr.needsUpdate = true;
+        await new Promise(r => setTimeout(r, pulseMs));
+      }
     }
   }
 

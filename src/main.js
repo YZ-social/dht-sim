@@ -51,6 +51,10 @@ async function pushResult(type, csv, meta = {}) {
   }
 }
 
+/** Max nodes to render on the globe.  Above this the globe is cleared.
+ *  Uses InstancedMesh for >10k so 25k is performant. */
+const GLOBE_NODE_LIMIT = 25_000;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Module-level state
 // ─────────────────────────────────────────────────────────────────────────────
@@ -286,10 +290,8 @@ async function onInit() {
   controls.setProgress(1);
   await yieldUI();  // let GC settle after routing table build before globe work
 
-  // Skip WebGL globe rendering for large networks — the per-node objects pushed
-  // into the renderer's internal arrays can exceed browser memory limits at
-  // ≥10 000 nodes.  The benchmark path already avoids this call and works fine.
-  const GLOBE_NODE_LIMIT = 10_000;
+  // Skip WebGL globe rendering for very large networks.
+  // Uses InstancedMesh for >10k nodes; hidden above GLOBE_NODE_LIMIT.
   if (nodes.length <= GLOBE_NODE_LIMIT) {
     globe.setNodes(dht.getNodes());
   } else {
@@ -397,7 +399,6 @@ async function onBootstrap() {
   controls.setProgress(1);
   await yieldUI();
 
-  const GLOBE_NODE_LIMIT = 10_000;
   if (nodes.length <= GLOBE_NODE_LIMIT) {
     globe.setNodes(dht.getNodes());
   } else {
@@ -480,8 +481,13 @@ async function onAddNodes() {
     }
   }
 
-  globe.setNodes(dht.getNodes());
-  const total = dht.nodeMap?.size ?? dht.getNodes().length;
+  const allNodes = dht.getNodes();
+  const total = dht.nodeMap?.size ?? allNodes.length;
+  if (total <= GLOBE_NODE_LIMIT) {
+    globe.setNodes(allNodes);
+  } else {
+    globe.setNodes([]);
+  }
   controls.updateNodeCount(total);
   controls.setStatus(
     `Added ${count} node${count > 1 ? 's' : ''} — network now has ${total} active nodes.`,
@@ -631,7 +637,14 @@ async function onDemoLookup() {
       const receiver = nearby[Math.floor(Math.random() * nearby.length)];
       result = await dht.lookup(source.id, receiver.id);
     } else {
-      result = await dht.lookup(source.id, randomU64());
+      // Pick a random live node as the target (not the source).
+      // Using a real node ID ensures the lookup has a meaningful destination
+      // and the path animation terminates at an actual node on the globe.
+      let target = source;
+      while (target.id === source.id) {
+        target = nodes[Math.floor(Math.random() * nodes.length)];
+      }
+      result = await dht.lookup(source.id, target.id);
     }
 
     if (!_demoRunning) break;

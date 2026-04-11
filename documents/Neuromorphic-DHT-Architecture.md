@@ -1137,31 +1137,59 @@ Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) 
 
 5. Zhao, B. Y., Kubiatowicz, J., & Joseph, A. D. (2001). "Tapestry: An Infrastructure for Fault-tolerant Wide-area Location and Routing." Technical Report UCB/CSD-01-1141, UC Berkeley.
 
-### Security and Extensions
+### Security, Fault Tolerance, and Extensions
 
-6. Baumgart, I., & Mies, S. (2007). "S/Kademlia: A Practicable Approach Towards Secure Key-Based Routing." In *2007 International Conference on Parallel and Distributed Systems*, pp. 1--8. IEEE.
+6. Baumgart, I., & Mies, S. (2007). "S/Kademlia: A Practicable Approach Towards Secure Key-Based Routing." In *2007 International Conference on Parallel and Distributed Systems* (ICPADS), pp. 1--8. IEEE.
 
-7. Freedman, M. J., Freudenthal, E., & Mazieres, D. (2004). "Democratizing Content Publication with Coral." In *NSDI '04: 1st Symposium on Networked Systems Design and Implementation*, pp. 239--252.
+7. Freedman, M. J., Freudenthal, E., & Mazieres, D. (2004). "Democratizing Content Publication with Coral." In *NSDI '04: 1st USENIX Symposium on Networked Systems Design and Implementation*, pp. 239--252.
+
+8. Lesniewski-Laas, C., & Kaashoek, M. F. (2010). "Whanau: A Sybil-proof Distributed Hash Table." In *NSDI '10: 7th USENIX Symposium on Networked Systems Design and Implementation*. Available at: https://pdos.csail.mit.edu/papers/whanau-nsdi10.pdf
+
+9. Naor, M., & Wieder, U. (2003). "A Simple Fault Tolerant Distributed Hash Table." In *2nd International Workshop on Peer-to-Peer Systems* (IPTPS). Available at: https://www.wisdom.weizmann.ac.il/~naor/PAPERS/iptps.pdf
 
 ### Applications
 
-8. Maymounkov, P., & Mazieres, D. (2003). "Kademlia: A Peer-to-peer Information System Based on the XOR Metric" (updated version with Mainline DHT discussion). Available at: https://pdos.csail.mit.edu/~petar/papers/maymounkov-kademlia-lncs.pdf
+10. Loewenstern, A., & Norberg, A. (2008). "DHT Protocol." BitTorrent Enhancement Proposal 5 (BEP 5). Available at: https://www.bittorrent.org/beps/bep_0005.html
 
-9. Benet, J. (2014). "IPFS -- Content Addressed, Versioned, P2P File System." arXiv preprint arXiv:1407.3561.
+11. Wood, G. (2014). "Ethereum: A Secure Decentralised Generalised Transaction Ledger." Ethereum Yellow Paper (continuously updated). Available at: https://ethereum.github.io/yellowpaper/paper.pdf
 
-### Geographic and Spatial Indexing
+12. Benet, J. (2014). "IPFS -- Content Addressed, Versioned, P2P File System." arXiv preprint arXiv:1407.3561. Available at: https://arxiv.org/abs/1407.3561
 
-10. Google S2 Geometry Library. "S2 Cells." Available at: https://s2geometry.io/devguide/s2cell_hierarchy
+### Publish/Subscribe
 
-11. Hilbert, D. (1891). "Ueber die stetige Abbildung einer Line auf ein Flachenstuck." *Mathematische Annalen*, 38(3), 459--460.
+13. Castro, M., Druschel, P., Kermarrec, A.-M., & Rowstron, A. I. T. (2002). "SCRIBE: A Large-Scale and Decentralized Application-Level Multicast Infrastructure." *IEEE Journal on Selected Areas in Communications* (JSAC), 20(8), 1489--1499.
+
+### Geographic, Proximity-Aware, and Recent DHT Work
+
+14. Gummadi, K., Gummadi, R., Gribble, S., Ratnasamy, S., Shenker, S., & Stoica, I. (2003). "The Impact of DHT Routing Geometry on Resilience and Proximity." *ACM SIGCOMM*, pp. 381--394. Available at: https://www.cs.yale.edu/homes/ramki/sigcomm03.pdf
+
+15. Wong, B., Slivkins, A., & Sirer, E. G. (2005). "Meridian: A Lightweight Network Location Service without Virtual Coordinates." *ACM SIGCOMM*. Available at: https://www.cs.cornell.edu/people/egs/papers/meridian-sigcomm05.pdf
+
+16. Google S2 Geometry Library. "S2 Cells." Available at: https://s2geometry.io/devguide/s2cell_hierarchy
+
+17. Hilbert, D. (1891). "Ueber die stetige Abbildung einer Line auf ein Flachenstuck." *Mathematische Annalen*, 38(3), 459--460.
+
+18. Sokoto, S., Krol, M., Stankovic, V., & Riviere, E. (2023). "Next-Generation Distributed Hash Tables." *CoNEXT Student Workshop*. Available at: https://dl.acm.org/doi/10.1145/3630202.3630234
+
+19. "LEAD: A Distributed Learned Hash Table." arXiv preprint arXiv:2508.14239, 2024. Available at: https://arxiv.org/abs/2508.14239
 
 ### Neuroscience Analogues
 
-12. Hebb, D. O. (1949). *The Organization of Behavior: A Neuropsychological Theory*. Wiley.
+20. Hebb, D. O. (1949). *The Organization of Behavior: A Neuropsychological Theory*. Wiley.
 
-13. Bliss, T. V. P., & Lomo, T. (1973). "Long-lasting Potentiation of Synaptic Transmission in the Dentate Area of the Anaesthetized Rabbit Following Stimulation of the Perforant Path." *The Journal of Physiology*, 232(2), 331--356.
+21. Bliss, T. V. P., & Lomo, T. (1973). "Long-lasting Potentiation of Synaptic Transmission in the Dentate Area of the Anaesthetized Rabbit Following Stimulation of the Perforant Path." *The Journal of Physiology*, 232(2), 331--356.
 
-14. Kirkpatrick, S., Gelatt, C. D., & Vecchi, M. P. (1983). "Optimization by Simulated Annealing." *Science*, 220(4598), 671--680.
+22. Kirkpatrick, S., Gelatt, C. D., & Vecchi, M. P. (1983). "Optimization by Simulated Annealing." *Science*, 220(4598), 671--680.
+
+23. Srinivasa, N., Stepp, N. D., & Cruz-Albrecht, J. (2016). "Multiclass Classification by Adaptive Network of Dendritic Neurons with Binary Synapses Using Structural Plasticity." *Frontiers in Neuroscience*, 10, 113. Available at: https://www.frontiersin.org/articles/10.3389/fnins.2016.00113
+
+### Neuromorphic and Self-Organizing Networks
+
+24. Wang, Y. et al. (2008). "Self-Organizing Peer-to-Peer Social Networks." *Computational Intelligence*, Wiley. Available at: https://www.researchgate.net/publication/220541891_Self-Organizing_Peer-to-Peer_Social_Networks
+
+25. McDaid, L. et al. (2012). "Adaptive Routing Strategies for Large Scale Spiking Neural Network Hardware Implementations." SpringerLink. Available at: https://link.springer.com/chapter/10.1007/978-3-642-21735-7_10
+
+26. "Self-organizing topology control in distributed spatial networks: a structural optimization framework." *Cluster Computing*, 2025. Available at: https://link.springer.com/article/10.1007/s10586-025-05286-0
 
 ---
 

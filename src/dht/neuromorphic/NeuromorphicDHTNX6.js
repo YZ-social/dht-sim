@@ -280,6 +280,39 @@ export class NeuromorphicDHTNX6 extends DHT {
     }
   }
 
+  // ── Churn bootstrap ──────────────────────────────────────────────────────────
+
+  /**
+   * Wire a freshly-added node into the live network using the pre-sorted
+   * node list.  Called by Engine.js during churn in place of the
+   * Kademlia-only _bootstrapNode (which calls addToBucket — a method
+   * NeuronNode doesn't have, so new nodes were getting zero connections).
+   *
+   * Base version: flat XOR routing table, matching buildRoutingTables()'s
+   * web-limited path.  NX-11+ overrides with 80/20 stratified+random.
+   *
+   * @param {NeuronNode} newNode   The node just returned by addNode().
+   * @param {NeuronNode[]} sorted  All live nodes, pre-sorted by id.
+   * @param {number} k             Bucket size (peers per XOR stratum).
+   */
+  bootstrapNode(newNode, sorted, k = 20) {
+    if (!sorted?.length || !newNode?.alive) return;
+
+    const maxConn = newNode.maxConnections ?? this.MAX_SYNAPTOME_SIZE ?? Infinity;
+    const bidir   = this.bidirectional;
+
+    for (const peer of buildXorRoutingTable(newNode.id, sorted, k, maxConn)) {
+      const latMs   = roundTripLatency(newNode, peer);
+      const stratum = clz64(newNode.id ^ peer.id);
+      const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
+      syn.weight    = 0.5;
+      newNode.addSynapse(syn);
+      if (bidir) peer.addIncomingSynapse(newNode.id, latMs, stratum);
+    }
+
+    newNode._nodeMapRef = this.nodeMap;
+  }
+
   // ── Organic join ────────────────────────────────────────────────────────────
 
   /**
@@ -426,13 +459,18 @@ export class NeuromorphicDHTNX6 extends DHT {
     addPeer(sponsor);
     iterativeLookup(newNodeId, sponsor, 10);
 
-    // Phase 2: Inter-cell discovery — flip each geo-prefix bit
+    // Phase 2: Inter-cell discovery — flip each geo-prefix bit.
     // With stratum-aware eviction, Phase 2 peers can now displace
     // over-represented close peers from Phase 1.
+    //
+    // Optimization: use only 2 rounds per prefix (enough to discover
+    // one good peer per stratum) and start from the new node itself
+    // (which now has Phase 1 peers) rather than the sponsor — this
+    // gives better starting positions for each direction.
     const shift = BigInt(64 - this.GEO_BITS);
     for (let bit = 0; bit < this.GEO_BITS; bit++) {
       const targetId = newNodeId ^ (1n << (shift + BigInt(bit)));
-      iterativeLookup(targetId, sponsor, 5);
+      iterativeLookup(targetId, newNode, 2);
     }
 
     newNode._nodeMapRef = this.nodeMap;

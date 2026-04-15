@@ -80,6 +80,51 @@ export class NeuromorphicDHTNX11 extends NeuromorphicDHTNX10 {
     }
   }
 
+  // ── Churn bootstrap (80/20 diversified) ─────────────────────────────────────
+
+  /**
+   * Override NX-6's flat XOR bootstrap with the same 80/20 stratified+random
+   * strategy used by buildRoutingTables().  Ensures new nodes added during
+   * churn get the same connection diversity as nodes from initial setup.
+   */
+  bootstrapNode(newNode, sorted, k = 20) {
+    if (!sorted?.length || !newNode?.alive) return;
+
+    const maxConn = newNode.maxConnections ?? this.MAX_SYNAPTOME_SIZE ?? Infinity;
+    const bidir   = this.bidirectional;
+
+    const wireSynapse = (peer, weight) => {
+      const latMs   = roundTripLatency(newNode, peer);
+      const stratum = clz64(newNode.id ^ peer.id);
+      const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
+      syn.weight    = weight;
+      newNode.addSynapse(syn);
+      if (bidir) peer.addIncomingSynapse(newNode.id, latMs, stratum);
+    };
+
+    if (isFinite(maxConn)) {
+      // Web-limited: 80% stratified XOR + 20% random global
+      const coreBudget   = Math.floor(maxConn * 0.8);
+      const randomBudget = maxConn - coreBudget;
+
+      const existing = new Set([newNode.id]);
+      for (const peer of buildXorRoutingTable(newNode.id, sorted, k, coreBudget)) {
+        wireSynapse(peer, 0.5);
+        existing.add(peer.id);
+      }
+      const randomPeers = reservoirSample(sorted, randomBudget, existing);
+      for (const peer of randomPeers) {
+        wireSynapse(peer, 0.3);
+      }
+    } else {
+      // Uncapped: delegate to NX-6's flat XOR bootstrap
+      super.bootstrapNode(newNode, sorted, k);
+      return;
+    }
+
+    newNode._nodeMapRef = this.nodeMap;
+  }
+
   // ── Stats ──────────────────────────────────────────────────────────────────
 
   getStats() {

@@ -329,11 +329,13 @@ export class NeuromorphicDHT15W extends DHT {
     addPeer(sponsor);
     iterativeLookup(newNodeId, sponsor, 10);
 
-    // Phase 2: Inter-cell discovery — flip each geo-prefix bit
+    // Phase 2: Inter-cell discovery — flip each geo-prefix bit.
+    // Start from newNode (has Phase 1 peers) and limit to 2 rounds
+    // per prefix for performance at high churn rates.
     const shift = BigInt(64 - GEO_BITS);
     for (let bit = 0; bit < GEO_BITS; bit++) {
       const targetId = newNodeId ^ (1n << (shift + BigInt(bit)));
-      iterativeLookup(targetId, sponsor, 5);
+      iterativeLookup(targetId, newNode, 2);
     }
 
     newNode._nodeMapRef = this.nodeMap;

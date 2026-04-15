@@ -1304,12 +1304,12 @@ export class Results {
         const ms      = cell.time?.mean  != null ? cell.time.mean.toFixed(1)  : '—';
         const p95hops = cell.hops.p95    != null ? cell.hops.p95.toFixed(1)   : null;
         const p95ms   = cell.time?.p95   != null ? cell.time.p95.toFixed(0)   : null;
-        const sr      = cell.successRate < 0.99
-          ? ` <span class="sr">${(cell.successRate * 100).toFixed(0)}%</span>` : '';
+        const sr      = cell.successRate < 1.0
+          ? ` <span class="sr">${(cell.successRate * 100).toFixed(1)}%</span>` : '';
 
         const hopsWin = cell.hops.mean <= minHops[k] + 0.005;
         const timeWin = cell.time?.mean != null && cell.time.mean <= minTime[k] + 0.5;
-        const lowSr   = cell.successRate < 0.95 ? ' low-sr' : '';
+        const lowSr   = cell.successRate < 1.0 ? ' low-sr' : '';
 
         const p95HopsStr = p95hops ? `<span class="p95">${p95hops}</span>` : '';
         const p95MsStr   = p95ms   ? `<span class="p95">${p95ms}</span>`   : '';

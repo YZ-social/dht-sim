@@ -23,7 +23,6 @@ import { NeuromorphicDHTNX7 }  from './dht/neuromorphic/NeuromorphicDHTNX7.js';
 import { NeuromorphicDHTNX8 }  from './dht/neuromorphic/NeuromorphicDHTNX8.js';
 import { NeuromorphicDHTNX9 }  from './dht/neuromorphic/NeuromorphicDHTNX9.js';
 import { NeuromorphicDHTNX10 } from './dht/neuromorphic/NeuromorphicDHTNX10.js';
-import { NeuromorphicDHTNX11 } from './dht/neuromorphic/NeuromorphicDHTNX11.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -142,6 +141,7 @@ async function init() {
     localStorage.setItem('dht-theme', isLight ? 'light' : 'dark');
     applyTheme(isLight);
   });
+  document.getElementById('btnSliceWorld')?.addEventListener('click', onSliceWorld);
   document.getElementById('btnChurnTest')?.addEventListener('click', onChurnTest);
   document.getElementById('btnDemoLookup')?.addEventListener('click', onDemoLookup);
   document.getElementById('btnTrainNetwork')?.addEventListener('click', onTrainNetwork);
@@ -301,6 +301,160 @@ async function onInit() {
     `Network ready: ${nodes.length} nodes, ${params.protocol} ` +
     `(k=${params.k}, α=${params.alpha}, ${params.bits}-bit IDs)` +
     (nodes.length > GLOBE_NODE_LIMIT ? ' — globe hidden for large network' : ''),
+    'success'
+  );
+  controls.updateNodeCount(nodes.length);
+  controls.setRunning(false);
+  controls.setProgress(0);
+  sweep.notifyInitComplete();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slice World — East/West hemisphere partition with Hawaii bridge
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Prune cross-hemisphere connections from every node's routing table,
+ * leaving Hawaii as the sole bridge between Eastern and Western hemispheres.
+ *
+ * Hemisphere rule: Western = lng < 0, Eastern = lng >= 0.
+ * Hawaii (hawaiiId) is exempt — keeps all connections to both hemispheres.
+ */
+function pruneSliceWorld(dhtRef, hawaiiId) {
+  const isWestern = (node) => node.lng < 0;
+
+  for (const node of dhtRef.nodeMap.values()) {
+    if (!node.alive || node.id === hawaiiId) continue;
+    const nodeWest = isWestern(node);
+
+    if (node.synaptome) {
+      // ── NeuronNode (neuromorphic protocols) ──
+      for (const [peerId] of node.synaptome) {
+        if (peerId === hawaiiId) continue;
+        const peer = dhtRef.nodeMap.get(peerId);
+        if (peer && isWestern(peer) !== nodeWest) {
+          node.synaptome.delete(peerId);
+        }
+      }
+      if (node.highway) {
+        for (const [peerId] of node.highway) {
+          if (peerId === hawaiiId) continue;
+          const peer = dhtRef.nodeMap.get(peerId);
+          if (peer && isWestern(peer) !== nodeWest) {
+            node.highway.delete(peerId);
+          }
+        }
+      }
+      for (const [peerId] of node.incomingSynapses) {
+        if (peerId === hawaiiId) continue;
+        const peer = dhtRef.nodeMap.get(peerId);
+        if (peer && isWestern(peer) !== nodeWest) {
+          node.incomingSynapses.delete(peerId);
+        }
+      }
+    } else if (node.buckets) {
+      // ── KademliaNode (Kademlia / G-DHT) ──
+      for (const bucket of node.buckets) {
+        bucket.nodes = bucket.nodes.filter(peer =>
+          peer.id === hawaiiId || isWestern(peer) === nodeWest
+        );
+      }
+      node._totalConns = node.buckets.reduce((s, b) => s + b.size, 0);
+      // Clean incoming peers (reverse connections)
+      if (node.incomingPeers) {
+        for (const [peerId, peer] of node.incomingPeers) {
+          if (peerId === hawaiiId) continue;
+          if (isWestern(peer) !== nodeWest) node.incomingPeers.delete(peerId);
+        }
+      }
+    }
+  }
+}
+
+async function onSliceWorld() {
+  trainingActive = false;
+  controls.setTraining(false);
+  pubsubActive = false;
+  controls.setPubSub(false);
+  pairActive = false;
+  controls.setPairLearning(false);
+  hotspotActive = false;
+  controls.setHotspotTesting(false);
+  controls.setRunning(true);
+  controls.setProgress(0);
+  results.clear();
+  results.clearTraining();
+  results.clearPubSub();
+  results.clearPairLearning();
+  globe.clearArcs();
+  globe.clearConnections();
+  globe.clearRegionalBoundary();
+
+  const params = controls.snapshot();
+  controls.setStatus(`Building Slice World: ${params.nodeCount}-node ${params.protocol} network…`, 'info');
+
+  const { maxPropagation } = getLatencyParams();
+  setLatencyParams(maxPropagation, params.nodeDelay);
+
+  if (dht) {
+    dht.dispose();
+    dht = null;
+    await yieldUI();
+  }
+
+  dht = createDHT(params);
+
+  // ── Place Hawaii node first (the sole bridge) ──────────────────────────────
+  const hawaiiNode = await dht.addNode(19.82, -155.47);
+  const hawaiiId   = hawaiiNode.id;
+
+  // ── Generate remaining nodes on land ───────────────────────────────────────
+  const nodes = [hawaiiNode];
+  for (let i = 1; i < params.nodeCount; i++) {
+    const { lat, lng } = globe.randomLandPoint();
+    const node = await dht.addNode(lat, lng);
+    nodes.push(node);
+
+    if ((i + 1) % 50 === 0) {
+      controls.setProgress((i + 1) / params.nodeCount * 0.6);
+      await yieldUI();
+    }
+  }
+
+  controls.setStatus('Building routing tables…', 'info');
+  controls.setProgress(0.7);
+  await yieldUI();
+
+  // ── Build full routing tables, then prune cross-hemisphere links ───────────
+  dht.buildRoutingTables({
+    bidirectional:  params.bidirectional,
+    maxConnections: params.webLimit ? 50 : Infinity,
+  });
+
+  controls.setStatus('Pruning cross-hemisphere connections (Hawaii bridge only)…', 'info');
+  controls.setProgress(0.85);
+  await yieldUI();
+
+  pruneSliceWorld(dht, hawaiiId);
+
+  controls.setProgress(1);
+  await yieldUI();
+
+  // ── Count hemisphere stats ─────────────────────────────────────────────────
+  let westCount = 0, eastCount = 0;
+  for (const n of nodes) {
+    if (n.lng < 0) westCount++; else eastCount++;
+  }
+
+  if (nodes.length <= GLOBE_NODE_LIMIT) {
+    globe.setNodes(dht.getNodes());
+  } else {
+    globe.setNodes([]);
+  }
+
+  controls.setStatus(
+    `Slice World ready: ${nodes.length} nodes (${westCount} West, ${eastCount} East), ` +
+    `Hawaii bridge, ${params.protocol}`,
     'success'
   );
   controls.updateNodeCount(nodes.length);
@@ -1257,7 +1411,6 @@ async function onBenchmark() {
     { key: 'ngdhtnx8',  label: 'NX-8',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
     { key: 'ngdhtnx9',  label: 'NX-9',    warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
     { key: 'ngdhtnx10', label: 'NX-10',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
-    { key: 'ngdhtnx11', label: 'NX-11',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1517,13 +1670,6 @@ function createDHT(params) {
       });
     case 'ngdhtnx10':
       return new NeuromorphicDHTNX10({
-        k: params.k,
-        alpha: params.alpha,
-        bits: params.bits,
-        rules: params.nx1wRules,
-      });
-    case 'ngdhtnx11':
-      return new NeuromorphicDHTNX11({
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,

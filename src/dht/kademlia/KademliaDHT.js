@@ -58,6 +58,14 @@ export class KademliaNode extends DHTNode {
     this._totalConns = 0;   // cached connection count
     // One bucket per bit in the key space
     this.buckets = Array.from({ length: bits }, () => new KBucket(k));
+
+    /**
+     * Reverse connection index: nodes that have this node in their k-buckets
+     * but where this node may NOT have them (asymmetric under web-limit).
+     * Doubles effective routing candidates — analogous to NeuronNode.incomingSynapses.
+     * @type {Map<bigint, KademliaNode>}
+     */
+    this.incomingPeers = new Map();
   }
 
   // ── XOR helpers ─────────────────────────────────────────────────────────
@@ -90,7 +98,13 @@ export class KademliaNode extends DHTNode {
 
     // Under the global cap — add freely (per-bucket k-limit still applies)
     if (!isFinite(this.maxConnections) || this._totalConns < this.maxConnections) {
-      if (this.buckets[idx].add(node)) this._totalConns++;
+      if (this.buckets[idx].add(node)) {
+        this._totalConns++;
+        // Register reverse: node now knows we have a route TO it.
+        if (node.incomingPeers && !node.incomingPeers.has(this.id)) {
+          node.incomingPeers.set(this.id, this);
+        }
+      }
       return;
     }
 
@@ -107,9 +121,16 @@ export class KademliaNode extends DHTNode {
       }
       if (maxB >= 0 && maxSize > 1) {
         // Evict the last (most recently added, least established) entry
-        this.buckets[maxB].nodes.pop();
+        const evicted = this.buckets[maxB].nodes.pop();
         this._totalConns--;
-        if (this.buckets[idx].add(node)) this._totalConns++;
+        // Clean up evicted node's incoming reference
+        if (evicted?.incomingPeers) evicted.incomingPeers.delete(this.id);
+        if (this.buckets[idx].add(node)) {
+          this._totalConns++;
+          if (node.incomingPeers && !node.incomingPeers.has(this.id)) {
+            node.incomingPeers.set(this.id, this);
+          }
+        }
       }
     }
     // Otherwise: at cap and bucket is non-empty — silently drop (matches
@@ -123,6 +144,8 @@ export class KademliaNode extends DHTNode {
     const before = this.buckets[idx].size;
     this.buckets[idx].remove(nodeId);
     this._totalConns -= (before - this.buckets[idx].size);
+    // Also remove from incoming peers if present
+    this.incomingPeers.delete(nodeId);
   }
 
   /**
@@ -130,7 +153,18 @@ export class KademliaNode extends DHTNode {
    * distance to `targetId`.
    */
   findClosest(targetId, count) {
-    const all = this.buckets.flatMap(b => b.getAll());
+    const seen = new Set();
+    const all = [];
+    // Outgoing bucket entries (primary)
+    for (const b of this.buckets) {
+      for (const n of b.getAll()) {
+        if (!seen.has(n.id)) { seen.add(n.id); all.push(n); }
+      }
+    }
+    // Incoming reverse connections (peers who have us in THEIR buckets)
+    for (const [, n] of this.incomingPeers) {
+      if (n.alive && !seen.has(n.id)) { seen.add(n.id); all.push(n); }
+    }
     return all
       .sort((a, b) => {
         const da = a.id ^ targetId;
@@ -148,7 +182,16 @@ export class KademliaNode extends DHTNode {
    * proximity without requiring geo-encoded node IDs.
    */
   findClosestByGeo(targetCell, count) {
-    const all = this.buckets.flatMap(b => b.getAll());
+    const seen = new Set();
+    const all = [];
+    for (const b of this.buckets) {
+      for (const n of b.getAll()) {
+        if (!seen.has(n.id)) { seen.add(n.id); all.push(n); }
+      }
+    }
+    for (const [, n] of this.incomingPeers) {
+      if (n.alive && !seen.has(n.id)) { seen.add(n.id); all.push(n); }
+    }
     return all
       .sort((a, b) => ((a.s2Cell ^ targetCell) >>> 0) - ((b.s2Cell ^ targetCell) >>> 0))
       .slice(0, count);
@@ -159,7 +202,17 @@ export class KademliaNode extends DHTNode {
    * Used by the globe to visualise routing-table connections on click.
    */
   getRoutingTableEntries() {
-    return this.buckets.flatMap(b => b.getAll());
+    const seen = new Set();
+    const entries = [];
+    for (const b of this.buckets) {
+      for (const n of b.getAll()) {
+        if (!seen.has(n.id)) { seen.add(n.id); entries.push(n); }
+      }
+    }
+    for (const [, n] of this.incomingPeers) {
+      if (n.alive && !seen.has(n.id)) { seen.add(n.id); entries.push(n); }
+    }
+    return entries;
   }
 
   // ── Message handler (called by SimulatedNetwork) ─────────────────────────
@@ -225,9 +278,11 @@ export class KademliaDHT extends DHT {
     const node = this.nodeMap.get(nodeId);
     if (!node) return;
     node.alive = false;
+    // Node is simply gone. Neighbors discover dead links when they next
+    // try to route through them — dead entries are skipped in getAll()
+    // (alive check). No walking the dying node's state (unrealistic).
     this.network.removeNode(nodeId);
     this.nodeMap.delete(nodeId);
-    // Routing tables update lazily (unreachable nodes are skipped in lookups)
   }
 
   /**

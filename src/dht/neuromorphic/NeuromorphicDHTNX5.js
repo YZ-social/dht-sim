@@ -422,7 +422,7 @@ export class NeuromorphicDHTNX5 extends DHT {
     const shift = BigInt(64 - this.GEO_BITS);
     for (let bit = 0; bit < this.GEO_BITS; bit++) {
       const targetId = newNodeId ^ (1n << (shift + BigInt(bit)));
-      iterativeLookup(targetId, sponsor, 5);
+      iterativeLookup(targetId, newNode, 2);
     }
 
     newNode._nodeMapRef = this.nodeMap;

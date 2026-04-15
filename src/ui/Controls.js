@@ -29,7 +29,7 @@ export class Controls {
     this._bindNumber('nodeDelay',          0,      500);
     this._bindNumber('msgCount',          50,     5000);
     this._bindNumber('hotPct',             1,      100);
-    this._bindNumber('churnRate',          1,       30);
+    this._bindNumber('churnRate',          1,       50);
     this._bindNumber('churnIntervals',     2,       30);
     this._bindNumber('lookupsPerInterval', 20,     500);
     this._bindNumber('addNodeCount',        1,    1000);
@@ -47,6 +47,10 @@ export class Controls {
     // Save on every change
     this._bindMultiSelectSave('benchProtocols', 'dht-bench-protocols');
     this._bindMultiSelectSave('benchTests',     'dht-bench-tests');
+
+    // Single-click toggle: no Ctrl/Cmd required to select/deselect items
+    this._enableClickToggle('benchProtocols', 'dht-bench-protocols');
+    this._enableClickToggle('benchTests',     'dht-bench-tests');
   }
 
   /** Restore a <select multiple> from a stored JSON array of selected values. */
@@ -115,6 +119,33 @@ export class Controls {
       const known = [...sel.options].map(o => o.value);
       localStorage.setItem(storageKey, JSON.stringify({ v: 2, sel: sel_, known }));
     } catch (_) { /* quota / private browsing */ }
+  }
+
+  /** Make a <select multiple> toggle items on single click (no Ctrl/Cmd). */
+  _enableClickToggle(selectId, storageKey) {
+    const sel = this._el(selectId);
+    if (!sel) return;
+
+    // Snapshot selection state on mousedown (before browser changes it)
+    let snapshot = [];
+    sel.addEventListener('mousedown', (e) => {
+      if (!e.target.closest('option')) return;
+      snapshot = [...sel.options].map(o => o.selected);
+    });
+
+    // On mouseup: restore snapshot, then toggle only the clicked option
+    sel.addEventListener('mouseup', (e) => {
+      const option = e.target.closest('option');
+      if (!option || !snapshot.length) return;
+      const scrollTop = sel.scrollTop;
+      // Restore pre-click state
+      [...sel.options].forEach((o, i) => { o.selected = snapshot[i]; });
+      // Toggle the clicked one
+      option.selected = !option.selected;
+      snapshot = [];
+      sel.scrollTop = scrollTop;
+      this._saveMultiSelect(sel, storageKey);
+    });
   }
 
   _bindSlider(sliderId, displayId, fmt = v => v) {
@@ -409,7 +440,7 @@ export class Controls {
 
   setRunning(running) {
     // btnBenchmark is managed independently by setBenchmarking(); exclude it here.
-    ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup',
+    ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnSliceWorld',
      'btnBenchmark', 'btnTrainNetwork', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest', 'btnAddNodes']
       .forEach(id => { const el = this._el(id); if (el) el.disabled = running; });
   }
@@ -426,7 +457,7 @@ export class Controls {
         demoBtn.classList.remove('active');
       }
     }
-    ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnBenchmark',
+    ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnBenchmark', 'btnSliceWorld',
      'btnTrainNetwork', 'btnPubSub', 'btnPairLearning', 'btnHotspotTest', 'btnAddNodes']
       .forEach(id => { const b = this._el(id); if (b) b.disabled = active; });
   }
@@ -434,7 +465,7 @@ export class Controls {
   setBenchmarking(active) {
     // During benchmarking: disable everything except the benchmark button itself
     // (which becomes "⏹ Stop Benchmark").
-    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnAddNodes'];
+    const btns = ['btnInit', 'btnLookupTest', 'btnChurnTest', 'btnDemoLookup', 'btnSliceWorld', 'btnAddNodes'];
     btns.forEach(id => {
       const el = this._el(id);
       if (el) el.disabled = active;

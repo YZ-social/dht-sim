@@ -463,8 +463,13 @@ export class SimulationEngine {
           const CHURN_ROUNDS  = 5;
           const rate          = (spec.rate ?? 5) / 100;
           const getLandPoint  = landFn ?? (() => randomLandPoint(null));
-          // Adapt lookups between rounds for neuromorphic protocols
-          const ADAPT_LOOKUPS = def.warmupLookups > 0 ? 100 : 0;
+          // Adapt lookups between rounds for neuromorphic protocols.
+          // Scale to warmupLookups / CHURN_ROUNDS so per-round density matches
+          // the original warmup density — critical at high node counts where
+          // 100 fixed lookups cover only a tiny fraction of replaced nodes.
+          const ADAPT_LOOKUPS = def.warmupLookups > 0
+            ? Math.max(100, Math.round(def.warmupLookups / CHURN_ROUNDS))
+            : 0;
 
           for (let round = 0; round < CHURN_ROUNDS; round++) {
             if (!this.running) break;
@@ -475,15 +480,27 @@ export class SimulationEngine {
             for (const node of shuffleSample(alive, numToReplace)) {
               await dht.removeNode(node.id);
             }
-            // Build sorted array once after removals; reuse for all additions.
-            // Avoids re-sorting N nodes for each of the numToReplace new nodes.
-            const sortedForBootstrap = dht.getNodes()
-              .filter(n => n.alive)
-              .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+            // Add replacement nodes — each performs a realistic iterative
+            // bootstrap join through a random live sponsor, discovering the
+            // network the same way a real node would (no omniscient sorted
+            // array).  The sponsor is picked randomly from the live set.
+            const liveAfterRemoval = dht.getNodes().filter(n => n.alive);
             for (let i = 0; i < numToReplace; i++) {
               const { lat, lng } = getLandPoint();
               const newNode = await dht.addNode(lat, lng);
-              this._bootstrapNode(newNode, sortedForBootstrap, dht.k ?? 20);
+              // Pick a random live sponsor for the iterative join.
+              const sponsor = liveAfterRemoval[
+                Math.floor(Math.random() * liveAfterRemoval.length)
+              ];
+              if (sponsor && typeof dht.bootstrapJoin === 'function') {
+                dht.bootstrapJoin(newNode.id, sponsor.id);
+              }
+            }
+
+            // NX-12+: Second-pass re-heal — repair any synapses whose
+            // first-pass replacement was also churned in this same batch.
+            if (typeof dht.postChurnHeal === 'function') {
+              dht.postChurnHeal();
             }
 
             // Neuromorphic protocols get adaptation lookups between rounds
@@ -649,12 +666,17 @@ export class SimulationEngine {
         await dht.removeNode(node.id);
       }
 
-      // Add replacement nodes on land
+      // Add replacement nodes — realistic iterative bootstrap join
+      const liveAfterRemoval = dht.getNodes().filter(n => n.alive);
       for (let i = 0; i < numToReplace; i++) {
         const { lat, lng } = randomLandPoint(landFn);
         const newNode = await dht.addNode(lat, lng);
-        // Bootstrap the new node into routing tables
-        this._bootstrapNode(dht, newNode);
+        const sponsor = liveAfterRemoval[
+          Math.floor(Math.random() * liveAfterRemoval.length)
+        ];
+        if (sponsor && typeof dht.bootstrapJoin === 'function') {
+          dht.bootstrapJoin(newNode.id, sponsor.id);
+        }
       }
 
       // ── Run lookups ────────────────────────────────────────────────────

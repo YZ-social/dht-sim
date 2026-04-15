@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.0.2*
+*Version 0.0.3*
 
 ---
 
@@ -28,9 +28,10 @@ Built atop the Neuromorphic routing layer is the **Axonal Pub/Sub** system -- a 
 | Latency awareness | None | Via geographic IDs | Integral to route scoring |
 | Geographic awareness | None | S2 cell prefix in node ID | S2 cell prefix in node ID |
 | Pub/sub | Not built-in | Not built-in | Axonal tree mirrors routing topology |
-| Churn recovery | Lazy k-bucket refresh | Lazy k-bucket refresh | Immediate: temperature reheat + synapse replacement |
+| Churn recovery | Lazy (dead entries skipped) | Lazy (dead entries skipped) | Immediate: dead-synapse eviction + 2-hop replacement |
+| 25% churn success | 99.6% | 100% | **100%** |
 
-In simulations with 25,000 globally-distributed nodes under browser-realistic connection limits (50 peers per node), the Neuromorphic DHT routes in approximately 3.5 hops at 221 ms latency, compared to Kademlia's 8.4 hops at 1,024 ms -- a 78% latency reduction. Without connection limits, the Neuromorphic DHT achieves 2.8 hops at 194 ms, compared to Kademlia's 6.2 hops at 738 ms -- a 74% reduction. Both the G-DHT and Neuromorphic DHT support scalable pub/sub delivery to thousands of subscribers with bounded per-node work.
+In simulations with 25,000 globally-distributed nodes under browser-realistic connection limits (50 peers per node), the Neuromorphic DHT (NX-10) routes in approximately 3.6 hops at 251 ms latency, compared to Kademlia's 3.4 hops at 364 ms -- a 31% latency reduction. The G-DHT-b routes at 4.6 hops and 283 ms. Under 25% churn (severe network turnover), NX-10 maintains 100% lookup success while Kademlia drops to 99.6%. Both the G-DHT and Neuromorphic DHT support scalable pub/sub delivery to thousands of subscribers with bounded per-node work.
 
 This document is structured so that a technical reader -- or an AI system -- can reconstruct a working implementation from its descriptions. Each chapter builds on the previous, culminating in a complete implementation plan.
 
@@ -748,11 +749,202 @@ function lookup(sourceId, targetId, maxHops=40):
 
 ---
 
-## Chapter 5: Axonal Pub/Sub
+## Chapter 5: NX-10 Protocol Specification — Rule-by-Rule Breakdown
+
+NX-10 is the **State of the Art** neuromorphic protocol, achieving 100% lookup success across all test conditions including 25% churn at 25,000 nodes with realistic (non-omniscient) bootstrap. This chapter details each rule in NX-10, why it exists, and what it contributes to performance. Rules are presented in the order they were added through the NX evolution (NX-1W through NX-10), with empirical evidence from ablation testing.
+
+### 5.1 Architectural Foundation
+
+NX-10 inherits from NX-6, which builds on NX-5, NX-4, NX-3, and the original neuromorphic architecture. The full inheritance chain:
+
+```
+NX-10 → NX-6 → NX-5 → NX-4 → NX-3 → NeuromorphicDHTBase → DHT
+```
+
+NX-10 adds one feature (routing-topology pub/sub tree) to NX-6's complete routing engine. The routing engine itself accumulated through NX-3 to NX-6.
+
+### 5.2 Rule 1: Synaptome-Based Routing with AP Scoring (NX-3 base)
+
+**What**: Each node maintains a **synaptome** — a flat collection of up to 48 weighted connections (synapses) plus 12 highway connections, replacing Kademlia's rigid k-bucket structure. Route selection uses the **Activation Potential** formula:
+
+```
+AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
+```
+
+**Why**: Kademlia's `findClosest` ranks peers solely by XOR distance. AP routing integrates three signals: XOR progress toward the target, physical latency (geographic awareness), and learned reliability (weight). This produces faster paths because low-latency nearby hops are preferred when they make comparable XOR progress.
+
+**Contribution**: Reduces global latency from Kademlia's ~364ms to ~250ms (31% reduction) at 25,000 nodes under web-limit. The latency component is the dominant factor — without it, the neuromorphic DHT would route through distant nodes as often as nearby ones.
+
+### 5.3 Rule 2: Two-Hop Lookahead (NX-3 base)
+
+**What**: Instead of greedily selecting the single best next hop, evaluate the top 5 candidates (LOOKAHEAD_ALPHA=5) by simulating one additional hop from each. Select the candidate whose two-hop trajectory makes the most progress per unit latency.
+
+**Why**: Pure greedy routing can select a hop that looks good immediately but leads to a dead end. Two-hop lookahead catches these cases: a slightly worse first hop that leads to a much better second hop will be preferred.
+
+**Contribution**: Reduces average hop count by approximately 0.3 hops and prevents routing dead-ends that would otherwise require iterative fallback. Most impactful in the web-limited regime where each node has only 50 connections and local minima are more common.
+
+### 5.4 Rule 3: Incoming Synapses and Bidirectional Routing (NX-3 base)
+
+**What**: When node A creates a synapse to node B, B records a lightweight **incoming synapse** entry pointing back to A. During routing, both outgoing synapses and incoming synapses are considered as next-hop candidates.
+
+**Why**: Under connection budgets, synapse creation is asymmetric — A adds B but B's synaptome may be full. Without incoming synapses, B cannot route back to A even though a real network connection exists. The incoming synapse index doubles the effective routing candidates at each node.
+
+**Contribution**: Critical for narrow-bottleneck routing. In the Slice World test (East/West hemisphere partition with a single Hawaii bridge node), incoming synapses raise success from 52% (Kademlia, no reverse index) to 99.4% (NX-3). The bridge node's incoming synapses expose connections to both hemispheres that its outgoing synaptome alone would miss.
+
+### 5.5 Rule 4: Iterative Fallback (NX-4)
+
+**What**: When greedy AP routing reaches a node where no synapse makes positive XOR progress toward the target, instead of failing, scan all synapses (outgoing + incoming) for the closest unvisited peer to the target, regardless of whether it makes XOR progress. Mark visited nodes to avoid cycles.
+
+**Why**: Greedy XOR routing assumes the synaptome always contains a peer closer to the target. Under connection budgets with 50 connections across 25,000 nodes, this assumption fails — some strata have no coverage. Iterative fallback provides a safety net by allowing non-progress hops that eventually reach a node with forward-progress options.
+
+**Contribution**: The **watershed feature** of the NX line. Raises Slice World success from 99.4% to 100%. Raises churn success from ~80% to 100%. Every NX protocol below NX-4 fails under stress; every protocol NX-4 and above succeeds. Without iterative fallback, all other learning and repair mechanisms are insufficient.
+
+### 5.6 Rule 5: Incoming Synapse Promotion (NX-5)
+
+**What**: When an incoming synapse is selected as a routing hop multiple times (useCount >= 2), promote it to a full outgoing synapse with weight 0.5. This is Hebbian learning: connections that carry traffic get cemented.
+
+**Why**: Incoming synapses have a fixed baseline weight of 0.1, making them weak routing candidates. If an incoming synapse proves useful by being selected repeatedly, promoting it to a full synapse with competitive weight (0.5) ensures it participates fully in AP scoring and receives LTP reinforcement.
+
+**Contribution**: Enables organic network learning — the routing table evolves based on actual traffic patterns rather than remaining static after bootstrap. Particularly important for nodes that serve as transit points: they accumulate promoted incoming synapses that reflect real routing demand.
+
+### 5.7 Rule 6: Long-Term Potentiation (LTP) Reinforcement (NX-3 base)
+
+**What**: After a successful lookup that completes at or below the running average latency, a reinforcement wave propagates backward along the path: each synapse gains +0.2 weight (capped at 1.0) and receives an inertia lock preventing decay for 20 epochs.
+
+**Why**: Without reinforcement, all synapses would decay toward zero and eventually be pruned. LTP creates a positive feedback loop: fast routes get stronger weights, making them more likely to be selected by AP scoring, which generates more reinforcement. The quality gate (at or below EMA latency) ensures only genuinely fast routes are strengthened.
+
+**Contribution**: Drives latency optimization over time. During warmup, LTP reinforcement converges the synaptome from random bootstrap connections to traffic-optimized ones, reducing global latency by approximately 15-20ms over 2,000 training lookups.
+
+### 5.8 Rule 7: Simulated Annealing (NX-3 base)
+
+**What**: Each node has a temperature (initially 1.0, cooling by factor 0.9997 per routing hop, minimum 0.05). On each hop, with probability equal to the temperature, replace the weakest non-locked synapse with a random peer from the 2-hop neighborhood in the same stratum range.
+
+**Why**: Without exploration, the synaptome converges to a local optimum and cannot adapt to network changes. Annealing provides controlled exploration: early in a node's life (high temperature), it aggressively samples new connections; as it stabilizes (low temperature), it makes only occasional probes. The 2-hop neighborhood constraint ensures replacements are reachable, and stratum targeting maintains diversity.
+
+**Contribution**: Enables continuous adaptation to traffic patterns and network topology changes. Particularly important after churn, where the annealing mechanism discovers replacement connections in strata left empty by dead-synapse eviction.
+
+### 5.9 Rule 8: Adaptive Decay (NX-6 base)
+
+**What**: Every 100 lookups, all synapses undergo weight decay. The decay rate is usage-adaptive: heavily-used synapses decay at 0.9998 per interval (effectively immortal), while unused synapses decay at 0.990 (reaching prune threshold in ~300 intervals). Bootstrap synapses receive extra protection. Synapses with active LTP inertia locks skip decay entirely.
+
+**Why**: Without decay, the synaptome would accumulate stale connections that consume capacity but provide no routing value. Adaptive decay ensures unused connections fade while active ones persist, creating a natural lifecycle that keeps the synaptome fresh.
+
+**Contribution**: Works in concert with annealing and LTP to maintain synaptome quality. Decay creates slots for annealing to fill with new explorations, while LTP-locked synapses resist decay during their proven-useful period.
+
+### 5.10 Rule 9: Hop Caching with Lateral Spread (NX-6 base)
+
+**What**: At each intermediate hop during a lookup, introduce the target node to the current node's synaptome (via stratified eviction if full). Additionally, cascade this introduction to up to 6 geographic neighbors at depth 1, and 2 neighbors at depth 2.
+
+**Why**: Without hop caching, every lookup to the same target must discover the path from scratch. Hop caching creates direct shortcuts: after one lookup reaches target T, every node along the path knows T directly. Lateral spread amplifies this by teaching T to nearby nodes, so future lookups from the same geographic region can reach T faster.
+
+**Contribution**: The primary mechanism for learning geographic shortcuts. NS-series ablation testing showed hop caching alone reduces global latency by 16ms (NS-1 298ms to NS-2 282ms). With eviction-enabled caching (NS-5), 10%dest latency drops from 244ms to 148ms as popular destinations get cached across the routing mesh.
+
+### 5.11 Rule 10: Triadic Closure (NX-6 base)
+
+**What**: When node C repeatedly forwards traffic from origin A toward next-hop D (threshold: 3 transits), C introduces A to D directly via stratified eviction.
+
+**Why**: If A regularly routes through C to reach D, a direct A-to-D connection would eliminate C as an intermediary. Triadic closure discovers these shortcuts through observation rather than explicit search. The threshold prevents premature introductions from one-off routing patterns.
+
+**Contribution**: Most effective when combined with eviction (NS-6 testing: NS-5 282ms to NS-6 275ms global latency). Without eviction, triadic introductions can't displace existing synapses and are lost (NS-4 testing showed triadic alone was counterproductive).
+
+### 5.12 Rule 11: Dead-Synapse Eviction and Replacement (NX-6)
+
+**What**: When routing discovers a dead peer (alive check fails), immediately delete the dead synapse and search the 2-hop neighborhood for a replacement in the same stratum range. The replacement receives the median weight of existing synapses (not penalized). If the replacement makes forward progress toward the current lookup target, inject it into the active candidate set.
+
+**Why**: Kademlia handles dead peers by skipping them during `getAll()` — the slot remains occupied until periodic refresh. This leaves gaps in routing coverage. Immediate eviction and replacement ensures the synaptome is always fully populated with live peers, maintaining routing quality even under heavy churn.
+
+**Contribution**: Critical for churn resilience. Combined with iterative fallback (Rule 5), dead-synapse eviction enables 100% lookup success at 25% churn with 25,000 nodes under realistic bootstrap. The replacement injection into active lookups means even the lookup that discovered the dead peer can route through the replacement immediately.
+
+### 5.13 Rule 12: Churn-Triggered Temperature Reheat (NX-6)
+
+**What**: When a dead peer is discovered during routing (in either normal candidate collection or iterative fallback scan), spike the discovering node's annealing temperature to T_REHEAT (0.5).
+
+**Why**: After churn damages a node's synaptome, the node needs to explore aggressively to find replacements for the dead connections. Under normal cooling, a mature node's temperature would be near T_MIN (0.05), meaning only 5% of hops trigger annealing. Reheating to 0.5 means 50% of hops trigger exploration, driving rapid repair.
+
+**Contribution**: Accelerates post-churn recovery. The temperature naturally cools back down via ANNEAL_COOLING after the repair phase, so the increased exploration is temporary and targeted.
+
+### 5.14 Rule 13: Two-Tier Synaptome (NX-6 base)
+
+**What**: The synaptome is split into a local tier (48 synapses) and a highway tier (12 synapses). The highway tier holds high-diversity hub nodes discovered through periodic scanning of the 2-hop neighborhood. Highway synapses receive special decay protection when recently used and are consulted during routing alongside local synapses.
+
+**Why**: The local tier optimizes for traffic-pattern routing (learned through LTP, annealing, hop caching). The highway tier provides stable long-range connections to high-diversity hubs — nodes that cover many different strata, acting as routing crossroads. The two tiers serve complementary purposes: local for fast common routes, highway for reliable global reach.
+
+**Contribution**: Provides 60 total connections (vs 50 for a single tier), giving NX-10 more routing redundancy. The highway hubs are particularly valuable for cross-region routing where the local tier may lack direct coverage.
+
+### 5.15 Rule 14: Epsilon-Greedy Exploration (NX-3 base)
+
+**What**: On the very first hop of each lookup, with 5% probability, select a random synapse instead of the best AP-scored one.
+
+**Why**: Without first-hop randomization, the same initial synapse would be chosen for similar targets, creating hot spots and preventing discovery of alternative paths. The 5% exploration rate provides training signal for under-used synapses without significantly impacting routing performance (one suboptimal hop out of ~3 total).
+
+**Contribution**: Prevents premature convergence and ensures diverse synapses receive routing traffic for LTP evaluation.
+
+### 5.16 Rule 15: Realistic Bootstrap Join (NX-6 base)
+
+**What**: New nodes join through a sponsor via iterative self-lookup (Phase 1: discover XOR-close peers) followed by inter-cell discovery (Phase 2: lookups with flipped geographic prefix bits to find peers in different S2 cells). Stratum-aware eviction during join displaces over-represented strata to maintain diversity.
+
+**Why**: In a real network, new nodes don't have access to a sorted list of all peers — they know only their sponsor. The iterative join discovers the network through progressive exploration. Phase 2's geographic diversity is critical: without it, the new node would only know peers in its own S2 cell and nearby strata, unable to route globally.
+
+**Contribution**: Enables 100% churn success under realistic conditions. Previous testing showed that omniscient bootstrap (access to the full sorted node list) artificially inflated churn resilience by 25+ percentage points. Realistic bootstrap via iterative join is honest and still achieves 100% with NX-10's full rule set.
+
+### 5.17 Rule 16: Routing-Topology Pub/Sub Tree (NX-10)
+
+**What**: When broadcasting to subscribers, build a forwarding tree that mirrors the routing topology. For each subscriber, determine which direct synapse would be the first hop toward it. Delegate groups of subscribers to those synapses as forwarders. Recursive: forwarders apply the same delegation when they exceed capacity (default: 32 entries per node).
+
+**Why**: Flat pub/sub requires the relay to individually look up every subscriber — O(S x H) routing work concentrated on one node. The routing-topology tree distributes this work: forwarder hops cost only 1 direct hop (no DHT lookup), and each forwarder handles its own subset of subscribers from a closer starting point.
+
+**Contribution**: Reduces max per-node fan-out from 1,999 to ~46 (43x reduction) with 2,000 subscribers. Broadcast latency remains comparable to flat delivery because forwarder hops are direct (1 hop, no lookup overhead). Tree depth emerges naturally from the routing topology (typically 4-5 levels for 2,000 subscribers).
+
+### 5.18 Configuration Summary
+
+NX-10 uses 44 configuration parameters inherited from the NX-6 rule chain. The critical parameters and their defaults:
+
+| Parameter | Value | Rule |
+|-----------|-------|------|
+| MAX_SYNAPTOME_SIZE | 48 | Two-tier synaptome |
+| HIGHWAY_SLOTS | 12 | Two-tier synaptome |
+| WEIGHT_SCALE | 0.40 | AP routing |
+| LOOKAHEAD_ALPHA | 5 | Two-hop lookahead |
+| EXPLORATION_EPSILON | 0.05 | Epsilon-greedy |
+| MAX_GREEDY_HOPS | 40 | Safety limit |
+| T_INIT / T_MIN | 1.0 / 0.05 | Annealing |
+| ANNEAL_COOLING | 0.9997 | Annealing |
+| T_REHEAT | 0.5 | Churn reheat |
+| DECAY_GAMMA_MIN / MAX | 0.990 / 0.9998 | Adaptive decay |
+| PRUNE_THRESHOLD | 0.05 | Decay pruning |
+| INERTIA_DURATION | 20 | LTP lock |
+| LATERAL_K / K2 | 6 / 2 | Hop cache spread |
+| INTRODUCTION_THRESHOLD | 3 | Triadic closure |
+| AXONAL_CAPACITY | 32 | Pub/sub tree |
+
+### 5.19 Ablation Summary: Which Rules Matter Most
+
+NS-series testing systematically added features to a minimal core, revealing each rule's marginal contribution:
+
+| Protocol | Features | Global ms | Churn % | Key finding |
+|----------|----------|-----------|---------|-------------|
+| NS-1 | AP + fallback + evict + LTP + annealing + promotion | 298 | 96.8% | Minimal viable |
+| NS-2 | + hop caching | 282 | 97.4% | −16ms latency |
+| NS-4 | + triadic (no eviction) | 302 | 97.0% | Worse without eviction |
+| NS-5 | + eviction on add | 282 | **100%** | Churn fixed, 10%dest 148ms |
+| NS-6 | + triadic with eviction | **275** | **100%** | −7ms, best NS |
+| NX-10 | Full rule set (44 params) | **251** | **100%** | SOTA at 25K nodes |
+
+The **essential features** in order of impact:
+1. **Iterative fallback** (NX-4): 52% → 100% on Slice World, ~80% → 100% on churn
+2. **Incoming synapses**: 52% → 99.4% on Slice World
+3. **Eviction on add** (NS-5): 96.8% → 100% churn
+4. **Hop caching**: −16ms global latency
+5. **Triadic closure + eviction**: −7ms global latency
+6. **Two-tier highway + lateral spread + adaptive decay**: −24ms (remaining gap to NX-10)
+
+---
+
+## Chapter 6: Axonal Pub/Sub
 
 The Axonal Pub/Sub system provides scalable group communication atop the Neuromorphic DHT. Named after the axonal arbor -- the branching output structure of a neuron that delivers signals from one cell body to many downstream targets -- it constructs broadcast trees that mirror the routing topology itself.
 
-### 5.1 The Problem
+### 6.1 The Problem
 
 In a flat pub/sub model, a publisher sends a message to a relay node, which then individually looks up and delivers to every subscriber. With S subscribers and H average hops per lookup:
 
@@ -762,7 +954,7 @@ In a flat pub/sub model, a publisher sends a message to a relay node, which then
 
 With 2,000 subscribers and 3.5 hops per lookup, the relay executes 7,000 routing hops per publish event. This doesn't scale.
 
-### 5.2 The Insight
+### 6.2 The Insight
 
 Consider how the relay routes to its 2,000 subscribers. Many of those routes share a common first hop. If the relay's synaptome has ~48 synapses, then on average each synapse is the first hop toward ~42 subscribers. Some synapses cover hundreds:
 
@@ -791,7 +983,7 @@ Relay ──lookup──> S202 (via B)    Relay ──direct──> Forwarder B
 
 Key property: A is already a direct synapse of the relay, so relay-to-A is **1 hop with no DHT lookup** -- just a direct message at the round-trip latency between them.
 
-### 5.3 Tree Construction
+### 6.3 Tree Construction
 
 The axonal tree is built top-down from the relay root. The process is recursive: any node that exceeds its subscriber capacity delegates to forwarders chosen from its own synaptome.
 
@@ -872,7 +1064,7 @@ function firstHop(node, targetId):
   Each node handles at most 4 entries.
 ```
 
-### 5.4 Delivery
+### 6.4 Delivery
 
 When a publish event occurs, the tree delivers messages recursively:
 
@@ -904,7 +1096,7 @@ function deliver(treeNode, pathHops, pathLatency, results):
 
 **Why this works**: The forwarder is a direct synapse of its parent, so the "forwarding hop" costs only the round-trip latency between them -- no DHT lookup overhead. The forwarder then initiates DHT lookups for its own subscribers, but from a closer starting point (it was chosen because it's already on the routing path toward those subscribers). The total per-subscriber hop count is approximately the same as a flat lookup, but the work is distributed across the tree.
 
-### 5.5 Subscription Interception
+### 6.5 Subscription Interception
 
 When a new node subscribes to a topic, the subscribe message routes through the network toward the relay root. At each hop, if the intermediate node is already part of the axonal tree for that topic, it captures the subscription locally:
 
@@ -925,7 +1117,7 @@ function handleSubscription(node, topicId, subscriberId):
 
 This means the tree grows organically: new subscribers attach to the nearest tree node on their routing path, not necessarily to the root. This distributes the subscription load and keeps new subscribers close to their delivery point.
 
-### 5.6 Tree Maintenance
+### 6.6 Tree Maintenance
 
 **Subscriber TTL**: Each subscriber entry has a last-active timestamp. Subscribers that are not renewed within TTL ticks (default: 10) are pruned. This handles graceful departure without explicit unsubscribe messages.
 
@@ -952,7 +1144,7 @@ function healDeadForwarder(branch):
 
 ---
 
-## Chapter 6: Performance Characteristics
+## Chapter 7: Performance Characteristics
 
 All benchmarks use 25,000 nodes uniformly distributed across the globe, with 500 lookups per measurement cell. The Neuromorphic DHT receives 4 warmup sessions (5,000 training lookups) before measurement. Pub/sub tests use 2,000 subscribers per group.
 
@@ -961,7 +1153,7 @@ Results are presented under three initialization conditions:
 - **Uncapped**: No connection limit. Each protocol builds its optimal routing table. Represents server-side deployments.
 - **Bootstrap Init**: Organic join via sponsor nodes (web-limited). Tests how well each protocol performs when nodes join one-by-one rather than receiving pre-computed routing tables.
 
-### 6.1 Point-to-Point Routing (Web-Limited, 50 connections)
+### 7.1 Point-to-Point Routing (Web-Limited, 50 connections)
 
 | Metric | K-DHT | G-DHT | Neuromorphic |
 |--------|-------|-------|--------------|
@@ -984,7 +1176,7 @@ Neuromorphic:  █████████░░░░░░░░░░░░�
                0       200     400     600     800    1000
 ```
 
-### 6.2 Point-to-Point Routing (Uncapped Connections)
+### 7.2 Point-to-Point Routing (Uncapped Connections)
 
 Without connection limits, all protocols build richer routing tables, reducing hop counts and latency:
 
@@ -1008,7 +1200,7 @@ Neuromorphic:  ██████████░░░░░░░░░░░�
                0       200     400     600     800
 ```
 
-### 6.3 Point-to-Point Routing (Bootstrap Init)
+### 7.3 Point-to-Point Routing (Bootstrap Init)
 
 Bootstrap Init tests organic join -- nodes enter one-by-one via a sponsor, building routing tables through iterative discovery rather than pre-computation. This is the most realistic test of production behavior.
 
@@ -1022,7 +1214,7 @@ Bootstrap Init tests organic join -- nodes enter one-by-one via a sponsor, build
 
 A critical result: **the Neuromorphic DHT achieves 100% success under organic join** while both K-DHT and G-DHT drop to 97%. The learning mechanisms (annealing, LTP, hop caching) compensate for imperfect initial routing tables -- the synaptome self-repairs during the warmup period. This demonstrates that the adaptive approach is not just faster but fundamentally more robust to bootstrap imperfections.
 
-### 6.4 Pub/Sub Broadcast
+### 7.4 Pub/Sub Broadcast
 
 | Metric | K-DHT (flat) | G-DHT (flat) | Neuromorphic (axonal) |
 |--------|-------------|-------------|----------------------|
@@ -1045,7 +1237,7 @@ Neuromorphic:      █░░░░░░░░░░░░░░░░░░░�
                    0         500       1000      1500     2000
 ```
 
-### 6.5 Churn Resilience
+### 7.5 Churn Resilience
 
 | Metric | K-DHT | G-DHT | Neuromorphic |
 |--------|-------|-------|--------------|
@@ -1063,9 +1255,9 @@ Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) 
 
 ---
 
-## Chapter 7: Analysis and Potential Issues
+## Chapter 8: Analysis and Potential Issues
 
-### 7.1 Forwarder Loss Under Churn
+### 8.1 Forwarder Loss Under Churn
 
 **The issue**: In the axonal tree, if a forwarder dies during a publish cycle, all subscribers in its subtree are temporarily unreachable via the tree path. The parent must fall back to direct DHT lookups for the entire subtree, which can spike its fan-out far above the capacity limit.
 
@@ -1075,7 +1267,7 @@ Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) 
 - **Current**: Dead forwarders are healed by moving their subtree to the parent; the tree rebuilds on the next tick.
 - **Possible**: Redundant forwarders (each delegation assigns a backup); proactive forwarder health checks before each publish cycle; dynamically increasing capacity under high churn to produce shallower trees.
 
-### 7.2 Tree Rebuild Cost at Scale
+### 8.2 Tree Rebuild Cost at Scale
 
 **The issue**: The current implementation rebuilds the entire tree from scratch when the subscriber set changes. For 2,000 subscribers this is negligible, but for 50,000+ subscribers, the O(S x F) first-hop calculations per tree level become measurable.
 
@@ -1083,7 +1275,7 @@ Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) 
 - **Current**: Rebuild is skipped when the subscriber set is unchanged.
 - **Possible**: Incremental updates via subscription interception -- new subscribers are routed down the existing tree to the nearest node, avoiding a full rebuild.
 
-### 7.3 Gateway Concentration
+### 8.3 Gateway Concentration
 
 **The issue**: If the relay's synaptome is poorly distributed (many subscribers in the same ID-space region), one gateway may cover a disproportionate number of subscribers. The recursive delegation handles this, but the resulting tree may be deep and narrow rather than broad and shallow.
 
@@ -1091,7 +1283,7 @@ Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) 
 - **Current**: Recursive delegation naturally distributes the load.
 - **Possible**: When a single gateway covers >50% of remaining subscribers, introduce a secondary splitting criterion (e.g., geographic cell prefix) to force broader distribution.
 
-### 7.4 Synaptome-Tree Coupling
+### 8.4 Synaptome-Tree Coupling
 
 **The issue**: The axonal tree's structure depends on the synaptome state at build time. If annealing replaces a synapse that happens to be a forwarder, the tree becomes structurally invalid without knowing it. The TTL-based rebuild eventually catches this, but there is a window of stale tree structure.
 
@@ -1099,7 +1291,7 @@ Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) 
 - **Current**: Trees are rebuilt periodically (every time subscribers change or TTL triggers).
 - **Possible**: When a synapse that is also a forwarder is evicted by annealing or decay, immediately mark the tree dirty.
 
-### 7.5 Learning Warmup Period
+### 8.5 Learning Warmup Period
 
 **The issue**: The Neuromorphic DHT requires a warmup period (4 sessions, ~5,000 lookups) before reaching optimal routing performance. During this period, the synaptome is still being trained and hop counts are higher. A newly joined node will not immediately benefit from the adaptive routing.
 
@@ -1107,7 +1299,7 @@ Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) 
 
 **Possible further improvements**: Pre-trained synaptome snapshots shared between nodes; accelerated learning through synthetic warmup lookups during join; the diversified bootstrap (Section 4.16) reduces convergence time by providing annealing with more varied seed connections.
 
-### 7.6 Byzantine Resistance
+### 8.6 Byzantine Resistance
 
 **The issue**: A malicious node could claim a false geographic position (S2 cell prefix) to position itself strategically in the ID space. It could also manipulate its synaptome reports during iterative fallback to poison other nodes' routing tables.
 
@@ -1115,7 +1307,7 @@ Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) 
 - **Not currently addressed**: The system assumes honest nodes.
 - **Possible**: Proof-of-location verification; cryptographic ID binding; reputation systems based on observed routing reliability; requiring multiple independent paths for routing table updates.
 
-### 7.7 Memory and Bandwidth Overhead
+### 8.7 Memory and Bandwidth Overhead
 
 **The issue**: Each node maintains ~60 synapses with full metadata (weight, latency, stratum, inertia, useCount). The learning mechanisms (annealing, decay, hop caching) add computational overhead per routing hop. The axonal tree adds per-topic state at forwarder nodes.
 

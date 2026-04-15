@@ -184,16 +184,17 @@ export class GeographicDHT extends KademliaDHT {
     // Phase 2: inter-cell discovery — lookup synthetic targets with
     // different geographic prefixes to find peers in distant cells.
     // Flip each geo-prefix bit one at a time to target each inter-cell bucket.
+    // Start from newNode (which now has Phase 1 peers) for better starting
+    // positions, and limit to 2 rounds per prefix for performance.
     const shift = BigInt(64 - this.geoBits);
     for (let bit = 0; bit < this.geoBits; bit++) {
       const targetId = newNode.id ^ (1n << (shift + BigInt(bit)));
 
-      // Iterative lookup toward this target starting from sponsor
       const queried = new Set([newNode.id]);
-      let shortlist = sponsor.findClosest(targetId, this.k);
+      let shortlist = newNode.findClosest(targetId, this.k);
       for (const peer of shortlist) addPeer(peer);
 
-      for (let round = 0; round < 5; round++) {
+      for (let round = 0; round < 2; round++) {
         const unqueried = shortlist.filter(n => !queried.has(n.id)).slice(0, this.alpha);
         if (unqueried.length === 0) break;
 

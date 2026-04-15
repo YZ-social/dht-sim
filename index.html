@@ -39,23 +39,22 @@
     <div class="sb-sec">
       <div class="sb-sec-lbl">Network</div>
       <select id="dhtProtocol" class="sb-select-full" data-tip="Kademlia: random node IDs, XOR distance metric. Classic baseline DHT.">
-        <option value="kademlia">Kademlia</option>
+        <option value="kademlia">Kademlia ★</option>
         <option value="geo">G-DHT</option>
         <option value="geoa">G-DHT-a</option>
-        <option value="geob">G-DHT-b</option>
+        <option value="geob">G-DHT-b ★</option>
         <option value="ngdht">N-1</option>
-        <option value="ngdht15w">N-15W</option>
-        <option value="ngdhtnx1w">NX-1W ✦</option>
-        <option value="ngdhtnx2w">NX-2W ✦</option>
-        <option value="ngdhtnx3">NX-3 ✦</option>
-        <option value="ngdhtnx4">NX-4 ✦</option>
-        <option value="ngdhtnx5">NX-5 ✦</option>
-        <option value="ngdhtnx6">NX-6 ✦</option>
-        <option value="ngdhtnx7">NX-7 ✦</option>
-        <option value="ngdhtnx8">NX-8 ✦</option>
-        <option value="ngdhtnx9">NX-9 ✦</option>
-        <option value="ngdhtnx10">NX-10 ✦</option>
-        <option value="ngdhtnx11">NX-11 ✦</option>
+        <option value="ngdht15w">N-15W ★</option>
+        <option value="ngdhtnx1w">NX-1W</option>
+        <option value="ngdhtnx2w">NX-2W</option>
+        <option value="ngdhtnx3">NX-3</option>
+        <option value="ngdhtnx4">NX-4 ★</option>
+        <option value="ngdhtnx5">NX-5</option>
+        <option value="ngdhtnx6">NX-6</option>
+        <option value="ngdhtnx7">NX-7</option>
+        <option value="ngdhtnx8">NX-8</option>
+        <option value="ngdhtnx9">NX-9</option>
+        <option value="ngdhtnx10">NX-10 ★</option>
       </select>
       <div class="sb-row" style="margin-top:4px;margin-bottom:2px;gap:12px">
         <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
@@ -97,6 +96,7 @@
         <button class="btn btn-action" id="btnBootstrap" data-tip="Build the network incrementally: start from one node, each new node discovers peers through the live network — like a real DHT bootstrap.">&#9632; Bootstrap Network</button>
       </div>
       <div class="sb-btns">
+        <button class="btn btn-action" id="btnSliceWorld" data-tip="Slice World: partition the network into Eastern and Western hemispheres connected only through a single node in Hawaii. Tests how well each protocol discovers cross-hemisphere routes through a narrow bottleneck.">&#127760; Slice World</button>
         <button class="btn btn-action" id="btnDemoLookup" disabled data-tip="Animate random lookups continuously on the globe: each hop is traced with arcs. Loops automatically with a 1-second pause between lookups. Press again to stop.">&#9654; Demo</button>
       </div>
     </div>
@@ -149,7 +149,7 @@
       <div class="sb-sec-lbl">Churn <span class="sb-node-badge" id="activeNodeCountChurn">—</span></div>
       <div class="sb-row">
         <span class="sb-lbl" data-tip="Churn rate — percentage of nodes replaced per interval.">Rate</span>
-        <input type="number" id="churnRate" class="sb-num" value="5" min="1" max="30" step="1" style="width:38px">
+        <input type="number" id="churnRate" class="sb-num" value="5" min="1" max="50" step="1" style="width:38px">
         <span class="sb-lbl">%</span>
         <span class="sb-lbl" data-tip="Number of churn cycles to simulate.">Int</span>
         <input type="number" id="churnIntervals" class="sb-num" value="10" min="2" max="30" step="1" style="width:38px">
@@ -208,33 +208,32 @@
         </label>
       </div>
       <div class="sb-multisel-row">
-        <div class="sb-multisel" data-tip="Select which protocols to include in the benchmark run. Ctrl/Cmd+click to toggle individual items.">
+        <div class="sb-multisel" data-tip="Select which protocols to include in the benchmark run. Click to toggle individual items.">
           <div class="sb-multisel-hd">
             <span class="sb-multisel-title">Protocols</span>
             <button class="sb-sel-btn" id="benchProtoAll">All</button>
             <button class="sb-sel-btn" id="benchProtoNone">None</button>
           </div>
           <select id="benchProtocols" multiple size="6">
-            <option value="kademlia"   selected>Kademlia</option>
+            <option value="kademlia"   selected>Kademlia ★</option>
             <option value="geo"        selected>G-DHT</option>
             <option value="geoa"       selected>G-DHT-a</option>
-            <option value="geob"       selected>G-DHT-b</option>
+            <option value="geob"       selected>G-DHT-b ★</option>
             <option value="ngdht"      selected>N-1</option>
-            <option value="ngdht15w"   selected>N-15W</option>
+            <option value="ngdht15w"   selected>N-15W ★</option>
             <option value="ngdhtnx1w"  selected>NX-1W</option>
             <option value="ngdhtnx2w"  selected>NX-2W</option>
             <option value="ngdhtnx3"   selected>NX-3</option>
-            <option value="ngdhtnx4"   selected>NX-4</option>
+            <option value="ngdhtnx4"   selected>NX-4  ★</option>
             <option value="ngdhtnx5"   selected>NX-5</option>
             <option value="ngdhtnx6"   selected>NX-6</option>
             <option value="ngdhtnx7"   selected>NX-7</option>
             <option value="ngdhtnx8"   selected>NX-8</option>
             <option value="ngdhtnx9"   selected>NX-9</option>
-            <option value="ngdhtnx10"  selected>NX-10</option>
-            <option value="ngdhtnx11"  selected>NX-11</option>
+            <option value="ngdhtnx10"  selected>NX-10  ★</option>
           </select>
         </div>
-        <div class="sb-multisel" data-tip="Select which test conditions to include in the benchmark run. Ctrl/Cmd+click to toggle individual items.">
+        <div class="sb-multisel" data-tip="Select which test conditions to include in the benchmark run. Click to toggle individual items.">
           <div class="sb-multisel-hd">
             <span class="sb-multisel-title">Tests</span>
             <button class="sb-sel-btn" id="benchTestAll">All</button>
@@ -873,7 +872,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.43.00</div>
+    <div id="legend">Version: 0.44.00</div>
   </div>
 
   </div><!-- /mainRow -->
@@ -1037,23 +1036,22 @@
 
   // ── Protocol selector tooltip ────────────────────────────────────────────
   const PROTOCOL_TIPS = {
-    kademlia:   'Kademlia: random node IDs, XOR distance metric. Classic baseline DHT with O(log N) routing. Static — no learning.',
+    kademlia:   '★ Best in Class — Kademlia: random node IDs, XOR distance metric. Classic baseline DHT with O(log N) routing. Static — no learning.',
     geo:        'G-DHT: geographic IDs from S2 Hilbert prefix. Nearby nodes share high-order bits so lookups follow geographic clusters. Three-layer bootstrap (inter-cell k=1, local, random).',
     geoa:       'G-DHT-a: geographic IDs + Kademlia stratified allocation under web-limit. Fixes G-DHT reachability gap by using breadth-first bucket fill across all 64 XOR buckets.',
-    geob:       'G-DHT-b: stratified inter-cell (40%) + intra-cell local (30%) + random global (30%). Combines G-DHT-a reachability with G-DHT-8 low latency and churn resilience.',
+    geob:       '★ Best in Class — G-DHT-b: stratified inter-cell (40%) + intra-cell local (30%) + random global (30%). Combines G-DHT-a reachability with G-DHT-8 low latency and churn resilience.',
     ngdht:      'N-1: first-generation neuromorphic DHT. Synaptic shortcuts form on heavily-used paths and decay on idle ones. No highway layer.',
-    ngdht15w:   'N-15W: browser-realistic neuromorphic with highway synapse preservation. Two-tier synaptome (48 local + 12 highway), adaptive decay, Markov learning, annealing, floor protection, relay pinning.',
+    ngdht15w:   '★ Best in Class — N-15W: browser-realistic neuromorphic with highway synapse preservation. Two-tier synaptome (48 local + 12 highway), adaptive decay, Markov learning, annealing, floor protection, relay pinning.',
     ngdhtnx1w:  'NX-1W: fully configurable research protocol. Every rule on/off via UI, every parameter exposed. Defaults reproduce N-15W. Adds incoming synapses (reverse routing).',
     ngdhtnx2w:  'NX-2W: broadcast tree delivery for pub/sub. Proximity-ordered fan-out tree achieves ~1.6 bcast hops regardless of group size. Adds organic join via bootstrapJoin.',
     ngdhtnx3:   'NX-3: G-DHT three-layer init. Replaces flat XOR table construction with intra-cell + inter-cell + global approach for more diverse initial synaptome.',
-    ngdhtnx4:   'NX-4: iterative fallback routing. When greedy AP hits a dead end, queries the closest unvisited peer Kademlia-style instead of failing.',
+    ngdhtnx4:   '★ Best in Class — NX-4: iterative fallback routing. When greedy AP hits a dead end, queries the closest unvisited peer Kademlia-style instead of failing. The watershed protocol — everything below fails under churn and Slice World.',
     ngdhtnx5:   'NX-5: Stratified bootstrap allocation + global warmup lookups + incoming synapse promotion. Best balance of routing quality and churn resilience.',
     ngdhtnx6:   'NX-6: Churn-resilient routing: dead-peer detection triggers temperature reheat (aggressive annealing) + immediate synapse eviction/replacement in the same stratum range.',
     ngdhtnx7:   'NX-7: Dendritic pub/sub v1 (25% peel-off split). Hierarchical relay tree distributes broadcast across branch nodes. Tree grows with subscribers, shrinks on timeout, self-heals on churn.',
     ngdhtnx8:   'NX-8: Dendritic pub/sub v2 (balanced binary split). When a branch overflows, ALL subscribers split 50/50 between two new children; parent becomes pure relay. Produces balanced trees with depth ≈ log₂(N/capacity).',
     ngdhtnx9:   'NX-9: Geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell, recruits same-cell branch nodes for direct 1-hop delivery. Root→branch: DHT routing; branch→subscriber: direct (no lookup).',
-    ngdhtnx10:  'NX-10: Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). Fan-out bounded by capacity.',
-    ngdhtnx11:  'NX-11 ★ Current SOTA. NX-10 + diversified bootstrap (80% stratified + 20% random global). Random peers improve churn resilience and give annealing more diverse starting material.',
+    ngdhtnx10:  '★ State of the Art — NX-10: Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). 100% success on all tests including 40% churn and Slice World.',
   };
   (function () {
     const sel = document.getElementById('dhtProtocol');

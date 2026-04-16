@@ -272,6 +272,7 @@ export class Controls {
       benchBootstrap:   this.benchBootstrap,
       nx1wRules: this.getNX1WRules(),
       nx2wRules: this.getNX2WRules(),
+      nx13Rules: this.getNX13Rules(),
     };
   }
 
@@ -288,6 +289,8 @@ export class Controls {
     if (p1) p1.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx1w');
     const p2 = this._el('nx2w-panel');
     if (p2) p2.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx2w');
+    const nx13 = this._el('nx13-panel');
+    if (nx13) nx13.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx13');
   }
 
   /** Read all NX-1W rule parameters from DOM inputs. */
@@ -433,6 +436,69 @@ export class Controls {
                             rebalanceAt:               int('n2-rebalanceAt'),
                             edgeLtpWeight:             num('n2-edgeLtpWeight'),
                             proximityBias:             num('n2-proximityBias') },
+    };
+  }
+
+  /** Read NX-13 rule parameters from DOM inputs (mirrors NX-1W structure). */
+  getNX13Rules() {
+    const num = id => { const el = this._el(id); return el ? parseFloat(el.value) : undefined; };
+    const int = id => { const el = this._el(id); return el ? parseInt(el.value)   : undefined; };
+    const chk = (id, def = true) => { const el = this._el(id); return el ? el.checked : def; };
+
+    return {
+      bootstrap:          { kBootFactor:               int('x3-kBootFactor') },
+      twoTier:            { enabled: chk('x3-twoTier-en'),
+                            maxSynaptomeSize:          int('x3-maxSynaptomeSize'),
+                            highwaySlots:              int('x3-highwaySlots') },
+      apRouting:          { lookaheadAlpha:            int('x3-lookaheadAlpha'),
+                            weightScale:               num('x3-weightScale'),
+                            geoRegionBits:             int('x3-geoRegionBits'),
+                            explorationEpsilon:        num('x3-explorationEpsilon'),
+                            maxGreedyHops:             int('x3-maxGreedyHops') },
+      ltp:                { enabled: chk('x3-ltp-en'),
+                            inertiaDuration:           int('x3-inertiaDuration') },
+      triadicClosure:     { enabled: chk('x3-triadic-en'),
+                            introductionThreshold:     int('x3-introductionThreshold') },
+      hopCaching:         { enabled: chk('x3-hopCaching-en'),
+                            cascadeWeight:             num('x3-cascadeWeight') },
+      lateralSpread:      { enabled: chk('x3-lateralSpread-en'),
+                            lateralK:                  int('x3-lateralK'),
+                            lateralK2:                 int('x3-lateralK2'),
+                            lateralMaxDepth:           int('x3-lateralMaxDepth') },
+      stratifiedEviction: { enabled: chk('x3-stratified-en', false) },
+      annealing:          { enabled: chk('x3-annealing-en'),
+                            tInit:                     num('x3-tInit'),
+                            tMin:                      num('x3-tMin'),
+                            annealCooling:             num('x3-annealCooling'),
+                            globalBias:                num('x3-globalBias'),
+                            annealLocalSample:         int('x3-annealLocalSample') },
+      markov:             { enabled: chk('x3-markov-en'),
+                            markovWindow:              int('x3-markovWindow'),
+                            markovHotThreshold:        int('x3-markovHotThreshold'),
+                            markovBaseWeight:          num('x3-markovBaseWeight'),
+                            markovMaxWeight:           num('x3-markovMaxWeight') },
+      adaptiveDecay:      { enabled: chk('x3-adaptiveDecay-en'),
+                            decayInterval:             int('x3-decayInterval'),
+                            pruneThreshold:            num('x3-pruneThreshold'),
+                            decayGammaMin:             num('x3-decayGammaMin'),
+                            decayGammaMax:             num('x3-decayGammaMax'),
+                            useSaturation:             int('x3-useSaturation'),
+                            decayGammaHighwayActive:   num('x3-decayGammaHighwayActive'),
+                            decayGammaHighwayIdle:     num('x3-decayGammaHighwayIdle'),
+                            highwayRenewalWindow:      int('x3-highwayRenewalWindow'),
+                            highwayFloor:              int('x3-highwayFloor'),
+                            synaptomeFloor:            int('x3-synaptomeFloor') },
+      highwayRefresh:     { enabled: chk('x3-highwayRefresh-en', false) },
+      loadBalancing:      { enabled: chk('x3-loadBalancing-en', false) },
+      // NX-10 dendritic pub/sub
+      dendritic:          { enabled: chk('x3-dendritic-en'),
+                            capacity:                  int('x3-dendriticCapacity'),
+                            ttl:                       int('x3-dendriticTtl') },
+      // NX-5 incoming promotion
+      incomingPromotion:  { threshold:                 int('x3-incomingPromoteThreshold') },
+      // NX-6 churn
+      churnReheat:        { tReheat:                   num('x3-tReheat') },
+      deadEviction:       { enabled: chk('x3-deadEviction-en') },
     };
   }
 

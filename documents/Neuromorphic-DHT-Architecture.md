@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.0.3*
+*Version 0.0.4*
 
 ---
 
@@ -1146,112 +1146,116 @@ function healDeadForwarder(branch):
 
 ## Chapter 7: Performance Characteristics
 
-All benchmarks use 25,000 nodes uniformly distributed across the globe, with 500 lookups per measurement cell. The Neuromorphic DHT receives 4 warmup sessions (5,000 training lookups) before measurement. Pub/sub tests use 2,000 subscribers per group.
-
-Results are presented under three initialization conditions:
-- **Web-limited** (50 connections per node): Simulates browser-based WebRTC environments where each node can maintain at most ~50 simultaneous peer connections.
-- **Uncapped**: No connection limit. Each protocol builds its optimal routing table. Represents server-side deployments.
-- **Bootstrap Init**: Organic join via sponsor nodes (web-limited). Tests how well each protocol performs when nodes join one-by-one rather than receiving pre-computed routing tables.
+All benchmarks use 25,000 nodes uniformly distributed across the globe, with 500 lookups per measurement cell. The Neuromorphic DHT (NX-10) receives 4 warmup sessions (5,000 training lookups) before measurement. Pub/sub tests use 2,000 subscribers per group. Node removal is honest -- no protocol reads a dead node's internal state; neighbors discover failures when they attempt to route through stale connections.
 
 ### 7.1 Point-to-Point Routing (Web-Limited, 50 connections)
 
-| Metric | K-DHT | G-DHT | Neuromorphic |
-|--------|-------|-------|--------------|
-| Global hops (mean) | 8.36 | 8.30 | 3.54 |
-| Global latency (mean) | 1,024 ms | 408 ms | 221 ms |
-| 5,000 km hops (mean) | 8.39 | 8.04 | 3.13 |
-| 5,000 km latency (mean) | 1,039 ms | 318 ms | 134 ms |
-| 500 km latency (mean) | 999 ms | 206 ms | 66 ms |
-| NA to Asia latency | 1,195 ms | 315 ms | 238 ms |
+| Metric | K-DHT | G-DHT-b | NX-10 |
+|--------|-------|---------|-------|
+| Global hops | 3.45 | 4.62 | 3.43 |
+| Global latency | 355 ms | 272 ms | 261 ms |
+| 500 km latency | 362 ms | 124 ms | 67 ms |
+| 2,000 km latency | 348 ms | 157 ms | 90 ms |
+| 5,000 km latency | 349 ms | 196 ms | 147 ms |
+| 10% dest latency | 241 ms | 107 ms | 40 ms |
+| NA to Asia latency | 342 ms | 294 ms | 249 ms |
 | Success rate | 100% | 100% | 100% |
 
-Under web-realistic connection limits, the Neuromorphic DHT achieves **58% fewer hops** than Kademlia and **78% lower latency**. The G-DHT provides a 60% latency improvement over Kademlia while maintaining 100% success.
+Under web-realistic connection limits (50 peers per node), the Neuromorphic DHT achieves **26% lower global latency** than Kademlia and **4% lower** than G-DHT-b. The regional advantage is dramatic: at 500 km, NX-10 routes in 67 ms vs. Kademlia's 362 ms -- an **81% reduction**. For concentrated workloads (10% destinations), NX-10 achieves 40 ms vs. Kademlia's 241 ms through hop caching and LTP reinforcement of popular routes.
 
 ```
-Latency Distribution (Global Lookups, Web-Limited):
+Latency by Distance (Web-Limited, 25K nodes):
 
-K-DHT:         ██████████████████████████████████████████ 1,024 ms
-G-DHT:         ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░   408 ms
-Neuromorphic:  █████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   221 ms
-               0       200     400     600     800    1000
+           500km   2000km   5000km   Global   NA→AS
+K-DHT:     362     348      349      355      342
+G-DHT-b:   124     157      196      272      294
+NX-10:      67      90      147      261      249
 ```
 
-### 7.2 Point-to-Point Routing (Uncapped Connections)
+### 7.2 Pub/Sub Broadcast (2,000 subscribers)
 
-Without connection limits, all protocols build richer routing tables, reducing hop counts and latency:
-
-| Metric | K-DHT | G-DHT | Neuromorphic |
-|--------|-------|-------|--------------|
-| Global hops (mean) | 6.17 | 6.77 | 2.79 |
-| Global latency (mean) | 738 ms | 371 ms | 194 ms |
-| 5,000 km latency (mean) | 733 ms | 268 ms | 112 ms |
-| 500 km latency (mean) | 745 ms | 146 ms | 45 ms |
-| NA to Asia latency | 536 ms | 397 ms | 241 ms |
-| Success rate | 100% | 100% | 100% |
-
-The Neuromorphic DHT achieves **74% lower latency** than Kademlia and **48% lower** than the G-DHT. At short range (500 km), the advantage is dramatic: 45 ms vs. 745 ms -- a **94% reduction** over Kademlia.
-
-```
-Latency Distribution (Global Lookups, Uncapped):
-
-K-DHT:         ██████████████████████████████████████████  738 ms
-G-DHT:         ████████████████████░░░░░░░░░░░░░░░░░░░░░  371 ms
-Neuromorphic:  ██████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  194 ms
-               0       200     400     600     800
-```
-
-### 7.3 Point-to-Point Routing (Bootstrap Init)
-
-Bootstrap Init tests organic join -- nodes enter one-by-one via a sponsor, building routing tables through iterative discovery rather than pre-computation. This is the most realistic test of production behavior.
-
-| Metric | K-DHT | G-DHT | Neuromorphic |
-|--------|-------|-------|--------------|
-| Global hops (mean) | 6.07 | 6.95 | 4.29 |
-| Global latency (mean) | 720 ms | 364 ms | 253 ms |
-| 5,000 km latency (mean) | 717 ms | 278 ms | 158 ms |
-| 500 km latency (mean) | 717 ms | 192 ms | 78 ms |
-| Success rate | 97.0% | 97.0% | **100%** |
-
-A critical result: **the Neuromorphic DHT achieves 100% success under organic join** while both K-DHT and G-DHT drop to 97%. The learning mechanisms (annealing, LTP, hop caching) compensate for imperfect initial routing tables -- the synaptome self-repairs during the warmup period. This demonstrates that the adaptive approach is not just faster but fundamentally more robust to bootstrap imperfections.
-
-### 7.4 Pub/Sub Broadcast
-
-| Metric | K-DHT (flat) | G-DHT (flat) | Neuromorphic (axonal) |
-|--------|-------------|-------------|----------------------|
-| Relay hops | 10.40 | 7.20 | 3.40 |
-| Relay latency | 1,195 ms | 315 ms | 238 ms |
-| Broadcast hops (mean) | 8.36 | 8.48 | 3.81 |
-| Broadcast latency (mean) | 1,039 ms | 388 ms | 291 ms |
-| Max fan-out per node | 1,999 | 1,999 | 46 |
+| Metric | K-DHT (flat) | G-DHT-b (flat) | NX-10 (axonal) |
+|--------|-------------|----------------|----------------|
+| Relay latency | 418 ms | 303 ms | 233 ms |
+| Broadcast latency | 359 ms | 276 ms | 260 ms |
+| Max fan-out per node | 1,999 | 1,999 | 42 |
 | Tree depth | 0 | 0 | 5 |
-| Avg subscribers/node | 1,999 | 1,999 | 11.2 |
+| Avg subscribers/node | 1,999 | 1,999 | 10.8 |
 
-The axonal tree reduces max fan-out from 1,999 to 46 -- a **43x reduction** in per-node work -- while achieving the lowest broadcast hop count and relay latency.
+The axonal tree reduces max fan-out from 1,999 to 42 -- a **48x reduction** in per-node work -- while achieving the lowest broadcast and relay latency. Without the tree, the relay node must individually look up and deliver to every subscriber. With the tree, work is distributed across ~185 forwarding nodes (2000 / 10.8 avg subs per node), each handling a manageable subset.
 
 ```
 Fan-out per Relay Node:
 
 K-DHT (flat):      ████████████████████████████████████ 1,999
-G-DHT (flat):      ████████████████████████████████████ 1,999
-Neuromorphic:      █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    46
+G-DHT-b (flat):    ████████████████████████████████████ 1,999
+NX-10 (axonal):    █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    42
                    0         500       1000      1500     2000
 ```
 
-### 7.5 Churn Resilience
+### 7.3 Churn Resilience
 
-| Metric | K-DHT | G-DHT | Neuromorphic |
-|--------|-------|-------|--------------|
-| 5% churn hops (web-limited) | 9.67 | 10.04 | 4.55 |
-| 5% churn latency (web-limited) | 1,227 ms | 477 ms | 257 ms |
-| 5% churn success (web-limited) | 62.4% | 79.2% | 74.4% |
-| 5% churn success (uncapped) | 100% | 100% | 75.2% |
-| 5% churn success (bootstrap) | 89.8% | 92.8% | 74.8% |
+| Metric | K-DHT | G-DHT-b | NX-10 |
+|--------|-------|---------|-------|
+| 5% churn hops | 3.64 | 4.88 | 4.27 |
+| 5% churn latency | 384 ms | 300 ms | 253 ms |
+| 5% churn success | 99.8% | 100% | **100%** |
+| 25% churn success | 99.6% | 100% | **100%** |
 
-The Neuromorphic DHT maintains the lowest latency under churn (257 ms vs. 1,227 ms for K-DHT). Its churn success rate (~75%) is consistent across all three initialization conditions.
+Under honest node removal (no proactive healing -- dead nodes simply disappear), all protocols maintain near-perfect churn resilience at 25,000 nodes. NX-10 achieves **100% success at both 5% and 25% churn** while maintaining the lowest churn latency (253 ms). The dead-synapse eviction mechanism discovers and replaces failed connections during routing, while iterative fallback ensures every lookup eventually finds the target even through damaged routing tables.
 
-A critical finding emerges from the uncapped benchmark: **K-DHT and G-DHT both achieve 100% churn success without connection limits**, confirming that their ~60--80% web-limited churn rate is a connection budget problem, not an algorithmic one. In contrast, the **Neuromorphic DHT's churn rate remains at ~75% even without connection limits**, proving that the weakness lies in the axonal tree's structural dependency -- forwarder death disrupts entire subtrees regardless of how well-connected the underlying synaptome is.
+At extreme churn (25% per round, 5 rounds -- 76% of original nodes replaced), NX-10 maintains 100% success through the combination of:
+- Realistic iterative bootstrap join for new nodes
+- Dead-synapse eviction + 2-hop replacement during routing
+- Churn-triggered temperature reheat for accelerated exploration
+- Iterative fallback as a safety net when greedy routing stalls
 
-Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) because organic join produces more redundant routing tables. The Neuromorphic DHT's churn rate remains at 75%, further confirming that the axonal tree structure, not the routing layer, is the limiting factor.
+### 7.4 Slice World Test (Network Partition)
+
+The Slice World test partitions the network into Eastern and Western hemispheres, connected only through a single node in Hawaii. This tests routing through an extreme bottleneck.
+
+| Protocol | Success | Key mechanism |
+|----------|---------|---------------|
+| K-DHT | 52% | Cannot find bridge -- terminates after 2 no-progress rounds |
+| G-DHT-b | 52% | Same limitation as Kademlia |
+| NX-3 (no fallback) | 99.4% | Incoming synapses expose bridge connections |
+| NX-10 | **100%** | Iterative fallback + incoming synapses guarantee bridge discovery |
+
+This test demonstrates the critical importance of the incoming synapse reverse index (52% → 99.4%) and iterative fallback (99.4% → 100%) for routing through network bottlenecks.
+
+### 7.5 NX-13: Optimized Configuration
+
+NX-13 is NX-10 with tunable parameters, enabling systematic exploration of the configuration space. Through 20+ iterations of parameter optimization at 25,000 nodes, the following improvements were identified:
+
+| Parameter | NX-10 default | NX-13 optimized | Effect |
+|-----------|---------------|-----------------|--------|
+| Markov window | 16 | 32 | −6 ms global (wider pattern detection) |
+| Markov hot threshold | 3 | 2 | Faster hot-destination learning |
+| Highway slots | 12 | 16 | Improved cross-continent routing |
+| Dendritic capacity | 32 | 64 | −52 ms broadcast with 2000 subscribers |
+| Dendritic TTL | 10 | 20 | More stable pub/sub tree |
+
+**Routing results (NX-13 optimized vs NX-10):**
+
+| Metric | NX-10 | NX-13 | Improvement |
+|--------|-------|-------|-------------|
+| Global latency | 261 ms | 251 ms | −4% |
+| 10% src latency | 250 ms | 241 ms | −4% |
+| NA→AS latency | 246 ms | 244 ms | −1% |
+| Churn success | 100% | 100% | maintained |
+
+**Rule ablation (NX-13, disabling one rule at a time):**
+
+| Rule disabled | Global latency Δ | Key finding |
+|---------------|-------------------|-------------|
+| Markov pre-learning | +20 ms | Largest single-rule impact on latency |
+| Lateral spread | +19 ms | Critical for geographic shortcut propagation |
+| Triadic closure | +15 ms | Important for path compression |
+| Hop caching | +12 ms | Primarily helps regional routing (+8 ms at 500 km) |
+| Two-tier highway | +8 ms | More impactful at larger scale |
+| LTP reinforcement | +7 ms | Primarily helps regional routing |
+
+No single rule is responsible for NX-10's performance -- each contributes measurably, and the learning mechanisms work synergistically. The protocol is near a local optimum: 20+ iterations of parameter tuning found only ~10 ms of improvement, confirming the default configuration is well-tuned.
 
 ---
 
@@ -1261,7 +1265,7 @@ Under Bootstrap Init, churn resilience improves for K-DHT (90%) and G-DHT (93%) 
 
 **The issue**: In the axonal tree, if a forwarder dies during a publish cycle, all subscribers in its subtree are temporarily unreachable via the tree path. The parent must fall back to direct DHT lookups for the entire subtree, which can spike its fan-out far above the capacity limit.
 
-**Severity**: At 5% churn per measurement period, the success rate drops from 100% (no churn) to ~75%. This rate is consistent across both Omniscient and Bootstrap Init, suggesting that the tree structure itself -- not the bootstrap quality -- is the limiting factor. In a 20% churn environment, multiple forwarders could die simultaneously, cascading failures upward through the tree.
+**Current status**: Point-to-point routing achieves 100% success at 25% churn through dead-synapse eviction and iterative fallback. The axonal tree has separate healing: dead forwarders are detected during delivery and their subtree is moved to the parent. The tree rebuilds on the next publish cycle.
 
 **Mitigations**:
 - **Current**: Dead forwarders are healed by moving their subtree to the parent; the tree rebuilds on the next tick.

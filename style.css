@@ -1139,6 +1139,8 @@ button.app-title:hover { color: #55bbff; text-shadow: 0 0 14px #2288ddcc; }
 #nx1w-panel.nx-visible { display: block; }
 #nx2w-panel { display: none; }
 #nx2w-panel.nx-visible { display: block; }
+#nx13-panel { display: none; }
+#nx13-panel.nx-visible { display: block; }
 
 .nx-rule {
   border: 1px solid var(--border);

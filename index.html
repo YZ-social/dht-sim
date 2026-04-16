@@ -55,6 +55,7 @@
         <option value="ngdhtnx8">NX-8</option>
         <option value="ngdhtnx9">NX-9</option>
         <option value="ngdhtnx10">NX-10 ★</option>
+        <option value="ngdhtnx13">NX-13</option>
       </select>
       <div class="sb-row" style="margin-top:4px;margin-bottom:2px;gap:12px">
         <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
@@ -231,6 +232,7 @@
             <option value="ngdhtnx8"   selected>NX-8</option>
             <option value="ngdhtnx9"   selected>NX-9</option>
             <option value="ngdhtnx10"  selected>NX-10  ★</option>
+            <option value="ngdhtnx13"  selected>NX-13</option>
           </select>
         </div>
         <div class="sb-multisel" data-tip="Select which test conditions to include in the benchmark run. Click to toggle individual items.">
@@ -728,6 +730,97 @@
 
     </div><!-- /nx2w-panel -->
 
+    <!-- NX-13 Parameter Panel (visible only when NX-13 is selected) ── -->
+    <div id="nx13-panel" class="sb-sec">
+      <div class="sb-sec-lbl">NX-13 Rule Engine</div>
+
+      <details class="nx-rule nx-always"><summary>Bootstrap</summary><div class="nx-rule-body"><div class="nx-params nx-single">
+        <span class="nx-pl">Boot Factor</span><input type="number" id="x3-kBootFactor" class="nx-pv" value="1" min="1" max="4" step="1">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-twoTier-en" checked onclick="event.stopPropagation()"> Two-Tier Synaptome</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl">Local Slots</span><input type="number" id="x3-maxSynaptomeSize" class="nx-pv" value="48" min="16" max="96" step="1">
+        <span class="nx-pl">Hwy Slots</span><input type="number" id="x3-highwaySlots" class="nx-pv" value="12" min="0" max="24" step="1">
+      </div></div></details>
+
+      <details class="nx-rule nx-always"><summary>AP Routing</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl">Lookahead α</span><input type="number" id="x3-lookaheadAlpha" class="nx-pv" value="5" min="1" max="10" step="1">
+        <span class="nx-pl">Weight Scale</span><input type="number" id="x3-weightScale" class="nx-pv" value="0.40" min="0" max="1" step="0.05">
+        <span class="nx-pl">Geo Region Bits</span><input type="number" id="x3-geoRegionBits" class="nx-pv" value="4" min="2" max="8" step="1">
+        <span class="nx-pl">Epsilon</span><input type="number" id="x3-explorationEpsilon" class="nx-pv" value="0.05" min="0" max="0.3" step="0.01">
+        <span class="nx-pl">Max Hops</span><input type="number" id="x3-maxGreedyHops" class="nx-pv" value="40" min="10" max="80" step="5">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-ltp-en" checked onclick="event.stopPropagation()"> LTP Reinforcement</summary><div class="nx-rule-body"><div class="nx-params nx-single">
+        <span class="nx-pl">Inertia Duration</span><input type="number" id="x3-inertiaDuration" class="nx-pv" value="20" min="1" max="100" step="1">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-triadic-en" checked onclick="event.stopPropagation()"> Triadic Closure</summary><div class="nx-rule-body"><div class="nx-params nx-single">
+        <span class="nx-pl">Intro Threshold</span><input type="number" id="x3-introductionThreshold" class="nx-pv" value="1" min="1" max="10" step="1">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-hopCaching-en" checked onclick="event.stopPropagation()"> Hop Caching</summary><div class="nx-rule-body"><div class="nx-params nx-single">
+        <span class="nx-pl">Cascade Weight</span><input type="number" id="x3-cascadeWeight" class="nx-pv" value="0.1" min="0" max="0.5" step="0.05">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-lateralSpread-en" checked onclick="event.stopPropagation()"> Lateral Spread</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl">K (depth 1)</span><input type="number" id="x3-lateralK" class="nx-pv" value="6" min="1" max="12" step="1">
+        <span class="nx-pl">K2 (depth 2)</span><input type="number" id="x3-lateralK2" class="nx-pv" value="2" min="0" max="6" step="1">
+        <span class="nx-pl">Max Depth</span><input type="number" id="x3-lateralMaxDepth" class="nx-pv" value="1" min="1" max="3" step="1">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-stratified-en" onclick="event.stopPropagation()"> Stratified Eviction</summary><div class="nx-rule-body"><div class="nx-params">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-annealing-en" checked onclick="event.stopPropagation()"> Annealing</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl">T Init</span><input type="number" id="x3-tInit" class="nx-pv" value="1.0" min="0.1" max="2" step="0.1">
+        <span class="nx-pl">T Min</span><input type="number" id="x3-tMin" class="nx-pv" value="0.05" min="0.01" max="0.5" step="0.01">
+        <span class="nx-pl">Cooling</span><input type="number" id="x3-annealCooling" class="nx-pv" value="0.9997" min="0.99" max="1" step="0.0001">
+        <span class="nx-pl">Global Bias</span><input type="number" id="x3-globalBias" class="nx-pv" value="0.5" min="0" max="1" step="0.1">
+        <span class="nx-pl">Local Sample</span><input type="number" id="x3-annealLocalSample" class="nx-pv" value="50" min="10" max="100" step="10">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-markov-en" checked onclick="event.stopPropagation()"> Markov Pre-learning</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl">Window</span><input type="number" id="x3-markovWindow" class="nx-pv" value="16" min="4" max="64" step="4">
+        <span class="nx-pl">Hot Threshold</span><input type="number" id="x3-markovHotThreshold" class="nx-pv" value="3" min="1" max="10" step="1">
+        <span class="nx-pl">Base Weight</span><input type="number" id="x3-markovBaseWeight" class="nx-pv" value="0.5" min="0.1" max="0.9" step="0.1">
+        <span class="nx-pl">Max Weight</span><input type="number" id="x3-markovMaxWeight" class="nx-pv" value="0.9" min="0.5" max="1" step="0.1">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-adaptiveDecay-en" checked onclick="event.stopPropagation()"> Adaptive Decay</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl">Interval</span><input type="number" id="x3-decayInterval" class="nx-pv" value="100" min="10" max="500" step="10">
+        <span class="nx-pl">Prune</span><input type="number" id="x3-pruneThreshold" class="nx-pv" value="0.05" min="0.01" max="0.2" step="0.01">
+        <span class="nx-pl">γ Min</span><input type="number" id="x3-decayGammaMin" class="nx-pv" value="0.990" min="0.95" max="1" step="0.001">
+        <span class="nx-pl">γ Max</span><input type="number" id="x3-decayGammaMax" class="nx-pv" value="0.9998" min="0.99" max="1" step="0.0001">
+        <span class="nx-pl">Use Sat</span><input type="number" id="x3-useSaturation" class="nx-pv" value="20" min="5" max="50" step="5">
+        <span class="nx-pl">Hwy Active γ</span><input type="number" id="x3-decayGammaHighwayActive" class="nx-pv" value="0.9995" min="0.99" max="1" step="0.0001">
+        <span class="nx-pl">Hwy Idle γ</span><input type="number" id="x3-decayGammaHighwayIdle" class="nx-pv" value="0.990" min="0.95" max="1" step="0.001">
+        <span class="nx-pl">Hwy Renewal</span><input type="number" id="x3-highwayRenewalWindow" class="nx-pv" value="3000" min="100" max="10000" step="100">
+        <span class="nx-pl">Hwy Floor</span><input type="number" id="x3-highwayFloor" class="nx-pv" value="2" min="0" max="12" step="1">
+        <span class="nx-pl">Syn Floor</span><input type="number" id="x3-synaptomeFloor" class="nx-pv" value="48" min="16" max="96" step="1">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-highwayRefresh-en" onclick="event.stopPropagation()"> Highway Refresh</summary><div class="nx-rule-body"><div class="nx-params">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-loadBalancing-en" onclick="event.stopPropagation()"> Load Balancing</summary><div class="nx-rule-body"><div class="nx-params">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-deadEviction-en" checked onclick="event.stopPropagation()"> Dead-Synapse Eviction</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl">T Reheat</span><input type="number" id="x3-tReheat" class="nx-pv" value="0.5" min="0.1" max="1" step="0.1">
+      </div></div></details>
+
+      <details class="nx-rule nx-always"><summary>Incoming Promotion</summary><div class="nx-rule-body"><div class="nx-params nx-single">
+        <span class="nx-pl">Promote Threshold</span><input type="number" id="x3-incomingPromoteThreshold" class="nx-pv" value="2" min="1" max="10" step="1">
+      </div></div></details>
+
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-dendritic-en" checked onclick="event.stopPropagation()"> Dendritic Pub/Sub</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl">Capacity</span><input type="number" id="x3-dendriticCapacity" class="nx-pv" value="32" min="8" max="128" step="8">
+        <span class="nx-pl">TTL</span><input type="number" id="x3-dendriticTtl" class="nx-pv" value="10" min="1" max="30" step="1">
+      </div></div></details>
+
+    </div><!-- /nx13-panel -->
+
   </div><!-- /sidebar -->
 
   <!-- ── Globe fills remaining space ───────────────────────────────────── -->
@@ -872,7 +965,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.44.00</div>
+    <div id="legend">Version: 0.45.00</div>
   </div>
 
   </div><!-- /mainRow -->
@@ -1052,6 +1145,7 @@
     ngdhtnx8:   'NX-8: Dendritic pub/sub v2 (balanced binary split). When a branch overflows, ALL subscribers split 50/50 between two new children; parent becomes pure relay. Produces balanced trees with depth ≈ log₂(N/capacity).',
     ngdhtnx9:   'NX-9: Geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell, recruits same-cell branch nodes for direct 1-hop delivery. Root→branch: DHT routing; branch→subscriber: direct (no lookup).',
     ngdhtnx10:  '★ State of the Art — NX-10: Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). 100% success on all tests including 40% churn and Slice World.',
+    ngdhtnx13:  'NX-13: NX-10 with fully tunable parameters. Every rule can be enabled/disabled and every parameter adjusted via the panel. Use alongside NX-10 for A/B comparison to measure rule impact and find optimal configurations.',
   };
   (function () {
     const sel = document.getElementById('dhtProtocol');

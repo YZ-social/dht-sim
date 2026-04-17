@@ -225,6 +225,14 @@ export class NeuromorphicDHTNX6 extends DHT {
     if (maxConnections < this.MAX_SYNAPTOME_SIZE) {
       this.MAX_SYNAPTOME_SIZE = maxConnections;
     }
+    // When uncapped (no web limit), raise the synaptome cap to 256 so the
+    // bootstrap's three-layer fill is not pruned down during ongoing ops.
+    // This enables a fair comparison with uncapped Kademlia/G-DHT which
+    // can grow their bucket populations unrestricted.
+    if (!isFinite(maxConnections) && this.MAX_SYNAPTOME_SIZE < 256) {
+      this.MAX_SYNAPTOME_SIZE = 256;
+      this.SYNAPTOME_FLOOR = Math.min(this.SYNAPTOME_FLOOR, 256);
+    }
 
     const k            = this._k * this.K_BOOT_FACTOR;
     const intraBuckets = 64 - this.GEO_BITS;

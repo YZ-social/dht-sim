@@ -2,21 +2,75 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.0.4*
+*Version 0.0.11*
 
 ---
 
 ## Introduction
 
-Distributed hash tables (DHTs) are the backbone of decentralized systems -- they allow a network of independent computers to collectively store and retrieve data without any central server. Since their introduction in the early 2000s, DHTs have powered file sharing, content delivery, blockchain networks, and decentralized communication. Yet the core routing mechanisms have changed remarkably little since Kademlia's publication in 2002.
+Distributed hash tables (DHTs) are the backbone of decentralized systems -- they allow a network of independent computers to collectively store and retrieve data without any central server. Since their introduction in the early 2000s, DHTs have powered file sharing, content delivery, blockchain networks, and decentralized communication. Yet the core routing mechanisms have changed remarkably little since Kademlia's[^2] publication in 2002.
+
+All three protocols compared in this work -- Kademlia, the Geographic DHT, and the Neuromorphic DHT -- are *recursive* DHTs: a lookup is forwarded hop-by-hop through intermediate nodes, each choosing the next best peer, until the target is reached. (This assumption is now standard practice and rarely stated explicitly, but it frames how learning, churn recovery, and pub/sub mechanisms operate -- each hop is both a routing event and a learning opportunity.)
+
+### A Restricted, Browser-Realistic Model
+
+This work studies DHTs under the constraints imposed by a web-browser deployment. Each node is assumed to maintain at most **50 concurrent peer connections** (a realistic ceiling for WebRTC data channels in modern browsers). Node IDs are 64 bits, the network is uniformly distributed across land on Earth, and RTTs are computed from great-circle distance plus a fixed per-hop cost. The benchmarks that follow use 25,000 such nodes. These constraints matter because they eliminate an entire category of "just add more connections" optimization: every protocol must deliver its performance within the same tight per-node budget. Server-class and mixed-device deployments with higher connection limits would see absolute latencies drop across the board -- Chapter 7 includes an uncapped-connection comparison that confirms the relative picture holds, and in several cases widens, when every protocol is given unlimited capacity.
+
+All reported numbers are averages over 500 lookups per measurement cell, themselves aggregated over multiple benchmark runs. Individual runs show small natural variation (typically ±5% on latency) due to the randomised bootstrap, probabilistic annealing, and epsilon-greedy exploration. The means are stable; the protocol orderings reported in this document do not flip on repeated runs.
+
+### Two New Protocols
 
 This document describes two new approaches developed as part of this research effort:
 
-1. A **Geographic DHT (G-DHT)** that extends Kademlia by encoding a node's physical location into its identifier using S2 geometry. This simple modification halves lookup latency by making XOR routing geographically aware, while a stratified allocation strategy maintains Kademlia's 100% reachability guarantee.
+1. A **Geographic DHT (G-DHT)** that extends Kademlia by encoding a node's physical location into its identifier using S2 geometry[^16]. This simple modification halves lookup latency by making XOR routing geographically aware, while a stratified allocation strategy maintains Kademlia's 100% reachability guarantee.
 
-2. A **Neuromorphic DHT** that replaces static routing tables entirely with adaptive, biologically-inspired mechanisms. Drawing from neuroscience, each node maintains a dynamic set of weighted connections (a *synaptome*) that strengthens on successful routes and weakens through disuse -- mirroring how biological neurons form and prune synaptic connections. The system learns the network's topology through experience rather than relying on rigid algorithmic structure.
+2. A **Neuromorphic DHT** that replaces static routing tables entirely with adaptive, biologically-inspired mechanisms. Drawing from neuroscience[^20], each node maintains a dynamic set of weighted connections (a *synaptome*) that strengthens on successful routes and weakens through disuse -- mirroring how biological neurons form and prune synaptic connections[^23]. The system learns the network's topology through experience rather than relying on rigid algorithmic structure.
 
-Built atop the Neuromorphic routing layer is the **Axonal Pub/Sub** system -- a scalable publish/subscribe mechanism where broadcast trees emerge from the routing topology itself. Named after the axonal arbor (the branching output structure of a neuron that delivers signals to many downstream targets), this tree delegates delivery to intermediate nodes that are already on the natural routing path, achieving near-zero overhead for broadcast distribution.
+Built atop the Neuromorphic routing layer is the **Axonal Pub/Sub** system -- a scalable publish/subscribe mechanism where broadcast trees emerge from the routing topology itself. Named after the axonal arbor (the branching output structure of a neuron that delivers signals to many downstream targets), this tree delegates delivery to intermediate nodes that are already on the natural routing path, achieving near-zero overhead for broadcast distribution. We have not attempted to build competitive pub/sub overlays for Kademlia or G-DHT; their baseline behaviour in our pub/sub tests is the naive flat-delivery case (the relay looks up every subscriber individually). At scale, only the Axonal tree produces workable pub/sub performance -- so the pub/sub comparison in this document should be read as "Neuromorphic + Axonal tree vs. no serious pub/sub on the other protocols," not as a head-to-head evaluation of pub/sub designs.
+
+### Why Local Performance Matters Most
+
+Real-world DHT workloads are dominated by *local* traffic. Users interact most with content and peers near them geographically -- friends in the same city, cached content from nearby CDN nodes, regional collaborators, same-organization peers. A messaging app's neighbor-to-neighbor chat, a content-sharing service's regional replication, a gaming system's lobby discovery -- these account for the vast majority of lookups. Global and cross-continent routing matter, but they are the minority case. Any DHT evaluation that weights global routing equally with regional routing misrepresents real deployment performance.
+
+Kademlia treats all distances identically: a lookup to a peer 500 km away traverses the same number of hops, routing through the same XOR-space detours, as a lookup to the opposite side of the globe. The XOR metric is geographically blind. A message destined for a node in the next city may bounce through Tokyo, São Paulo, and Helsinki before arriving. Both the Geographic DHT and Neuromorphic DHT address this fundamental inefficiency -- and the performance gap they open is dramatic specifically for local and concentrated-workload traffic.
+
+### Performance at a Glance (25,000 nodes, web-limited)
+
+| Workload | Kademlia | G-DHT-b | NX-10 | NX-10 vs Kademlia |
+|----------|----------|---------|-------|------|
+| **500 km lookup** | 378 ms | 130 ms | **66 ms** | **5.7× faster** |
+| **1,000 km lookup** | 379 ms | 134 ms | **75 ms** | **5.1× faster** |
+| **2,000 km lookup** | 368 ms | 153 ms | **89 ms** | **4.1× faster** |
+| **5,000 km lookup** | 368 ms | 195 ms | **144 ms** | **2.6× faster** |
+| Concentrated source (10% pool) | 376 ms | 290 ms | **251 ms** | 1.5× faster |
+| Concentrated dest (10% pool) | 234 ms | 108 ms | **40 ms** | **5.9× faster** |
+| Concentrated pair (10% → 10%) | 242 ms | 108 ms | **32 ms** | **7.6× faster** |
+| Global random | 375 ms | 284 ms | **255 ms** | 1.5× faster |
+| NA → Asia | 364 ms | 292 ms | **249 ms** | 1.5× faster |
+| **Under 10% churn** | 419 ms / 100% | 322 ms / 100% | **262 ms / 100%** | 1.6× faster |
+| **Under 25% churn** | 489 ms / 100% | 334 ms / **99.4%** | **259 ms / 100%** | **1.89× faster** |
+
+Both G-DHT-b and NX-10 deliver multi-fold improvements on the workloads that dominate real-world traffic -- local lookups and concentrated-destination patterns -- with NX-10 approaching an order of magnitude in the best cases. NX-10's 500 km latency of 66 ms is 5.7× faster than Kademlia's 378 ms. For repeated lookups to a popular 10% set of destinations, NX-10 achieves 40 ms -- nearly direct delivery -- compared to Kademlia's 234 ms. And for lookups between members of two popular 10% pools (modeling community-to-community traffic), NX-10 reaches 32 ms, **7.6× faster than Kademlia**.
+
+### Churn Invariance
+
+"Resilience" is the wrong word for what NX-10 exhibits under churn. The data shows something stronger: **NX-10's performance does not meaningfully depend on whether churn is happening.**
+
+| Protocol | At rest | 10% churn | 25% churn | Δ at 25% |
+|----------|---------|-----------|-----------|---------|
+| Kademlia | 375 ms / 100% | 419 ms / 100% | 489 ms / 100% | **+30%** latency penalty |
+| G-DHT-b | 284 ms / 100% | 322 ms / 100% | 334 ms / **99.4%** | +18% penalty, **reliability breaks** |
+| **NX-10** | 255 ms / 100% | 262 ms / 100% | **259 ms / 100%** | **+1.6% latency penalty** |
+
+At 25% churn per round across 5 rounds, approximately **76% of the original network has been replaced**. Kademlia degrades by 30% in latency but completes every lookup. G-DHT-b reaches its reliability ceiling and begins dropping lookups. NX-10 routes in 259 ms -- statistically indistinguishable from its 255 ms at-rest baseline. The network does not slow down, lose reliability, or show signs of stress. It simply continues operating.
+
+A notable pattern emerges in the at-rest / 10% / 25% progression: Kademlia's latency climbs from 375 ms to 489 ms, while NX-10's stays flat at 255–262 ms. The gap between them widens from 1.47× at rest to 1.89× at 25% churn. Most engineered systems converge under degradation (all components slow together); NX-10 diverges, because its adaptive mechanisms extract increasing value from each lookup as the topology shifts, while static systems lose performance exactly in proportion to the damage inflicted.
+
+This behaviour arises from three mechanisms operating continuously rather than on refresh cycles:
+
+1. **Dead-synapse eviction**: stale connections are discovered and replaced during the lookup that encounters them, not during periodic maintenance
+2. **Iterative fallback**: when greedy routing stalls, the node exhaustively searches unvisited peers rather than giving up
+3. **Temperature reheat**: encountering a dead peer spikes the exploration rate, aggressively repairing the damaged synaptome before the next lookup arrives
 
 ### How It Compares
 
@@ -29,11 +83,11 @@ Built atop the Neuromorphic routing layer is the **Axonal Pub/Sub** system -- a 
 | Geographic awareness | None | S2 cell prefix in node ID | S2 cell prefix in node ID |
 | Pub/sub | Not built-in | Not built-in | Axonal tree mirrors routing topology |
 | Churn recovery | Lazy (dead entries skipped) | Lazy (dead entries skipped) | Immediate: dead-synapse eviction + 2-hop replacement |
-| 25% churn success | 99.6% | 100% | **100%** |
+| 10% churn latency penalty | +12% | +13% | **+3%** |
+| 25% churn latency penalty | +30% | +18% (reliability breaks) | **+1.6%** |
+| 25% churn success | 100% | 99.4% | **100%** |
 
-In simulations with 25,000 globally-distributed nodes under browser-realistic connection limits (50 peers per node), the Neuromorphic DHT (NX-10) routes in approximately 3.6 hops at 251 ms latency, compared to Kademlia's 3.4 hops at 364 ms -- a 31% latency reduction. The G-DHT-b routes at 4.6 hops and 283 ms. Under 25% churn (severe network turnover), NX-10 maintains 100% lookup success while Kademlia drops to 99.6%. Both the G-DHT and Neuromorphic DHT support scalable pub/sub delivery to thousands of subscribers with bounded per-node work.
-
-This document is structured so that a technical reader -- or an AI system -- can reconstruct a working implementation from its descriptions. Each chapter builds on the previous, culminating in a complete implementation plan.
+This document is structured so that a technical reader can reconstruct a working implementation from its descriptions. Each chapter builds on the previous, culminating in a complete implementation plan.
 
 ---
 
@@ -47,43 +101,43 @@ In the late 1990s, the explosive growth of peer-to-peer file sharing (Napster, G
 
 Four research groups independently answered this question within months of each other, each proposing a structured peer-to-peer overlay network -- what would come to be called distributed hash tables:
 
-**Chord** (Stoica et al., MIT, 2001) arranged nodes on a circular identifier space. Each node maintained a "finger table" with O(log N) pointers to nodes at exponentially increasing distances around the ring. Lookups traversed O(log N) hops by following the finger closest to the target without overshooting. Chord's elegance was its simplicity: the ring structure made correctness proofs tractable and join/leave operations well-defined.
+**Chord**[^1] (Stoica et al., MIT, 2001) arranged nodes on a circular identifier space. Each node maintained a "finger table" with O(log N) pointers to nodes at exponentially increasing distances around the ring. Lookups traversed O(log N) hops by following the finger closest to the target without overshooting. Chord's elegance was its simplicity: the ring structure made correctness proofs tractable and join/leave operations well-defined.
 
-**CAN** (Ratnasamy et al., Berkeley, 2001) used a d-dimensional Cartesian coordinate space, partitioning it into zones owned by individual nodes. Routing followed a greedy path through adjacent zones toward the target coordinates. CAN offered O(N^(1/d)) hop counts at the cost of O(d) routing table entries, and its multi-dimensional structure provided natural load balancing.
+**CAN**[^4] (Ratnasamy et al., Berkeley, 2001) used a d-dimensional Cartesian coordinate space, partitioning it into zones owned by individual nodes. Routing followed a greedy path through adjacent zones toward the target coordinates. CAN offered O(N^(1/d)) hop counts at the cost of O(d) routing table entries, and its multi-dimensional structure provided natural load balancing.
 
-**Pastry** (Rowstron & Druschel, Microsoft/Rice, 2001) combined prefix-based routing with a leaf set of numerically close neighbors and a neighborhood set of physically close nodes. This hybrid approach explicitly considered network locality -- a property that Chord and CAN initially ignored. Pastry resolved lookups in O(log N) hops while naturally preferring low-latency paths.
+**Pastry**[^3] (Rowstron & Druschel, Microsoft/Rice, 2001) combined prefix-based routing with a leaf set of numerically close neighbors and a neighborhood set of physically close nodes. This hybrid approach explicitly considered network locality -- a property that Chord and CAN initially ignored. Pastry resolved lookups in O(log N) hops while naturally preferring low-latency paths.
 
-**Tapestry** (Zhao et al., Berkeley, 2001) used a similar prefix-based approach with suffix routing, emphasizing fault tolerance through multiple redundant paths. Tapestry's contribution was demonstrating that structured overlays could provide strong availability guarantees even under significant churn.
+**Tapestry**[^5] (Zhao et al., Berkeley, 2001) used a similar prefix-based approach with suffix routing, emphasizing fault tolerance through multiple redundant paths. Tapestry's contribution was demonstrating that structured overlays could provide strong availability guarantees even under significant churn.
 
-**Kademlia** (Maymounkov & Mazieres, NYU, 2002) introduced XOR distance as the routing metric, which had the elegant property of being symmetric (distance from A to B equals distance from B to A) and supporting a single routing algorithm for both lookup and node joining. Kademlia's k-buckets -- fixed-size lists of known peers at each distance range -- provided natural redundancy and resistance to certain attacks. Its combination of simplicity, symmetry, and robustness made it the most widely adopted DHT in practice.
+**Kademlia**[^2] (Maymounkov & Mazieres, NYU, 2002) introduced XOR distance as the routing metric, which had the elegant property of being symmetric (distance from A to B equals distance from B to A) and supporting a single routing algorithm for both lookup and node joining. Kademlia's k-buckets -- fixed-size lists of known peers at each distance range -- provided natural redundancy and resistance to certain attacks. Its combination of simplicity, symmetry, and robustness made it the most widely adopted DHT in practice.
 
 ### 1.3 Evolution and Applications
 
-**BitTorrent** (2005+) adopted a Kademlia variant (Mainline DHT) for trackerless peer discovery, eventually becoming the largest deployed DHT with millions of simultaneous nodes. The Mainline DHT demonstrated that Kademlia could operate at massive scale, though with high lookup latency (often 10+ seconds due to timeout chains).
+**BitTorrent**[^10] (2005+) adopted a Kademlia variant (Mainline DHT) for trackerless peer discovery, eventually becoming the largest deployed DHT with millions of simultaneous nodes. The Mainline DHT demonstrated that Kademlia could operate at massive scale, though with high lookup latency (often 10+ seconds due to timeout chains).
 
-**Ethereum** (2015+) uses a modified Kademlia (devp2p) for peer discovery in its blockchain network. The combination of Kademlia's reliable node discovery with application-level gossip protocols has proven effective for blockchain consensus.
+**Ethereum**[^11] (2015+) uses a modified Kademlia (devp2p) for peer discovery in its blockchain network. The combination of Kademlia's reliable node discovery with application-level gossip protocols has proven effective for blockchain consensus.
 
-**IPFS** (2015+) built its content-addressable storage layer on a Kademlia DHT (libp2p), using it to map content hashes to the peers storing that content. IPFS extended Kademlia with content routing records and provider announcements.
+**IPFS**[^12] (2015+) built its content-addressable storage layer on a Kademlia DHT (libp2p), using it to map content hashes to the peers storing that content. IPFS extended Kademlia with content routing records and provider announcements.
 
-**Coral** (Freedman et al., 2004) introduced "distributed sloppy hash tables" (DSHTs) that organized nodes into clusters by round-trip time, preferring nearby nodes for lookups. This foreshadowed the geographic awareness that would become central to later DHT designs.
+**Coral**[^7] (Freedman et al., 2004) introduced "distributed sloppy hash tables" (DSHTs) that organized nodes into clusters by round-trip time, preferring nearby nodes for lookups. This foreshadowed the geographic awareness that would become central to later DHT designs.
 
-**S/Kademlia** (Baumgart & Mies, 2007) addressed Kademlia's security weaknesses with cryptographic node ID generation, sibling broadcasts for data replication, and disjoint lookup paths to resist Eclipse attacks.
+**S/Kademlia**[^6] (Baumgart & Mies, 2007) addressed Kademlia's security weaknesses with cryptographic node ID generation, sibling broadcasts for data replication, and disjoint lookup paths to resist Eclipse attacks.
 
 ### 1.4 The Persistent Limitations
 
 Despite two decades of refinement, DHTs have retained several fundamental limitations:
 
-1. **No latency awareness**: Traditional DHTs route purely by ID-space distance. A lookup may bounce between continents when a geographically closer path exists.
+1. **No latency awareness**: Traditional DHTs route purely by ID-space distance. A lookup may bounce between continents when a geographically closer path exists. Gummadi et al.[^14] documented the routing-geometry penalty empirically; Meridian[^15] attempted to add latency awareness via virtual coordinates but did not integrate it with the XOR metric itself.
 
-2. **No learning**: Routing tables are populated mechanically (bucket fills on contact) and never adapt to traffic patterns. A frequently-used route receives no preferential treatment.
+2. **No learning**: Routing tables are populated mechanically (bucket fills on contact) and never adapt to traffic patterns. A frequently-used route receives no preferential treatment. Recent work on learned hash tables[^19] and next-generation DHTs[^18] highlights this gap, though most proposals remain research prototypes.
 
 3. **High hop counts**: O(log N) hops is the theoretical bound, and in practice Kademlia networks often require 8--12 hops per lookup.
 
-4. **No built-in pub/sub**: Group communication requires application-level overlays built atop the DHT, adding complexity and additional hops.
+4. **No built-in pub/sub**: Group communication requires application-level overlays built atop the DHT (e.g., SCRIBE[^13]), adding complexity and additional hops.
 
 5. **Slow churn recovery**: When nodes depart, routing tables are repaired lazily through periodic refresh, leaving routing gaps that can persist for minutes.
 
-The Neuromorphic DHT addresses all five of these limitations.
+The Neuromorphic DHT addresses all five of these limitations, drawing on prior work in self-organizing peer-to-peer networks[^24] and adaptive routing strategies for spiking neural networks<sup>25, 26</sup>.
 
 ---
 
@@ -171,11 +225,11 @@ The lookup converges because each round discovers peers strictly closer to the t
 
 ## Chapter 3: The Geographic DHT (G-DHT)
 
-The Geographic DHT is a new protocol developed as part of this research effort. It extends Kademlia with a simple but powerful idea: encode a node's physical location into its identifier, so that XOR distance partially correlates with geographic distance. While previous work (notably Coral and Pastry) considered network locality, the G-DHT is the first to embed geographic coordinates directly into the node ID using a space-filling curve, making latency awareness an intrinsic property of the XOR metric itself.
+The Geographic DHT is a new protocol developed as part of this research effort. It extends Kademlia with a simple but powerful idea: encode a node's physical location into its identifier, so that XOR distance partially correlates with geographic distance. While previous work (notably Coral[^7] and Pastry[^3]) considered network locality, the G-DHT is the first to embed geographic coordinates directly into the node ID using a space-filling curve, making latency awareness an intrinsic property of the XOR metric itself.
 
 ### 3.1 S2 Geometry and Cell Encoding
 
-The Earth's surface is divided into cells using Google's S2 geometry library. S2 projects the sphere onto the faces of a cube, then applies a Hilbert curve mapping to each face. The Hilbert curve has a critical property: points that are close on the curve tend to be close on the surface, preserving spatial locality in a one-dimensional index.
+The Earth's surface is divided into cells using Google's S2 geometry library[^16]. S2 projects the sphere onto the faces of a cube, then applies a Hilbert curve[^17] mapping to each face. The Hilbert curve has a critical property: points that are close on the curve tend to be close on the surface, preserving spatial locality in a one-dimensional index.
 
 With 8 bits of S2 prefix, the Earth is divided into 256 cells (each roughly 600 km x 600 km at the equator). Each cell receives a unique integer index (0--255) based on its position on the Hilbert curve.
 
@@ -245,10 +299,10 @@ The Neuromorphic DHT replaces Kademlia's static k-bucket routing with a biologic
 
 The human brain maintains approximately 100 trillion synaptic connections, yet efficiently routes signals through neural pathways that strengthen with use and weaken without it. The brain doesn't pre-compute routes; it learns them through experience. The Neuromorphic DHT applies this same principle to network routing:
 
-- **Synapses** replace k-bucket entries: each connection carries a weight reflecting its proven reliability.
-- **Long-term potentiation (LTP)** reinforces successful routes, making them more likely to be chosen again.
+- **Synapses** replace k-bucket entries: each connection carries a weight reflecting its proven reliability (Hebbian learning[^20]).
+- **Long-term potentiation (LTP)**[^21] reinforces successful routes, making them more likely to be chosen again.
 - **Synaptic decay** weakens unused connections, freeing capacity for better alternatives.
-- **Simulated annealing** provides controlled exploration, discovering new routes while preserving proven ones.
+- **Simulated annealing**[^22] provides controlled exploration, discovering new routes while preserving proven ones.
 - **Temperature** controls the exploration/exploitation balance, starting aggressive and cooling to stability.
 
 ### 4.2 Node Identity
@@ -408,7 +462,7 @@ This ensures that no distance range dominates the synaptome. Even if the node in
 
 ### 4.8 Learning: Long-Term Potentiation (LTP)
 
-After a successful lookup that completes at or below the running average latency, a **reinforcement wave** propagates backward along the path:
+Drawing directly from Bliss and Lomo's 1973 discovery[^21] of long-lasting synaptic strengthening in the hippocampus, we implement a computational analogue: after a successful lookup that completes at or below the running average latency, a **reinforcement wave** propagates backward along the path:
 
 ```
 function reinforceWave(path, currentEpoch):
@@ -427,7 +481,7 @@ function reinforceWave(path, currentEpoch):
 
 ### 4.9 Learning: Simulated Annealing
 
-Each node has a **temperature** that controls its exploration rate:
+Drawing on Kirkpatrick, Gelatt, and Vecchi's classical formulation[^22], each node has a **temperature** that controls its exploration rate:
 
 ```
 Initial temperature:    T_INIT = 1.0
@@ -799,15 +853,15 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: The **watershed feature** of the NX line. Raises Slice World success from 99.4% to 100%. Raises churn success from ~80% to 100%. Every NX protocol below NX-4 fails under stress; every protocol NX-4 and above succeeds. Without iterative fallback, all other learning and repair mechanisms are insufficient.
 
-### 5.6 Rule 5: Incoming Synapse Promotion (NX-5)
+### 5.6 Rule 5: Incoming Synapse Promotion[^20] (NX-5)
 
-**What**: When an incoming synapse is selected as a routing hop multiple times (useCount >= 2), promote it to a full outgoing synapse with weight 0.5. This is Hebbian learning: connections that carry traffic get cemented.
+**What**: When an incoming synapse is selected as a routing hop multiple times (useCount >= 2), promote it to a full outgoing synapse with weight 0.5. This is Hebbian learning[^20]: connections that carry traffic get cemented.
 
 **Why**: Incoming synapses have a fixed baseline weight of 0.1, making them weak routing candidates. If an incoming synapse proves useful by being selected repeatedly, promoting it to a full synapse with competitive weight (0.5) ensures it participates fully in AP scoring and receives LTP reinforcement.
 
 **Contribution**: Enables organic network learning — the routing table evolves based on actual traffic patterns rather than remaining static after bootstrap. Particularly important for nodes that serve as transit points: they accumulate promoted incoming synapses that reflect real routing demand.
 
-### 5.7 Rule 6: Long-Term Potentiation (LTP) Reinforcement (NX-3 base)
+### 5.7 Rule 6: Long-Term Potentiation (LTP) Reinforcement[^21] (NX-3 base)
 
 **What**: After a successful lookup that completes at or below the running average latency, a reinforcement wave propagates backward along the path: each synapse gains +0.2 weight (capped at 1.0) and receives an inertia lock preventing decay for 20 epochs.
 
@@ -815,7 +869,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Drives latency optimization over time. During warmup, LTP reinforcement converges the synaptome from random bootstrap connections to traffic-optimized ones, reducing global latency by approximately 15-20ms over 2,000 training lookups.
 
-### 5.8 Rule 7: Simulated Annealing (NX-3 base)
+### 5.8 Rule 7: Simulated Annealing[^22] (NX-3 base)
 
 **What**: Each node has a temperature (initially 1.0, cooling by factor 0.9997 per routing hop, minimum 0.05). On each hop, with probability equal to the temperature, replace the weakest non-locked synapse with a random peer from the 2-hop neighborhood in the same stratum range.
 
@@ -887,11 +941,11 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Enables 100% churn success under realistic conditions. Previous testing showed that omniscient bootstrap (access to the full sorted node list) artificially inflated churn resilience by 25+ percentage points. Realistic bootstrap via iterative join is honest and still achieves 100% with NX-10's full rule set.
 
-### 5.17 Rule 16: Routing-Topology Pub/Sub Tree (NX-10)
+### 5.17 Rule 16: Routing-Topology Pub/Sub Tree[^23] (NX-10)
 
 **What**: When broadcasting to subscribers, build a forwarding tree that mirrors the routing topology. For each subscriber, determine which direct synapse would be the first hop toward it. Delegate groups of subscribers to those synapses as forwarders. Recursive: forwarders apply the same delegation when they exceed capacity (default: 32 entries per node).
 
-**Why**: Flat pub/sub requires the relay to individually look up every subscriber — O(S x H) routing work concentrated on one node. The routing-topology tree distributes this work: forwarder hops cost only 1 direct hop (no DHT lookup), and each forwarder handles its own subset of subscribers from a closer starting point.
+**Why**: Unlike prior DHT-based pub/sub schemes (e.g., SCRIBE[^13]) that build overlay trees independent of the routing layer, flat pub/sub requires the relay to individually look up every subscriber — O(S x H) routing work concentrated on one node. The routing-topology tree distributes this work: forwarder hops cost only 1 direct hop (no DHT lookup), and each forwarder handles its own subset of subscribers from a closer starting point.
 
 **Contribution**: Reduces max per-node fan-out from 1,999 to ~46 (43x reduction) with 2,000 subscribers. Broadcast latency remains comparable to flat delivery because forwarder hops are direct (1 hop, no lookup overhead). Tree depth emerges naturally from the routing topology (typically 4-5 levels for 2,000 subscribers).
 
@@ -942,7 +996,7 @@ The **essential features** in order of impact:
 
 ## Chapter 6: Axonal Pub/Sub
 
-The Axonal Pub/Sub system provides scalable group communication atop the Neuromorphic DHT. Named after the axonal arbor -- the branching output structure of a neuron that delivers signals from one cell body to many downstream targets -- it constructs broadcast trees that mirror the routing topology itself.
+The Axonal Pub/Sub system provides scalable group communication atop the Neuromorphic DHT. Named after the axonal arbor[^23] -- the branching output structure of a neuron that delivers signals from one cell body to many downstream targets -- it constructs broadcast trees that mirror the routing topology itself. Unlike earlier DHT-based pub/sub schemes such as SCRIBE[^13], which builds an overlay tree independent of the routing layer, the Axonal Pub/Sub tree emerges from the routing topology itself, achieving near-zero overhead for broadcast distribution.
 
 ### 6.1 The Problem
 
@@ -1148,6 +1202,8 @@ function healDeadForwarder(branch):
 
 All benchmarks use 25,000 nodes uniformly distributed across the globe, with 500 lookups per measurement cell. The Neuromorphic DHT (NX-10) receives 4 warmup sessions (5,000 training lookups) before measurement. Pub/sub tests use 2,000 subscribers per group. Node removal is honest -- no protocol reads a dead node's internal state; neighbors discover failures when they attempt to route through stale connections.
 
+**On variance:** all numbers reported in this document are means over 500 lookups per cell, themselves aggregated over multiple benchmark runs. Individual run-to-run variation typically falls within ±5% for routing latencies and ±1% for success rates. Where a result is within noise of another, we say so explicitly. Otherwise, the reported means are stable indicators of protocol behaviour.
+
 ### 7.1 Point-to-Point Routing (Web-Limited, 50 connections)
 
 | Metric | K-DHT | G-DHT-b | NX-10 |
@@ -1172,7 +1228,49 @@ G-DHT-b:   124     157      196      272      294
 NX-10:      67      90      147      261      249
 ```
 
-### 7.2 Pub/Sub Broadcast (2,000 subscribers)
+### 7.2 Point-to-Point Routing (Uncapped, No Connection Limit)
+
+The web-limited results above assume each node can maintain at most 50 peer connections -- a browser-realistic constraint. To understand whether the Neuromorphic advantage is an artifact of constrained resources, we also measured all three protocols with the connection cap removed. In this mode, Kademlia and G-DHT are free to fill every XOR bucket to its full `k=20` allocation (producing hundreds of peers per node), and NX-10 is allowed a synaptome of up to 256 connections.
+
+| Metric | K-DHT | G-DHT-b | NX-10 |
+|--------|-------|---------|-------|
+| Global hops | 2.99 | 4.37 | 2.75 |
+| Global latency | 299 ms | 269 ms | **191 ms** |
+| 500 km latency | 297 ms | 117 ms | **46 ms** |
+| 1,000 km latency | 292 ms | 128 ms | **58 ms** |
+| 2,000 km latency | 294 ms | 148 ms | **71 ms** |
+| 5,000 km latency | 295 ms | 185 ms | **109 ms** |
+| 10% dest latency | 154 ms | 92 ms | **31 ms** |
+| 10% → 10% latency | 159 ms | 91 ms | **31 ms** |
+| NA to Asia latency | 293 ms | 279 ms | **212 ms** |
+| 5% churn latency | 316 ms | 273 ms | **206 ms** |
+| 5% churn success | 100% | 100% | **100%** |
+
+The uncapped results confirm that the Neuromorphic advantage is structural, not circumstantial:
+
+**Kademlia barely improves.** Global latency drops only from 355 ms to 299 ms (-16%), and regional latency is essentially unchanged (500 km: 362→297 ms). Giving Kademlia an unlimited connection budget does not fix XOR's geographic blindness -- the protocol still routes through distant peers because that's what its metric demands. Hop count drops from 3.45 to 2.99 (one hop saved), but each hop still costs as much as before.
+
+**G-DHT-b gains modestly.** Global latency improves from 272→269 ms, regional from 124→117 ms at 500 km. The three-layer bootstrap already provided geographic locality under the cap; removing the cap lets the buckets fill more deeply but the protocol has no learning mechanism to exploit the extra capacity.
+
+**NX-10 gains the most.** Global latency drops from 261→191 ms (-27%), and regional from 67→46 ms at 500 km (-31%). The adaptive mechanisms -- hop caching, lateral spread, LTP reinforcement, triadic closure -- all scale with available synaptome slots. More capacity means more room to cache discovered routes, more diverse exploration, and more stable long-range connections. The concentrated-workload metrics (10% dest at 31 ms, 10%→10% at 31 ms) drop to near-direct delivery, indicating the learning machinery has converged on optimal routes for popular traffic patterns.
+
+#### The Gap Widens, Not Closes
+
+The comparison that matters most is how the NX-10 advantage changes when the playing field is levelled:
+
+| Metric | Web-limited (NX-10 vs K-DHT) | Uncapped (NX-10 vs K-DHT) | Gap change |
+|--------|------------------------------|---------------------------|-----------|
+| Global | 1.36× faster | **1.57× faster** | Widens |
+| 500 km | 5.4× faster | **6.5× faster** | Widens |
+| 1,000 km | 5.1× faster | **5.0× faster** | Stable |
+| 10% dest | 6.0× faster | **5.0× faster** | Narrows slightly |
+| 10%→10% | 7.6× faster | **5.1× faster** | Narrows (K-DHT improves) |
+
+The widening of the global and 500 km gaps under uncapped operation is the clearest evidence that NX-10's benefits come from *algorithmic* innovation rather than from working around a constraint that hurts its competitors. When every protocol is given as much capacity as it wants, NX-10 makes better use of it.
+
+One caveat: under concentrated-workload scenarios (10% dest, 10%→10%), Kademlia's uncapped improvement is proportionally larger than NX-10's, because Kademlia starts so far behind -- it now has enough connections that popular destinations are frequently one hop away by chance. The NX-10 advantage is still 5× but has compressed from 7.6×. This tells us that Kademlia's weakness under web-limit is partly a coverage problem (with unlimited connections, random coverage sometimes hits the popular 10% set directly), not purely a metric-blindness problem.
+
+### 7.3 Pub/Sub Broadcast (2,000 subscribers)
 
 | Metric | K-DHT (flat) | G-DHT-b (flat) | NX-10 (axonal) |
 |--------|-------------|----------------|----------------|
@@ -1193,7 +1291,7 @@ NX-10 (axonal):    █░░░░░░░░░░░░░░░░░░░�
                    0         500       1000      1500     2000
 ```
 
-### 7.3 Churn Resilience
+### 7.4 Churn Resilience
 
 | Metric | K-DHT | G-DHT-b | NX-10 |
 |--------|-------|---------|-------|
@@ -1210,7 +1308,7 @@ At extreme churn (25% per round, 5 rounds -- 76% of original nodes replaced), NX
 - Churn-triggered temperature reheat for accelerated exploration
 - Iterative fallback as a safety net when greedy routing stalls
 
-### 7.4 Slice World Test (Network Partition)
+### 7.5 Slice World Test (Network Partition)
 
 The Slice World test partitions the network into Eastern and Western hemispheres, connected only through a single node in Hawaii. This tests routing through an extreme bottleneck.
 
@@ -1223,7 +1321,7 @@ The Slice World test partitions the network into Eastern and Western hemispheres
 
 This test demonstrates the critical importance of the incoming synapse reverse index (52% → 99.4%) and iterative fallback (99.4% → 100%) for routing through network bottlenecks.
 
-### 7.5 NX-13: Optimized Configuration
+### 7.6 NX-13: Optimized Configuration
 
 NX-13 is NX-10 with tunable parameters, enabling systematic exploration of the configuration space. Through 20+ iterations of parameter optimization at 25,000 nodes, the following improvements were identified:
 

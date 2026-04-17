@@ -2,9 +2,16 @@
 
 An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — designed for real-world browser WebRTC deployment.
 
-The primary research focus is **publish/subscribe (pub/sub) overlay networks**: we believe pub/sub will be the dominant use case for decentralised peer-to-peer networks, enabling real-time messaging, collaborative applications, live media, and event streaming without centralised infrastructure. The current state-of-the-art protocol is **NX-5**, which adds stratified bootstrap allocation, global warmup lookups, and incoming synapse promotion on top of NX-4's iterative fallback routing — achieving the best balance of global routing, regional performance, and churn resilience under realistic browser connection constraints.
+The current state of the art is **NX-10**, which delivers:
 
-The simulator renders a live WebGL globe of up to 100,000 nodes distributed according to real-world population density, routes messages between them in real time, and benchmarks every protocol side by side — measuring hop counts, latency, churn resilience, regional performance, load distribution, and learning convergence over time.
+- **5–7× faster local routing** than Kademlia under browser-realistic connection limits (500 km lookups in 66 ms vs. 378 ms; concentrated community-to-community traffic in 32 ms vs. 242 ms)
+- **Churn invariance** — only a +1.6% latency penalty at 25% per-round churn (vs. +30% for Kademlia), while maintaining 100% lookup success as the original network is ~76% replaced
+- **48× pub/sub fan-out reduction** via the Axonal Pub/Sub tree — delivering to 2,000 subscribers with max per-node fan-out of 42, compared to 1,999 for flat-delivery baselines
+- **100% success under network partition** (Slice World test: East/West hemispheres connected only through a single node in Hawaii) via iterative fallback + incoming-synapse reverse routing, where Kademlia and G-DHT both fail at ~52%
+
+The full technical write-up is in [`documents/Neuromorphic-DHT-Architecture.md`](documents/Neuromorphic-DHT-Architecture.md) / [`.pdf`](documents/Neuromorphic-DHT-Architecture.pdf).
+
+The simulator renders a live WebGL globe of up to 100,000 nodes distributed on land, routes messages between them in real time, and benchmarks every protocol side by side — measuring hop counts, latency, churn resilience, regional performance, load distribution, and learning convergence over time.
 
 ---
 
@@ -42,11 +49,11 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 │                                                                    │
 │  ┌─────────────────────────────────────────────────────────────┐   │
 │  │   Protocol family                                           │   │
-│  │   Kademlia · Geographic                                     │   │
-│  │   N-1 · N-2 · N-2-BP · N-2-SHC · N-3 · N-4 · N-5          │   │
-│  │   N-5W · N-6W · N-7W · N-8W · N-9W · N-10W                 │   │
-│  │   N-11W · N-12W · N-13W · N-15W                             │   │
-│  │   NX-1W · NX-2W · NX-3 · NX-4 · NX-5 ★                      │   │
+│  │   Kademlia ★ · G-DHT · G-DHT-a · G-DHT-b ★                  │   │
+│  │   N-1 · N-15W ★                                             │   │
+│  │   NX-1W · NX-2W · NX-3 · NX-4 ★                             │   │
+│  │   NX-5 · NX-6 · NX-7 · NX-8 · NX-9                          │   │
+│  │   NX-10 ★ (State of the Art) · NX-13 (tunable)              │   │
 │  └─────────────────────────────────────────────────────────────┘   │
 └────────────────────────────────────────────────────────────────────┘
          ▲
@@ -64,32 +71,24 @@ Open `http://localhost:3000` in a modern browser. No build step required — the
 | `src/ui/Controls.js` | Control strip read/write, button state machine |
 | `src/ui/Results.js` | Chart.js rendering, Lorenz curves, CSV export, panel management |
 | `src/globe/Globe.js` | Three.js globe, node dots, path arcs, country borders |
-| `src/dht/kademlia/KademliaDHT.js` | Kademlia implementation |
-| `src/dht/geographic/GeographicDHT.js` | Geographic-DHT (geo-encoded IDs) |
+| `src/dht/kademlia/KademliaDHT.js` | Kademlia implementation (★ Best in Class baseline) |
+| `src/dht/geographic/GeographicDHT.js` | Geographic-DHT variants: G-DHT, G-DHT-a, G-DHT-b (★) |
 | `src/dht/neuromorphic/NeuromorphicDHT.js` | N-1 base neuromorphic |
-| `src/dht/neuromorphic/NeuromorphicDHT2.js` | N-2 two-tier hierarchical |
-| `src/dht/neuromorphic/NeuromorphicDHT2BP.js` | N-2-BP + cascade backpropagation |
-| `src/dht/neuromorphic/NeuromorphicDHT2SHC.js` | N-2-SHC + source hop caching |
-| `src/dht/neuromorphic/NeuromorphicDHT3.js` | N-3 combined + dense bootstrap |
-| `src/dht/neuromorphic/NeuromorphicDHT4.js` | N-4 + lateral shortcut propagation |
-| `src/dht/neuromorphic/NeuromorphicDHT5.js` | N-5 + stratified synaptome + annealing |
-| `src/dht/neuromorphic/NeuromorphicDHT5W.js` | N-5W browser-realistic variant (cap=60) |
-| `src/dht/neuromorphic/NeuromorphicDHT6W.js` | N-6W + highway tier + adaptive decay + Markov |
-| `src/dht/neuromorphic/NeuromorphicDHT7W.js` | N-7W + load-aware routing + extended hub pool |
-| `src/dht/neuromorphic/NeuromorphicDHT8W.js` | N-8W + cascading lateral spread + tier rebalancing |
-| `src/dht/neuromorphic/NeuromorphicDHT9W.js` | N-9W + synaptome floor protection |
-| `src/dht/neuromorphic/NeuromorphicDHT10W.js` | N-10W + relay pinning (best pub/sub pre-NX) |
-| `src/dht/neuromorphic/NeuromorphicDHT11W.js` | N-11W + frequency-weighted reservation (experimental) |
-| `src/dht/neuromorphic/NeuromorphicDHT12W.js` | N-12W + highway-tier relay pinning (experimental) |
-| `src/dht/neuromorphic/NeuromorphicDHT13W.js` | N-13W + load awareness + local pins (experimental) |
-| `src/dht/neuromorphic/NeuromorphicDHT15W.js` | N-15W + highway synapse preservation |
+| `src/dht/neuromorphic/NeuromorphicDHT15W.js` | N-15W (★ browser-realistic with highway tier) |
 | `src/dht/neuromorphic/NeuromorphicDHTNX1W.js` | NX-1W fully configurable research protocol |
 | `src/dht/neuromorphic/NeuromorphicDHTNX2W.js` | NX-2W broadcast tree delivery |
 | `src/dht/neuromorphic/NeuromorphicDHTNX3.js` | NX-3 G-DHT three-layer init |
-| `src/dht/neuromorphic/NeuromorphicDHTNX4.js` | NX-4 iterative fallback routing |
-| `src/dht/neuromorphic/NeuromorphicDHTNX5.js` | **NX-5 ★ stratified bootstrap + global warmup — current SOTA** |
+| `src/dht/neuromorphic/NeuromorphicDHTNX4.js` | NX-4 (★ iterative fallback — the watershed protocol) |
+| `src/dht/neuromorphic/NeuromorphicDHTNX5.js` | NX-5 stratified bootstrap + incoming synapse promotion |
+| `src/dht/neuromorphic/NeuromorphicDHTNX6.js` | NX-6 churn-resilient routing (dead-peer detection + reheat) |
+| `src/dht/neuromorphic/NeuromorphicDHTNX7.js` | NX-7 dendritic pub/sub v1 (peel-off split) |
+| `src/dht/neuromorphic/NeuromorphicDHTNX8.js` | NX-8 dendritic pub/sub v2 (balanced binary split) |
+| `src/dht/neuromorphic/NeuromorphicDHTNX9.js` | NX-9 geographic dendritic pub/sub |
+| `src/dht/neuromorphic/NeuromorphicDHTNX10.js` | **NX-10 ★ routing-topology forwarding tree — State of the Art** |
+| `src/dht/neuromorphic/NeuromorphicDHTNX13.js` | NX-13 NX-10 with fully exposed parameter panel for A/B tuning |
 | `src/dht/neuromorphic/NeuronNode.js` | Per-node state: synaptome, transit cache, incoming synapses |
 | `src/dht/neuromorphic/Synapse.js` | Synapse data model (weight, latency, stratum, useCount) |
+| `src/dht/neuromorphic/RoutingTree.js` | NX-10 dendritic pub/sub tree (subscribers + forwarders) |
 | `src/utils/geo.js` | Great-circle distance, latency model, population sampling, XOR routing table |
 | `src/utils/s2.js` | S2 cell encoding for geographic IDs |
 
@@ -985,6 +984,68 @@ NX-5's stratified bootstrap produces a more balanced initial synaptome, and the 
 
 ---
 
+## Protocol 25 — NX-6: Churn-Resilient Routing
+
+**Contribution:** Immediate, event-driven churn recovery. Previous protocols relied on passive decay to clean up dead synapses — a dead peer's synapse would persist (degraded in weight) until the periodic decay pass, during which routing through the dead peer would fail. NX-6 introduces two mechanisms that fire the moment a dead peer is discovered during routing:
+
+- **Temperature reheat:** the discovering node's annealing temperature is spiked to `T_REHEAT = 0.5`, causing annealing to fire aggressively (~50% per hop) on damaged nodes. The temperature naturally cools back down via the normal cooling factor after repair.
+- **Immediate evict-and-replace:** instead of zeroing the dead synapse's weight and waiting, the synapse is deleted and the slot is filled with a candidate from the 2-hop neighborhood in the same stratum range. Keyspace coverage is repaired instantly.
+
+Combined with NX-4's iterative fallback (which prevents hard failure when no forward-progress peer is available), NX-6 produces a system that self-heals continuously: dead peers are replaced during the lookup that encounters them.
+
+---
+
+## Protocol 26 — NX-7 / NX-8 / NX-9: Dendritic Pub/Sub Experiments
+
+Three experimental approaches to scalable pub/sub broadcast, each built on NX-6's churn-resilient core:
+
+- **NX-7** — dendritic pub/sub v1 with 25% peel-off split. When a branch overflows capacity, the oldest 25% of subscribers are peeled off to a new child branch. Produces tall, unbalanced trees at large group sizes.
+- **NX-8** — dendritic pub/sub v2 with balanced binary split. When a branch overflows, ALL subscribers divide 50/50 between two new children. The parent becomes a pure relay. Produces balanced binary trees with depth ≈ log₂(N/capacity).
+- **NX-9** — geographic dendritic pub/sub. Groups subscribers by S2 cell prefix; recruits same-cell branch nodes for direct 1-hop delivery. Root→branch uses DHT routing; branch→subscriber is direct (same cell, no lookup).
+
+These protocols informed the design of NX-10 but are superseded by its routing-topology approach.
+
+---
+
+## Protocol 27 — NX-10: Routing-Topology Forwarding Tree ★ (State of the Art)
+
+**Contribution:** Axonal pub/sub — a broadcast tree whose structure mirrors the routing topology itself, rather than being built as a separate overlay.
+
+When a relay node has more subscribers than its capacity can handle, it asks: "which of my direct connections (synapses) would be the first hop toward the most subscribers?" That synapse is promoted to a **forwarder**, and all subscribers routed through it are delegated to that forwarder. The rule applies recursively: any forwarder that exceeds capacity delegates in the same way.
+
+The key property: a forwarder is already a direct synapse of its parent. So the relay-to-forwarder hop costs only a direct message at the round-trip latency between them — no DHT lookup is needed. The tree "emerges" from the routing topology as a natural consequence of where each subscriber would be routed anyway.
+
+Benchmark results (2,000 subscribers, 25K nodes):
+- Max fan-out per node: **42** (vs 1,999 for flat delivery — 48× reduction)
+- Tree depth: ~5 levels
+- Broadcast latency: 274 ms (vs 326 ms for Kademlia flat delivery)
+
+All NX-6 churn-resilience mechanisms are inherited, so the tree survives node failures. Dead forwarders are detected during delivery and their subtree is moved to the parent; the tree is rebuilt on the next publish cycle.
+
+NX-10 also inherits every point-to-point routing optimization from NX-4 and NX-5, making it the current State of the Art for both routing and pub/sub workloads.
+
+See [`documents/Neuromorphic-DHT-Architecture.md`](documents/Neuromorphic-DHT-Architecture.md) for a full rule-by-rule breakdown of NX-10's 16 rules and the biological principles they implement.
+
+---
+
+## Protocol 28 — NX-13: Tunable Parameter Research Platform
+
+NX-13 is a clone of NX-10 with all 44 configuration parameters exposed via a rule-engine panel in the UI. Every rule can be enabled or disabled independently, and every threshold, weight, and capacity can be adjusted live. This enables systematic A/B comparison against NX-10 (with default parameters) to measure the impact of individual rules and find optimal configurations.
+
+Through 20+ iterations of parameter optimization at 25,000 nodes, the following improvements were identified vs NX-10 defaults:
+
+| Parameter | Default | Best tuned | Effect |
+|-----------|---------|-----------|--------|
+| Markov window | 16 | 32 | −6 ms global latency |
+| Markov hot threshold | 3 | 2 | Faster hot-destination learning |
+| Highway slots | 12 | 16 | Improved cross-continent routing |
+| Dendritic capacity | 32 | 64 | −52 ms broadcast (2000 subs) |
+| Dendritic TTL | 10 | 20 | More stable pub/sub tree |
+
+No single rule dominates — disabling any one rule costs 7–20 ms of latency. This suggests NX-10's defaults are near a local optimum, and further gains require structural changes rather than parameter tuning.
+
+---
+
 ## Web Limit Enforcement
 
 ### The problem
@@ -1031,6 +1092,30 @@ Bootstrap Init is the more realistic and recommended test mode for evaluating pr
 ---
 
 ## Protocol Comparison
+
+### Current best-in-class results (25,000 nodes, web-limited, honest node removal)
+
+All latencies are means over 500 lookups per cell, aggregated over multiple benchmark runs. Individual runs show ~±5% variation.
+
+| Workload | Kademlia ★ | G-DHT-b ★ | NX-10 ★ | NX-10 vs Kademlia |
+|----------|-----------|-----------|---------|------|
+| **500 km lookup** | 378 ms | 130 ms | **66 ms** | **5.7× faster** |
+| **2,000 km lookup** | 368 ms | 153 ms | **89 ms** | **4.1× faster** |
+| **10% dest (concentrated)** | 234 ms | 108 ms | **40 ms** | **5.9× faster** |
+| **10% → 10% (community pair)** | 242 ms | 108 ms | **32 ms** | **7.6× faster** |
+| Global random | 375 ms | 284 ms | **255 ms** | 1.5× faster |
+| Under 10% churn | 419 ms / 100% | 322 ms / 100% | **262 ms / 100%** | 1.6× faster |
+| Under 25% churn | 489 ms / 100% | 334 ms / 99.4% | **259 ms / 100%** | **1.89× faster** |
+| Pub/sub bcast (2000 subs) | 326 ms / flat | 276 ms / flat | **274 ms / tree** | + 48× fan-out reduction |
+| Slice World (partition) | 52% | 52% | **100%** | — |
+
+**Key findings:**
+- NX-10 is *churn-invariant* — +1.6% latency penalty at 25% churn vs. +30% for Kademlia.
+- The gap widens under stress: NX-10 is 1.47× faster than Kademlia at rest, 1.89× faster at 25% churn.
+- Local and concentrated workloads (the dominant real-world case) see the largest improvements.
+- Pub/sub comparison is not head-to-head: Kademlia and G-DHT use flat delivery (relay looks up each subscriber). Only NX-10's Axonal Pub/Sub tree delivers workable pub/sub at scale.
+
+See [`documents/Neuromorphic-DHT-Architecture.md`](documents/Neuromorphic-DHT-Architecture.md) Chapter 7 for full benchmark tables including uncapped-connection results (where NX-10's global latency drops to 191 ms and the gap over Kademlia widens further).
 
 ### Parameters at a glance
 

@@ -184,6 +184,7 @@ export class BenchmarkSweep {
     setNum('pubsubCoverage',      run.pubsubCoverage);
     setNum('pubsubGroupSize',     run.pubsubGroupSize);
     setNum('benchWarmupSessions', run.warmupSessions);
+    setNum('churnRate',           run.benchChurnPct);
     setChk('webLimit',            run.webLimit);
     setMultiSelect('benchProtocols', run.protocols, 'dht-bench-protocols');
     setMultiSelect('benchTests',     run.tests,     'dht-bench-tests');

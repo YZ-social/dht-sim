@@ -1,6 +1,6 @@
 # DHT Globe Simulator
 
-**Version 0.49.00**
+**Version 0.50.00**
 
 An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — designed for real-world browser WebRTC deployment.
 
@@ -1340,7 +1340,7 @@ Adds new nodes to a live network one at a time, simulating real peer-to-peer net
 2. **Bootstrap join:** `bootstrapJoin(newNodeId, sponsorId)` explores the sponsor's 1–2 hop neighbourhood, sorts candidates by XOR distance, and wires synapses to the closest ones up to the connection capacity
 3. **Warmup lookups:** the new node performs `addNodeWarmup` random lookups to integrate via LTP reinforcement and annealing — rapidly forming global connections through the mechanisms described in the routing foundation section
 
-**Note on peer discovery:** the current `bootstrapJoin` uses the sponsor's synaptome + highway as its candidate pool, which is realistic. The annealing mechanism's `_globalCandidate` (which scans all nodes directly) is a simulator shortcut for the gossip protocol or rendezvous-point peer discovery that a real browser deployment would use.
+**Note on peer discovery:** `bootstrapJoin` uses the sponsor's synaptome + highway as its candidate pool, which is realistic. As of v0.50, the annealing mechanism's `_globalCandidate` has been folded into `_localCandidate` in every NX protocol — annealing can now replace a synapse only with a peer reachable through a 2-hop neighborhood probe (the standard FIND_NODE-style RPC). There is no remaining runtime access to the global `nodeMap`; the only omniscient step is the admitted one-time bootstrap (`buildRoutingTables`).
 
 ### Pair Learning
 

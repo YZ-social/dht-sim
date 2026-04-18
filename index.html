@@ -965,7 +965,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.49.00</div>
+    <div id="legend">Version: 0.50.01</div>
   </div>
 
   </div><!-- /mainRow -->
@@ -1122,7 +1122,7 @@
     ngdhtnx7:   'NX-7: Dendritic pub/sub v1 (25% peel-off split). Hierarchical relay tree distributes broadcast across branch nodes. Tree grows with subscribers, shrinks on timeout, self-heals on churn.',
     ngdhtnx8:   'NX-8: Dendritic pub/sub v2 (balanced binary split). When a branch overflows, ALL subscribers split 50/50 between two new children; parent becomes pure relay. Produces balanced trees with depth ≈ log₂(N/capacity).',
     ngdhtnx9:   'NX-9: Geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell, recruits same-cell branch nodes for direct 1-hop delivery. Root→branch: DHT routing; branch→subscriber: direct (no lookup).',
-    ngdhtnx10:  '★ State of the Art — NX-10: Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). 100% success on all tests including 40% churn and Slice World.',
+    ngdhtnx10:  '★ State of the Art — NX-10: Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). 100% success on all tests including 25% churn and Slice World. As of v0.50, uses strictly 2-hop honest annealing with no access to the global node map.',
     ngdhtnx13:  'NX-13: NX-10 with fully tunable parameters. Every rule can be enabled/disabled and every parameter adjusted via the panel. Use alongside NX-10 for A/B comparison to measure rule impact and find optimal configurations.',
   };
   (function () {

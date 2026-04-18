@@ -849,25 +849,10 @@ export class NeuromorphicDHTNX3 extends DHT {
 
   // ── Global candidate (annealing exploration) ───────────────────────────────
 
+  // HONESTY: No access to global nodeMap — nodes can only explore via their
+  // own synaptome neighbourhood. Delegate to _localCandidate (2-hop search).
   _globalCandidate(node, lo, hi) {
-    if (this._annealBufDirty || !this._annealBuffer) {
-      this._annealBuffer   = [...this.nodeMap.keys()];
-      this._annealBufDirty = false;
-    }
-    const buf = this._annealBuffer;
-    const n   = buf.length;
-    if (n === 0) return null;
-
-    const start = Math.floor(Math.random() * n);
-    for (let i = 0; i < n; i++) {
-      const id        = buf[(start + i) % n];
-      if (id === node.id) continue;
-      const candidate = this.nodeMap.get(id);
-      if (!candidate?.alive || this._hasAny(node, id)) continue;
-      const stratum = clz64(node.id ^ id);
-      if (stratum >= lo && stratum <= hi) return candidate;
-    }
-    return null;
+    return this._localCandidate(node, lo, hi);
   }
 
   // ── Local candidate (annealing neighbourhood) ─────────────────────────────

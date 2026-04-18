@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.49.00*
+*Version 0.50.00*
 
 ---
 
@@ -507,11 +507,11 @@ function tryAnneal(node, temperature):
     targetLo = targetGroup * 4
     targetHi = targetLo + 3
 
-    // Select replacement candidate
-    if random() < temperature * GLOBAL_BIAS:    // 50% global bias
-        candidate = randomNodeInStratumRange(targetLo, targetHi)
-    else:
-        candidate = twoHopNeighborInStratumRange(node, targetLo, targetHi)
+    // Select replacement candidate from the 2-hop neighborhood
+    // (node's own synaptome + each direct peer's synaptome). This is the
+    // standard FIND_NODE-style RPC pattern — no access to the global
+    // network-membership set.
+    candidate = twoHopNeighborInStratumRange(node, targetLo, targetHi)
 
     if candidate is null or already connected: return
 
@@ -1657,8 +1657,7 @@ Each node runs periodic maintenance tasks:
 ```
 Maintenance Schedule:
   Every 100 lookups:    Run adaptive decay on all synapses
-  Every 500 lookups:    Refresh highway tier (scan for new long-range hubs)
-  Every 1000 lookups:   Rebuild annealing candidate buffer
+  Every 500 lookups:    Refresh highway tier (scan 2-hop for new long-range hubs)
   Every 60 seconds:     Ping all synapses to update latency estimates
   Every 300 seconds:    Prune dead synapses (not responding to pings)
 ```
@@ -1745,7 +1744,7 @@ A complete implementation requires these components:
 - [ ] Epsilon-greedy exploration (5% first-hop randomization)
 - [ ] Iterative fallback (Kademlia-style FIND_NODE loop)
 - [ ] LTP reinforcement wave (weight boost + inertia lock)
-- [ ] Simulated annealing (temperature cooling, global/local candidates)
+- [ ] Simulated annealing (temperature cooling, 2-hop local candidates)
 - [ ] Adaptive decay (usage-based gamma, bootstrap protection)
 - [ ] Hop caching with lateral spread
 - [ ] Triadic closure (transit counting, introduction)
@@ -1773,8 +1772,7 @@ A complete implementation requires these components:
 
 **Background Services**:
 - [ ] Periodic adaptive decay
-- [ ] Highway tier refresh
-- [ ] Annealing buffer rebuild
+- [ ] Highway tier refresh (2-hop scan)
 - [ ] Synapse liveness monitoring (ping)
 - [ ] Subscription TTL renewal
 
@@ -1796,7 +1794,7 @@ All tunable parameters with recommended defaults:
 | T_MIN | 0.05 | Minimum annealing temperature |
 | ANNEAL_COOLING | 0.9997 | Per-hop temperature decay |
 | T_REHEAT | 0.5 | Churn recovery temperature |
-| GLOBAL_BIAS | 0.5 | Probability of global vs local annealing candidate |
+| ANNEAL_LOCAL_SAMPLE | 50 | 2-hop candidates sampled per annealing step |
 | LTP_INCREMENT | 0.2 | Weight boost per reinforcement |
 | INERTIA_DURATION | 20 | Epochs of decay protection after LTP |
 | DECAY_INTERVAL | 100 | Lookups between decay cycles |

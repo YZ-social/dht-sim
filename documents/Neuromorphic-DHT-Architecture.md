@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.0.11*
+*Version 0.49.00*
 
 ---
 
@@ -14,7 +14,7 @@ All three protocols compared in this work -- Kademlia, the Geographic DHT, and t
 
 ### A Restricted, Browser-Realistic Model
 
-This work studies DHTs under the constraints imposed by a web-browser deployment. Each node is assumed to maintain at most **50 concurrent peer connections** (a realistic ceiling for WebRTC data channels in modern browsers). Node IDs are 64 bits, the network is uniformly distributed across land on Earth, and RTTs are computed from great-circle distance plus a fixed per-hop cost. The benchmarks that follow use 25,000 such nodes. These constraints matter because they eliminate an entire category of "just add more connections" optimization: every protocol must deliver its performance within the same tight per-node budget. Server-class and mixed-device deployments with higher connection limits would see absolute latencies drop across the board -- Chapter 7 includes an uncapped-connection comparison that confirms the relative picture holds, and in several cases widens, when every protocol is given unlimited capacity.
+This work studies DHTs under the constraints imposed by a web-browser deployment. Each node is assumed to maintain at most **50 concurrent peer connections** (a realistic ceiling for WebRTC data channels in modern browsers). Node IDs are 64 bits, the network is uniformly distributed across land on Earth, and round-trip times (RTTs) are computed from great-circle distance plus a fixed per-hop cost. The benchmarks that follow use 25,000 such nodes. These constraints matter because they eliminate an entire category of "just add more connections" optimization: every protocol must deliver its performance within the same tight per-node budget. Server-class and mixed-device deployments with higher connection limits would see absolute latencies drop across the board -- Chapter 7 includes an uncapped-connection comparison that confirms the relative picture holds, and in several cases widens, when every protocol is given unlimited capacity.
 
 All reported numbers are averages over 500 lookups per measurement cell, themselves aggregated over multiple benchmark runs. Individual runs show small natural variation (typically ±5% on latency) due to the randomised bootstrap, probabilistic annealing, and epsilon-greedy exploration. The means are stable; the protocol orderings reported in this document do not flip on repeated runs.
 
@@ -30,7 +30,7 @@ Built atop the Neuromorphic routing layer is the **Axonal Pub/Sub** system -- a 
 
 ### Why Local Performance Matters Most
 
-Real-world DHT workloads are dominated by *local* traffic. Users interact most with content and peers near them geographically -- friends in the same city, cached content from nearby CDN nodes, regional collaborators, same-organization peers. A messaging app's neighbor-to-neighbor chat, a content-sharing service's regional replication, a gaming system's lobby discovery -- these account for the vast majority of lookups. Global and cross-continent routing matter, but they are the minority case. Any DHT evaluation that weights global routing equally with regional routing misrepresents real deployment performance.
+Real-world DHT workloads are dominated by *local* traffic. Users interact most with content and peers near them geographically -- friends in the same city, cached content from nearby content delivery network (CDN) nodes, regional collaborators, same-organization peers. A messaging app's neighbor-to-neighbor chat, a content-sharing service's regional replication, a gaming system's lobby discovery -- these account for the vast majority of lookups. Global and cross-continent routing matter, but they are the minority case. Any DHT evaluation that weights global routing equally with regional routing misrepresents real deployment performance.
 
 Kademlia treats all distances identically: a lookup to a peer 500 km away traverses the same number of hops, routing through the same XOR-space detours, as a lookup to the opposite side of the globe. The XOR metric is geographically blind. A message destined for a node in the next city may bounce through Tokyo, São Paulo, and Helsinki before arriving. Both the Geographic DHT and Neuromorphic DHT address this fundamental inefficiency -- and the performance gap they open is dramatic specifically for local and concentrated-workload traffic.
 
@@ -103,7 +103,7 @@ Four research groups independently answered this question within months of each 
 
 **Chord**[^1] (Stoica et al., MIT, 2001) arranged nodes on a circular identifier space. Each node maintained a "finger table" with O(log N) pointers to nodes at exponentially increasing distances around the ring. Lookups traversed O(log N) hops by following the finger closest to the target without overshooting. Chord's elegance was its simplicity: the ring structure made correctness proofs tractable and join/leave operations well-defined.
 
-**CAN**[^4] (Ratnasamy et al., Berkeley, 2001) used a d-dimensional Cartesian coordinate space, partitioning it into zones owned by individual nodes. Routing followed a greedy path through adjacent zones toward the target coordinates. CAN offered O(N^(1/d)) hop counts at the cost of O(d) routing table entries, and its multi-dimensional structure provided natural load balancing.
+**CAN** (Content Addressable Network)[^4] (Ratnasamy et al., Berkeley, 2001) used a d-dimensional Cartesian coordinate space, partitioning it into zones owned by individual nodes. Routing followed a greedy path through adjacent zones toward the target coordinates. CAN offered O(N^(1/d)) hop counts at the cost of O(d) routing table entries, and its multi-dimensional structure provided natural load balancing.
 
 **Pastry**[^3] (Rowstron & Druschel, Microsoft/Rice, 2001) combined prefix-based routing with a leaf set of numerically close neighbors and a neighborhood set of physically close nodes. This hybrid approach explicitly considered network locality -- a property that Chord and CAN initially ignored. Pastry resolved lookups in O(log N) hops while naturally preferring low-latency paths.
 
@@ -147,7 +147,7 @@ This chapter describes how Kademlia works, as it serves as the baseline against 
 
 ### 2.1 Identifier Space
 
-Every node and every data key occupies a position in a flat identifier space of B bits (typically 160 bits using SHA-1, though our simulator uses 64 bits). Node IDs are generated from the hash of the node's public key or IP address.
+Every node and every data key occupies a position in a flat identifier space of B bits (typically 160 bits using the Secure Hash Algorithm SHA-1, though our simulator uses 64 bits). Node IDs are generated from the hash of the node's public key or IP address.
 
 The **XOR distance** between two identifiers a and b is defined as:
 
@@ -865,7 +865,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **What**: After a successful lookup that completes at or below the running average latency, a reinforcement wave propagates backward along the path: each synapse gains +0.2 weight (capped at 1.0) and receives an inertia lock preventing decay for 20 epochs.
 
-**Why**: Without reinforcement, all synapses would decay toward zero and eventually be pruned. LTP creates a positive feedback loop: fast routes get stronger weights, making them more likely to be selected by AP scoring, which generates more reinforcement. The quality gate (at or below EMA latency) ensures only genuinely fast routes are strengthened.
+**Why**: Without reinforcement, all synapses would decay toward zero and eventually be pruned. LTP creates a positive feedback loop: fast routes get stronger weights, making them more likely to be selected by AP scoring, which generates more reinforcement. The quality gate (at or below the exponential moving average (EMA) latency) ensures only genuinely fast routes are strengthened.
 
 **Contribution**: Drives latency optimization over time. During warmup, LTP reinforcement converges the synaptome from random bootstrap connections to traffic-optimized ones, reducing global latency by approximately 15-20ms over 2,000 training lookups.
 
@@ -1173,7 +1173,7 @@ This means the tree grows organically: new subscribers attach to the nearest tre
 
 ### 6.6 Tree Maintenance
 
-**Subscriber TTL**: Each subscriber entry has a last-active timestamp. Subscribers that are not renewed within TTL ticks (default: 10) are pruned. This handles graceful departure without explicit unsubscribe messages.
+**Subscriber time-to-live (TTL)**: Each subscriber entry has a last-active timestamp. Subscribers that are not renewed within TTL ticks (default: 10) are pruned. This handles graceful departure without explicit unsubscribe messages.
 
 **Dead forwarder healing**: If a forwarder dies (detected during delivery), its subscribers and child forwarders are moved to its parent:
 
@@ -1524,7 +1524,7 @@ The production system consists of three layers:
 The Neuromorphic DHT is transport-agnostic. Each synapse represents a persistent or on-demand connection to a peer. Recommended transports:
 
 **WebRTC Data Channels** (browser-to-browser):
-- DTLS-encrypted, NAT-traversing
+- DTLS-encrypted, Network Address Translation (NAT) traversing
 - Connection limit: ~50--60 simultaneous peers (matching synaptome capacity)
 - Signaling required for initial connection establishment
 - Best for: browser-based applications, decentralized web apps

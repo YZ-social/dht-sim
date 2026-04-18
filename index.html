@@ -28,7 +28,7 @@
 
     <!-- Header -->
     <div class="sb-hdr">
-      <button class="app-title" id="btnAbout" data-tip="Open the DHT Globe user guide.">&#9670; DHT Globe</button>
+      <button class="app-title" id="btnAbout" data-tip="Open the DHT (Distributed Hash Table) Globe user guide.">&#9670; DHT Globe</button>
       <div style="display:flex;gap:4px;align-items:center">
         <button id="btnThemeToggle" data-tip="Toggle light / dark mode">&#9788;</button>
         <button class="btn-notify" id="btnNotify" data-tip="Enable desktop notifications — you will be alerted when long-running tests complete.">&#x1F514;</button>
@@ -38,7 +38,7 @@
     <!-- ① Network ──────────────────────────────────────────────────────── -->
     <div class="sb-sec">
       <div class="sb-sec-lbl">Network</div>
-      <select id="dhtProtocol" class="sb-select-full" data-tip="Kademlia: random node IDs, XOR distance metric. Classic baseline DHT.">
+      <select id="dhtProtocol" class="sb-select-full" data-tip="Kademlia: random node IDs, XOR distance metric. Classic baseline Distributed Hash Table (DHT).">
         <option value="kademlia">Kademlia ★</option>
         <option value="geo">G-DHT</option>
         <option value="geoa">G-DHT-a</option>
@@ -312,7 +312,7 @@
 
       <!-- Rule 4: LTP Reinforcement -->
       <details class="nx-rule">
-        <summary><input type="checkbox" id="nx-ltp-en" checked onclick="event.stopPropagation()"> LTP Reinforcement</summary>
+        <summary><input type="checkbox" id="nx-ltp-en" checked onclick="event.stopPropagation()"> LTP (Long-Term Potentiation) Reinforcement</summary>
         <div class="nx-rule-body">
           <div class="nx-params nx-single">
             <span class="nx-pl" data-tip="Epochs a reinforced synapse is protected from decay after being strengthened.">Inertia</span>
@@ -555,7 +555,7 @@
 
       <!-- Rule 4: LTP Reinforcement -->
       <details class="nx-rule">
-        <summary><input type="checkbox" id="n2-ltp-en" checked onclick="event.stopPropagation()"> LTP Reinforcement</summary>
+        <summary><input type="checkbox" id="n2-ltp-en" checked onclick="event.stopPropagation()"> LTP (Long-Term Potentiation) Reinforcement</summary>
         <div class="nx-rule-body">
           <div class="nx-params nx-single">
             <span class="nx-pl" data-tip="Epochs a reinforced synapse is protected from decay after being strengthened.">Inertia</span>
@@ -751,7 +751,7 @@
         <span class="nx-pl">Max Hops</span><input type="number" id="x3-maxGreedyHops" class="nx-pv" value="40" min="10" max="80" step="5">
       </div></div></details>
 
-      <details class="nx-rule"><summary><input type="checkbox" id="x3-ltp-en" checked onclick="event.stopPropagation()"> LTP Reinforcement</summary><div class="nx-rule-body"><div class="nx-params nx-single">
+      <details class="nx-rule"><summary><input type="checkbox" id="x3-ltp-en" checked onclick="event.stopPropagation()"> LTP (Long-Term Potentiation) Reinforcement</summary><div class="nx-rule-body"><div class="nx-params nx-single">
         <span class="nx-pl">Inertia Duration</span><input type="number" id="x3-inertiaDuration" class="nx-pv" value="20" min="1" max="100" step="1">
       </div></div></details>
 
@@ -816,7 +816,7 @@
 
       <details class="nx-rule"><summary><input type="checkbox" id="x3-dendritic-en" checked onclick="event.stopPropagation()"> Dendritic Pub/Sub</summary><div class="nx-rule-body"><div class="nx-params">
         <span class="nx-pl">Capacity</span><input type="number" id="x3-dendriticCapacity" class="nx-pv" value="32" min="8" max="128" step="8">
-        <span class="nx-pl">TTL</span><input type="number" id="x3-dendriticTtl" class="nx-pv" value="10" min="1" max="30" step="1">
+        <span class="nx-pl" data-tip="Time-to-live in ticks. Subscribers not renewed within this window are pruned from the tree.">TTL</span><input type="number" id="x3-dendriticTtl" class="nx-pv" value="10" min="1" max="30" step="1">
       </div></div></details>
 
     </div><!-- /nx13-panel -->
@@ -965,7 +965,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.48.00</div>
+    <div id="legend">Version: 0.49.00</div>
   </div>
 
   </div><!-- /mainRow -->

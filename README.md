@@ -1,5 +1,7 @@
 # DHT Globe Simulator
 
+**Version 0.49.00**
+
 An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — designed for real-world browser WebRTC deployment.
 
 The current state of the art is **NX-10**, which delivers:
@@ -275,9 +277,9 @@ Each neuromorphic node maintains a **synaptome** — a `Map<peerId, Synapse>` �
 Synapse {
   peerId:    BigInt   // 64-bit G-ID of connected peer
   weight:    float    // reliability score [0.0 – 1.0], initial = 0.5
-  latency:   float    // round-trip time estimate (ms)
+  latency:   float    // round-trip time (RTT) estimate (ms)
   stratum:   int      // clz64(myId XOR peerId) — XOR closeness bucket [0–63]
-  inertia:   int      // epoch before which decay is suppressed (LTP lock)
+  inertia:   int      // epoch before which decay is suppressed (long-term potentiation (LTP) lock)
   useCount:  int      // lifetime reinforcement count (adaptive decay, N-6W+)
 }
 ```
@@ -323,7 +325,7 @@ flowchart TB
         B4A["Triadic closure\nfrequent relay pairs introduced"]
         B4B["Hop caching\nshortcuts injected to traversed targets"]
     end
-    subgraph P5["Phase 5 · LTD Decay"]
+    subgraph P5["Phase 5 · LTD (Long-Term Depression) Decay"]
         direction LR
         B5["Every 100 lookups\nweight × DECAY_GAMMA\nPrune below threshold"]
     end
@@ -584,7 +586,7 @@ N-7W extends N-6W with three new mechanisms targeting **load distribution** — 
 
 ### Mechanism 5: Per-Node Load Tracking with Lazy Decay
 
-Each node carries a load signal (`loadEMA`) updated via lazy exponential moving average:
+Each node carries a load signal (`loadEMA`) updated via a lazy exponential moving average (EMA):
 
 ```
 decayedLoad = loadEMA × LOAD_DECAY^(simEpoch − loadLastEpoch)
@@ -1052,7 +1054,7 @@ Through 20+ iterations of parameter optimization at 25,000 nodes, the following 
 | Markov hot threshold | 3 | 2 | Faster hot-destination learning |
 | Highway slots | 12 | 16 | Improved cross-continent routing |
 | Dendritic capacity | 32 | 64 | −52 ms broadcast (2000 subs) |
-| Dendritic TTL | 10 | 20 | More stable pub/sub tree |
+| Dendritic TTL (time-to-live) | 10 | 20 | More stable pub/sub tree |
 
 No single rule dominates — disabling any one rule costs 7–20 ms of latency. This suggests NX-10's defaults are near a local optimum, and further gains require structural changes rather than parameter tuning.
 
@@ -1153,16 +1155,28 @@ See [`documents/Neuromorphic-DHT-Architecture.md`](documents/Neuromorphic-DHT-Ar
 | N-13W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | Yes | 48 | 4 local | — |
 | N-15W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/2 | Yes | Yes | 48+12 | No | 48 | 4 local | — |
 | NX-1W | configurable | α=5 | adaptive | 0.05 | 1 | 6+2/**1★** | Yes | Yes | 48+12 | No | 48 | off★ | — |
-| NX-2W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/**1★** | Yes | **No★** | 48+12 | No | 48 | off★ | **Yes** |
-| NX-3 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes | No | 48+12 | No | 48 | off | Yes |
-| NX-4 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes | No | 48+12 | No | 48 | off | Yes |
-| **NX-5 ★** | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes | No | 48+12 | No | 48 | off | Yes |
+| NX-2W | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/**1★** | Yes | **No★** | 48+12 | No | 48 | off★ | proximity-ordered |
+| NX-3 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes | No | 48+12 | No | 48 | off | proximity-ordered |
+| **NX-4 ★** | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes | No | 48+12 | No | 48 | off | proximity-ordered |
+| NX-5 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes | No | 48+12 | No | 48 | off | proximity-ordered |
+| NX-6 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes **(+reheat)** | No | 48+12 | No | 48 | off | proximity-ordered |
+| NX-7 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes (+reheat) | No | 48+12 | No | 48 | off | **dendritic v1** |
+| NX-8 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes (+reheat) | No | 48+12 | No | 48 | off | **dendritic v2** |
+| NX-9 | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes (+reheat) | No | 48+12 | No | 48 | off | **geo dendritic** |
+| **NX-10 ★** | 0.40 | α=5 | adaptive | 0.05 | 1 | 6+2/1 | Yes (+reheat) | No | 48+12 | No | 48 | off | **routing-topology** |
+| NX-13 | configurable | configurable | configurable | configurable | 1 | configurable | configurable | configurable | configurable | No | configurable | off | configurable |
 
-★ = empirically tuned divergence from N-15W defaults
+★ = empirically tuned divergence from N-15W defaults; ★ (on protocol) = Best in Class or State of the Art
+
+**NX-4** (iterative fallback) and **NX-10** (routing-topology pub/sub) are the two watershed steps in the NX line. NX-4 makes the system reliable under stress; NX-10 makes pub/sub tractable at scale. NX-13 is a research platform exposing all NX-10 parameters in the UI for systematic A/B testing.
 
 ### Additive mechanism matrix
 
-| Mechanism | N-1 | N-2 | N-2-BP | N-2-SHC | N-3 | N-4 | N-5 | N-5W | N-6W | N-7W | N-8W | N-9W | N-10W | N-11W | N-12W | N-13W | N-15W | NX-1W | NX-2W | NX-3 | NX-4 | **NX-5 ★** |
+Split across two tables for readability. The first covers mechanisms inherited from the N-line (N-1 through N-15W) and through NX-5. The second shows the NX-6+ additions layered on top.
+
+#### Table A — N-line through NX-5
+
+| Mechanism | N-1 | N-2 | N-2-BP | N-2-SHC | N-3 | N-4 | N-5 | N-5W | N-6W | N-7W | N-8W | N-9W | N-10W | N-11W | N-12W | N-13W | N-15W | NX-1W | NX-2W | NX-3 | **NX-4 ★** | NX-5 |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | 2-hop AP routing | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | LTP reinforcement | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -1191,14 +1205,30 @@ See [`documents/Neuromorphic-DHT-Architecture.md`](documents/Neuromorphic-DHT-Ar
 | Highway synapse preservation | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Incoming synapses (reverse routing) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Organic join (bootstrapJoin) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
-| Broadcast tree delivery | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
+| Broadcast tree delivery (proximity-ordered) | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ | ✓ |
 | G-DHT three-layer init | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ | ✓ |
-| Iterative fallback routing | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ | ✓ |
-| Stratified bootstrap allocation | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | **✓** |
-| Global warmup lookups | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | **✓** |
-| Incoming synapse promotion | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | **✓** |
+| **Iterative fallback routing ★** | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | **✓** | ✓ |
+| Stratified bootstrap allocation | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ |
+| Global warmup lookups | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ |
+| Incoming synapse promotion | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | — | ✓ |
 
-★ = disabled by default in NX-2W based on empirical testing
+★ (on mechanism) = introduced at this column; ★ (on protocol) = watershed protocol. "— ★" = disabled by default in NX-2W based on empirical testing.
+
+#### Table B — NX-6 through NX-13 (additional mechanisms stacked on top of NX-5)
+
+All mechanisms in Table A are inherited by every NX-6+ protocol (with the exception of the proximity-ordered Broadcast tree, which NX-7+ supersedes with dendritic / routing-topology trees). Table B shows only the *new* mechanisms introduced in NX-6 onward.
+
+| Mechanism | NX-6 | NX-7 | NX-8 | NX-9 | **NX-10 ★** | NX-13 |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| Churn-triggered temperature reheat | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Immediate dead-synapse eviction + replacement | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Dendritic pub/sub v1 (25% peel-off split) | — | ✓ | — | — | — | — |
+| Dendritic pub/sub v2 (balanced binary split) | — | — | ✓ | — | — | — |
+| Geographic dendritic pub/sub (S2-clustered) | — | — | — | ✓ | — | — |
+| **Routing-topology forwarding tree ★** | — | — | — | — | **✓** | ✓ |
+| Full parameter-panel tunability (rule engine) | — | — | — | — | — | ✓ |
+
+★ (on mechanism) = watershed pub/sub design; ★ (on protocol) = State of the Art. NX-7, NX-8, and NX-9 are experimental pub/sub variants superseded by NX-10's routing-topology tree.
 
 ---
 

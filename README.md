@@ -226,8 +226,14 @@ graph TD
     N15W --> NX1W["NX-1W: Fully Configurable\nEvery rule on/off via UI\nEvery param exposed\nDefaults reproduce N-15W"]
     NX1W --> NX2W["NX-2W\nBroadcast tree delivery\nProximity-ordered fan-out\nEmpirical default tuning"]
     NX2W --> NX3["NX-3\nG-DHT three-layer init\nIntra-cell + inter-cell + global\nBootstrap diversity"]
-    NX3 --> NX4["NX-4\nIterative fallback routing\nKademlia-style dead-end recovery\nQueried-set loop prevention"]
-    NX4 --> NX5["NX-5 ★ CURRENT SOTA\nStratified bootstrap allocation\nGlobal warmup lookups\nIncoming synapse promotion"]
+    NX3 --> NX4["NX-4 ★ WATERSHED\nIterative fallback routing\nKademlia-style dead-end recovery\nQueried-set loop prevention"]
+    NX4 --> NX5["NX-5\nStratified bootstrap allocation\nGlobal warmup lookups\nIncoming synapse promotion"]
+    NX5 --> NX6["NX-6\nChurn-resilient routing\nTemperature reheat on dead peer\nImmediate evict-and-replace"]
+    NX6 --> NX7["NX-7\nDendritic pub/sub v1\n25% peel-off split\nTall/unbalanced trees"]
+    NX6 --> NX8["NX-8\nDendritic pub/sub v2\nBalanced binary split\nDepth ≈ log₂(N/capacity)"]
+    NX6 --> NX9["NX-9\nGeographic dendritic pub/sub\nS2-clustered tree\n1-hop same-cell delivery"]
+    NX6 --> NX10["NX-10 ★ STATE OF THE ART\nRouting-topology forwarding tree\nForwarder = direct synapse\n48× fan-out reduction\nChurn-invariant"]
+    NX10 --> NX13["NX-13\nNX-10 with full parameter panel\nRule-engine A/B research platform"]
 
     style K fill:#0a1e3e,stroke:#2a5ea0,color:#88c4f0
     style G fill:#0a1e3e,stroke:#2a5ea0,color:#88c4f0
@@ -251,8 +257,14 @@ graph TD
     style NX1W fill:#0a1c10,stroke:#2a6040,color:#88ddaa
     style NX2W fill:#0a1c10,stroke:#2a6040,color:#88ddaa
     style NX3 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
-    style NX4 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
-    style NX5 fill:#1c0a00,stroke:#cc6600,color:#ffaa44
+    style NX4 fill:#1c0a00,stroke:#cc6600,color:#ffaa44
+    style NX5 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
+    style NX6 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
+    style NX7 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
+    style NX8 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
+    style NX9 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
+    style NX10 fill:#2c1000,stroke:#ff8800,color:#ffcc44
+    style NX13 fill:#0a1c10,stroke:#2a6040,color:#88ddaa
 ```
 
 ### The Synaptome

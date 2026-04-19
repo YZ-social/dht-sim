@@ -1,7 +1,9 @@
 # Phase 3 — Distributed Pub/Sub Membership Protocol (Plan)
 
-**Status:** Draft for review. Pre-implementation.
-**Target:** Extend the DHT simulator (and eventually the production client) with a real, self-organising pub/sub membership protocol built on top of the existing routing layer. Wire it to the PubSubAdapter already shipped in v0.51.00.
+**Status:** Phase 3a shipped in v0.52.00. Phase 3b + 3c in progress under NX-15 packaging.
+**Target:** Extend the DHT simulator with a real, self-organising pub/sub membership protocol, built on top of existing routing. Package the work as a new neuromorphic protocol variant, **NX-15**, that extends NX-10. Existing protocols (Kademlia, G-DHT, NX-10) are not modified; they continue to use the pre-computed-group `pubsubBroadcast` API for their delivery-physics benchmarks.
+
+**Packaging decision:** Rather than pushing the routed-message primitive into the DHT base class (original Option B), we create NX-15 as a subclass of NX-10 that adds the four primitives locally (`routeMessage`, `onRoutedMessage`, `sendDirect`, `onDirectMessage`) and wires an `AxonManager` instance per node. This avoids base-class surgery while giving NX-15 the full membership protocol. The `AxonManager` module stays protocol-agnostic — it could wrap any DHT that implements the four primitives.
 
 ---
 
@@ -51,35 +53,40 @@ The PubSubAdapter (v0.51.00) already defines the transport contract the membersh
                     │    onPubsubDelivery(cb)
                     ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  AxonManager  (src/pubsub/AxonManager.js)      — NEW           │
+│  AxonManager  (src/pubsub/AxonManager.js)      — shipped 3a    │
 │    — topic role table, subscribe/publish routing, recruitment, │
 │      refresh, churn repair                                     │
+│    — protocol-agnostic: wraps any DHT satisfying the four      │
+│      routing primitives below                                  │
 └────────────────────────────────────────────────────────────────┘
                     │  uses:  dht.routeMessage(targetId, type, payload)
                     │         dht.onRoutedMessage(type, handler)
                     │         dht.sendDirect(peerId, type, payload)
+                    │         dht.onDirectMessage(type, handler)
                     │  queries: dht.getSelfId(), dht.getAlivePeer(id)
                     ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  DHT base class  (src/dht/DHT.js)              — EXTENDED      │
-│    — existing lookup (unchanged)                               │
-│    — routeMessage      (NEW generic primitive)                 │
-│    — onRoutedMessage   (NEW handler registry)                  │
-│    — sendDirect        (NEW point-to-point over the DHT)       │
-│    — policy hooks      (overridable by subclasses)             │
+│  NeuromorphicDHTNX15  (src/dht/neuromorphic/...NX15.js)  — NEW │
+│    extends NeuromorphicDHTNX10                                 │
+│    — routeMessage, sendDirect, onRoutedMessage, onDirectMessage│
+│    — _greedyNextHopToward (extracted from NX-10 lookup)        │
+│    — per-node AxonManager instance                             │
+│    — override pubsubBroadcast → routes via AxonManager         │
+│    — pickRecruitPeer override: synaptome-weighted (§5.9)       │
 └────────────────────────────────────────────────────────────────┘
-                    │  protocol-specific routing (unchanged)
+                    │  inherits routing from NX-10 (unchanged)
                     ▼
 ┌────────────────────────────────────────────────────────────────┐
-│  Kademlia / G-DHT / NX-* implementations       — UNCHANGED     │
+│  NX-10 / NX-9 / … / NX-6 / Kademlia / G-DHT    — UNCHANGED     │
+│    existing lookup + one-shot pubsubBroadcast stay as-is       │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-Each layer depends only on the one below. The membership protocol uses the DHT through a small, protocol-agnostic interface. The DHT adds three new methods; it does not change any existing method.
+Each layer depends only on the one below. NX-15 adds four new methods; it does not modify any inherited behaviour. MockDHTNode (isolated test harness in `src/pubsub/MockDHTNode.js`) implements the same four primitives for unit testing AxonManager without the real DHT.
 
 ---
 
-## 4. DHT Base-Class Extensions
+## 4. NX-15 Additions
 
 ### 4.1 `routeMessage(targetId, type, payload, opts) → RouteResult`
 
@@ -419,30 +426,38 @@ No changes to `PubSubAdapter.js` are required.
 
 ## 7. File Impact
 
-### New files
+### Shipped in Phase 3a (v0.52.00)
 
-| Path | Purpose | Est. lines |
+| Path | Purpose | Lines |
 |---|---|---|
-| `src/pubsub/AxonManager.js` | Membership protocol implementation | 400 |
-| `src/pubsub/test_axon.js` | Unit tests (MockDHT driving the manager) | 300 |
-| `src/pubsub/test_integration.js` | PubSubAdapter + AxonManager + MockDHT end-to-end | 200 |
+| `src/pubsub/AxonManager.js` | Membership protocol (no recruitment yet) | ~280 |
+| `src/pubsub/MockDHTNode.js` | Routing primitives for isolated testing | ~260 |
+| `src/pubsub/test_mock_dht.js` | 31 assertions on routing | ~240 |
+| `src/pubsub/test_axon.js` | 40 assertions on membership | ~320 |
+| `src/pubsub/test_integration.js` | 27 assertions end-to-end | ~270 |
 
-### Modified files
+### Planned for Phase 3b (NX-15 packaging)
 
 | Path | Change | Est. lines |
 |---|---|---|
-| `src/dht/DHT.js` (base class) | +routeMessage, +onRoutedMessage, +sendDirect, +policy hook stubs | +150 |
-| `src/dht/KademliaDHT.js` | +_greedyNextHopToward (extract from lookup) | +30 |
-| `src/dht/GeoDHT.js` | +_greedyNextHopToward | +30 |
-| `src/dht/neuromorphic/NeuromorphicDHT.js` | +_greedyNextHopToward | +40 |
-| (all protocols inherit the rest via base class) | — | — |
-| `src/main.js` | Wire new benchmark test type | +40 |
-| `src/ui/BenchmarkSweep.js` | Add membership-aware benchmark config | +20 |
-| `index.html` | Add new benchmark test option + version bump | +10 |
+| `src/pubsub/AxonManager.js` | +recruitment, +orderly collapse, +policy hooks | +150 |
+| `src/pubsub/test_axon.js` | +recruitment + collapse scenarios | +100 |
+| `src/dht/neuromorphic/NeuromorphicDHTNX15.js` | **NEW** — extends NX-10, adds routing primitives, wires AxonManager, overrides pubsubBroadcast, synaptome-weighted pickRecruitPeer | ~300 |
+| `src/pubsub/test_nx15_integration.js` | **NEW** — AxonManager running on real NX-15 at small scale | +250 |
+| `src/main.js` | +import, +createDHT case, +benchmark protocol entry | +20 |
+| `src/ui/BenchmarkSweep.js` | (no changes expected) | 0 |
+| `index.html` | +dropdown option, +benchmark multiselect, +tooltip, version bump | +10 |
 
-**Existing benchmark numbers do not change.** The new `pubsubMembership` test type coexists alongside the existing `pubsub` test. Every protocol gains a generic default pub/sub that can be compared head-to-head.
+### Planned for Phase 3c
 
-**Total new + modified code: ~1200 lines.**
+| Path | Change | Est. lines |
+|---|---|---|
+| `src/pubsub/AxonManager.js` | +parent-death detection, +eager re-subscribe | +80 |
+| `src/pubsub/test_axon.js` / `test_nx15_integration.js` | +churn scenarios | +150 |
+
+**Existing benchmark numbers do not change.** NX-10, Kademlia, G-DHT, and every other existing protocol continue to use the pre-computed-group `pubsubBroadcast` API. Only NX-15 uses the new membership protocol. The comparison is then NX-10 (delivery-physics with synthetic groups) vs NX-15 (convergence + steady-state + churn with real membership), same family, directly measurable trade-off.
+
+**Total new + modified code for Phase 3b + 3c: ~1000 lines.**
 
 ---
 
@@ -476,15 +491,17 @@ Phase 3 breaks into three incremental milestones. Each produces a shippable chec
 - Integration test: `PubSubAdapter + AxonManager + MockDHT` end-to-end, exercising the 12 adapter scenarios plus refresh/TTL scenarios (renewal bumps lastRenewed, silent subscriber dies after TTL, empty axon self-collapses).
 - Deliverable: adapter works against a real DHT for small subscriber counts, with subscriptions that expire if not refreshed.
 
-### Phase 3b — Recruitment, tree growth, and orderly collapse
+### Phase 3b — Recruitment, tree growth, orderly collapse, and NX-15 protocol
 
-- Add `shouldRecruitSubAxon` + `pickRecruitPeer` policy hooks with default implementations.
-- Add `pubsub:promote-axon` message type.
+- Add `shouldRecruitSubAxon` + `pickRecruitPeer` policy hooks to AxonManager with default implementations.
+- Add `pubsub:promote-axon` direct message type.
 - Tree grows into multi-level axon chains as subscriber count exceeds `maxDirectSubs`.
 - Hysteresis dissolve (§5.8): axons with `< minDirectSubs` for one refresh cycle send `pubsub:dissolve-hint` and delete themselves. Children re-subscribe via normal routing; tree collapses one layer at a time.
-- NX-10 `pickRecruitPeer` override (§5.9) — prefer high-weight synaptome peers.
+- **Create `NeuromorphicDHTNX15.js`** — extends NX-10. Adds the four routing primitives (`routeMessage`, `onRoutedMessage`, `sendDirect`, `onDirectMessage`), extracts `_greedyNextHopToward` from NX-10's lookup, wires an `AxonManager` per node, overrides the one-shot `pubsubBroadcast` API to route through the AxonManager instead of building an ephemeral tree.
+- NX-15 `pickRecruitPeer` override (§5.9) — prefer forward-progress synaptome peers by weight.
+- UI wiring: add NX-15 to the protocol dropdown, benchmark multiselect, and tooltip.
 - Benchmark: `pubsubConvergence` + `pubsubSteadyState`.
-- Deliverable: tree scales to thousands of subscribers with bounded per-axon load and collapses gracefully when subscribers leave.
+- Deliverable: NX-15 appears alongside NX-10 in the sim with real persistent trees; scales to thousands of subscribers with bounded per-axon load and collapses gracefully when subscribers leave.
 
 ### Phase 3c — Churn recovery
 
@@ -506,23 +523,15 @@ Each milestone is ~300-500 lines of code and a testable increment. Total Phase 3
 - ✅ **Periodic refresh by every axon.** Any axon with live children must refresh upward to its parent on the same cadence, or it will be dropped by the parent's TTL sweep. Formalised in §5.5 + §5.7.
 - ✅ **Orderly collapse without dumping everything to the root.** Hysteresis band between `maxDirectSubs` (recruit) and `minDirectSubs` (dissolve), with children re-subscribing along normal routing paths when an intermediate axon dissolves. Formalised in §5.8.
 
-### Open for review
+### All parameters confirmed
 
-1. **`maxDirectSubs`** — recruit threshold. Proposal: **20**. Matches Kademlia K-bucket convention; fan-out of 20 per axon keeps tree depth at ~log₂₀(N) — for N=25,000 that's ~3 hops.
+All defaults accepted: `maxDirectSubs=20`, `minDirectSubs=5`, `refreshIntervalMs=10_000`, `maxSubscriptionAgeMs=30_000`, `rootGraceMs=60_000`. Production values will be longer (5-10 min refresh) but the simulator needs shorter cadences to observe the behaviour in bounded test runs.
 
-2. **`minDirectSubs`** — dissolve threshold. Proposal: **5**. The stable band is then 5-20. Too-low `min` lets oversized axons linger; too-high causes thrashing. 5 is the natural "enough to still be worth existing as a fan-out node."
+### Questions resolved by NX-15 packaging
 
-3. **`refreshIntervalMs`** — heartbeat cadence. Proposal: **10_000 ms** (10 s). Short enough that the protocol is responsive to churn within 30 s; long enough to avoid flooding the network. Every axon plus every leaf refreshes at this cadence.
-
-4. **`maxSubscriptionAgeMs`** — TTL before a child entry is reaped. Proposal: **30_000 ms** (3 × refreshIntervalMs). Survives one packet loss, dies on three consecutive losses.
-
-5. **`rootGraceMs`** — how long an empty root persists before dissolving. Proposal: **60_000 ms** (6 × refreshIntervalMs). Roots are rare; persisting a while costs nothing and absorbs transient subscribe lulls.
-
-6. **Per-protocol `_greedyNextHopToward` extraction.** Is lifting this primitive out of each protocol's `lookup()` into a named method an acceptable refactor, or do we want a different decomposition?
-
-7. **Kademlia and G-DHT comparison.** Option B treats all three protocols symmetrically — each gets the generic membership protocol by default. Confirming that's the desired comparison story (NX-10's advantage then comes solely from its synaptome-aware `pickRecruitPeer` override).
-
-8. **Zero changes to `PubSubAdapter.js`.** The plan preserves this. Confirm?
+- ~~#6 _greedyNextHopToward extraction across all protocols~~ — only NX-15 needs single-step routing, extracted from NX-10's lookup. Kademlia and G-DHT are unmodified.
+- ~~#7 all-protocols-symmetric comparison~~ — NX-15 is compared against NX-10 (same family, fair contest), not against Kademlia. Kademlia's `pubsubBroadcast` remains the flat-delivery baseline it has always been.
+- ~~#8 zero changes to PubSubAdapter.js~~ — confirmed, and the Phase 3a fix to `topicIdFor` (signed-int32 bug) doesn't count as a contract change; it's a bug fix to the existing hash function.
 
 ---
 

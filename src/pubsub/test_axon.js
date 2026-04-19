@@ -41,7 +41,11 @@ function buildAxonNetwork(n, opts = {}) {
   const nodes = [];
   const axons = [];
   for (let i = 0; i < n; i++) {
-    const node = net.createNode();
+    // Deterministic IDs — the test harness uses i+1 in hex so the root
+    // for any topicId is predictable, avoiding flakes where the root
+    // happens to coincide with a subscribed/killed node.
+    const id = (i + 1).toString(16).padStart(16, '0');
+    const node = net.createNode(id);
     nodes.push(node);
   }
   net.rebuildRoutingTables();
@@ -651,6 +655,226 @@ async function run() {
       root.refreshTick();
     }
     assert('root persists regardless of low-water', root.axonRoles.has(topicId));
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // Phase 3c — churn recovery
+  //
+  // These tests exercise the membership protocol under node death. The
+  // recovery mechanism in Phase 3a+3b is pure TTL + refresh: when a
+  // parent dies, its children's next refresh routes past the corpse to
+  // whoever is now on the path toward the topic hash. Stale state ages
+  // out via lastRenewed TTL. No explicit death-detection message types.
+  //
+  // Tests confirm the tree heals within a bounded number of ticks.
+  // ───────────────────────────────────────────────────────────────────
+
+  // ── Test 21: Root death → new root elected by next refresh ──────────
+  {
+    console.log('\n[Test 21] Root dies → next refresh elects new root');
+    let t = 1000;
+    const now = () => t;
+    const topicId = 'fedcba9876543210';
+    const { net, nodes, axons } = buildAxonNetwork(10, {
+      now,
+      refreshIntervalMs:    1000,
+      maxSubscriptionAgeMs: 3000,
+      rootGraceMs:          1000,
+    });
+
+    // Subscribe multiple nodes so there's a real tree to salvage.
+    const subs = [1, 2, 3, 4, 5];
+    for (const i of subs) axons[i].pubsubSubscribe(topicId);
+    await sleep(100);
+
+    // Identify the current root and kill it.
+    const originalRoot = axons.find(a => a.axonRoles.has(topicId) &&
+                                          a.axonRoles.get(topicId).isRoot);
+    assert('original root exists', !!originalRoot);
+    const originalRootNodeId = originalRoot.nodeId;
+    const originalRootNode = nodes.find(n =>
+      n.id === originalRootNodeId
+    );
+    net.markDead(originalRootNodeId);
+
+    // Advance one refresh interval and tick every live axon's refresh.
+    t = 2100;
+    for (let i = 0; i < axons.length; i++) {
+      if (nodes[i].id === originalRootNodeId) continue;   // dead node doesn't refresh
+      axons[i].refreshTick();
+    }
+    await sleep(100);
+
+    // A new root should now exist somewhere.
+    const newRoot = axons.find(a => a.nodeId !== originalRootNodeId &&
+                                    a.axonRoles.has(topicId) &&
+                                    a.axonRoles.get(topicId).isRoot);
+    assert('new root elected after one refresh', !!newRoot,
+           `roles: ${axons.filter(a => a.axonRoles.has(topicId)).map(a =>
+             `${a.nodeId.slice(0,6)}:root=${a.axonRoles.get(topicId).isRoot}`).join(' ')}`);
+
+    // Publish from a non-subscriber and verify at least one subscriber gets it.
+    let fires = 0;
+    for (const i of subs) {
+      axons[i].onPubsubDelivery(() => fires++);
+    }
+    axons[7].pubsubPublish(topicId, '{"msg":"post-churn"}');
+    await sleep(200);
+    assert('at least one subscriber receives post-churn publish',
+           fires >= 1, `fires=${fires}`);
+  }
+
+  // ── Test 22: Subscriber death → silently swept by TTL ───────────────
+  {
+    console.log('\n[Test 22] Dead subscriber is swept by TTL');
+    let t = 1000;
+    const now = () => t;
+    const topicId = '1234567890abcdef';
+    const { net, nodes, axons } = buildAxonNetwork(8, {
+      now,
+      refreshIntervalMs:    1000,
+      maxSubscriptionAgeMs: 2000,
+    });
+
+    axons[0].pubsubSubscribe(topicId);
+    axons[1].pubsubSubscribe(topicId);
+    await sleep(100);
+
+    const root = axons.find(a => a.axonRoles.has(topicId) &&
+                                 a.axonRoles.get(topicId).isRoot);
+    assert('root holds 2 subscribers',
+           root.axonRoles.get(topicId).children.size === 2);
+
+    // Kill one subscriber and silence its leaf-refresh.
+    net.markDead(nodes[1].id);
+    axons[1].mySubscriptions.delete(topicId);
+
+    // Advance clock to t=1500, let the live subscriber refresh (mimics
+    // steady-state operation where every live leaf ticks each interval).
+    t = 1500;
+    axons[0].refreshTick();
+    await sleep(50);
+
+    // Advance past TTL for the dead subscriber. Live subscriber's
+    // lastRenewed = 1500, age at t=4000 is 2500 > 2000 too... so we also
+    // need to refresh axons[0] again right before the sweep.
+    t = 3000;
+    axons[0].refreshTick();
+    await sleep(50);
+    t = 4000;
+    root.refreshTick();
+    assert('dead subscriber swept, live subscriber retained',
+           root.axonRoles.get(topicId).children.size === 1);
+  }
+
+  // ── Test 23: Multi-subscriber churn — majority survives ─────────────
+  //   Subscribe 5 nodes, kill 2 leaf subscribers (explicitly not the root
+  //   so the topic's anchor survives), publish again, verify the other 3
+  //   still receive. This isolates "subscriber churn without root churn"
+  //   from the larger "root dies" scenario covered in Test 21.
+  {
+    console.log('\n[Test 23] Partial subscriber churn: survivors keep receiving');
+    const topicId = 'aabbccdd11223344';
+    const { net, nodes, axons } = buildAxonNetwork(10);
+
+    const delivered = new Map();
+    for (let i = 0; i < 5; i++) {
+      const idx = i;
+      axons[i].onPubsubDelivery(() => delivered.set(idx, (delivered.get(idx) || 0) + 1));
+      axons[i].pubsubSubscribe(topicId);
+    }
+    await sleep(150);
+
+    // Baseline: all 5 should receive the first publish.
+    axons[8].pubsubPublish(topicId, '{"seq":1}');
+    await sleep(200);
+    const baselineFires = [...delivered.values()].reduce((a, b) => a + b, 0);
+    assert('baseline: all 5 got first publish', baselineFires === 5,
+           `fires=${baselineFires}`);
+
+    // Pick two subscribers to kill — explicitly skip the one that is
+    // currently the root, so we're testing leaf churn in isolation.
+    const rootAxon = axons.find(a => a.axonRoles.has(topicId) &&
+                                     a.axonRoles.get(topicId).isRoot);
+    const rootNodeId = rootAxon.nodeId;
+    const victims = [];
+    for (let i = 0; i < 5 && victims.length < 2; i++) {
+      if (nodes[i].id.toString(16).padStart(16, '0') === rootNodeId) continue;
+      victims.push(i);
+    }
+    for (const i of victims) {
+      net.markDead(nodes[i].id);
+      axons[i].mySubscriptions.delete(topicId);
+    }
+
+    delivered.clear();
+    axons[8].pubsubPublish(topicId, '{"seq":2}');
+    await sleep(200);
+
+    // Survivors = [0..4] \ victims.
+    const survivors = [0, 1, 2, 3, 4].filter(i => !victims.includes(i));
+    const survivorFires = survivors.filter(i => delivered.get(i) === 1).length;
+    assert('all 3 survivors receive post-churn publish',
+           survivorFires === 3,
+           `survivorFires=${survivorFires}, victims=${victims}, survivors=${survivors}`);
+  }
+
+  // ── Test 24b: Eager dead-child removal on publish fan-out ───────────
+  //   When sendDirect fails, the axon drops the child immediately rather
+  //   than waiting for TTL. Next publish has a tighter fan-out set.
+  {
+    console.log('\n[Test 24b] Eager dead-child removal on sendDirect failure');
+    const topicId = '5a5a5a5a5a5a5a5a';
+    const { net, nodes, axons } = buildAxonNetwork(8);
+
+    for (let i = 0; i < 3; i++) axons[i].pubsubSubscribe(topicId);
+    await sleep(100);
+
+    const root = axons.find(a => a.axonRoles.has(topicId));
+    assert('baseline: 3 children', root.axonRoles.get(topicId).children.size === 3);
+
+    // Kill subscriber 1 and publish once.
+    net.markDead(nodes[1].id);
+    axons[4].pubsubPublish(topicId, '{}');
+    await sleep(150);
+
+    assert('dead child removed immediately after publish',
+           root.axonRoles.get(topicId).children.size === 2,
+           `children=${root.axonRoles.get(topicId).children.size}`);
+  }
+
+  // ── Test 24: Publish routes around a dead intermediate hop ──────────
+  //   The DHT's greedy routing naturally picks an alive alternate when
+  //   the preferred next hop is dead. Verify a publish still reaches its
+  //   axon after we kill random nodes that are neither the root, the
+  //   publisher, nor the subscriber.
+  {
+    console.log('\n[Test 24] Publish routes around a dead intermediate');
+    const topicId = 'abcd1234ef915678';   // 16 hex chars
+    const { net, nodes, axons } = buildAxonNetwork(12);
+
+    let received = 0;
+    axons[0].onPubsubDelivery(() => received++);
+    axons[0].pubsubSubscribe(topicId);
+    await sleep(100);
+
+    const rootAxon = axons.find(a => a.axonRoles.has(topicId));
+    const rootNodeId = rootAxon.nodeId;
+    const pubNodeId  = nodes[10].id;
+    const subNodeId  = nodes[0].id;
+    // Pick 3 nodes to kill that are none of {root, publisher, subscriber}.
+    const victims = [];
+    for (let i = 1; i < nodes.length && victims.length < 3; i++) {
+      const nid = nodes[i].id;
+      if (nid === rootNodeId || nid === pubNodeId || nid === subNodeId) continue;
+      victims.push(nid);
+    }
+    for (const vid of victims) net.markDead(vid);
+
+    axons[10].pubsubPublish(topicId, '{}');
+    await sleep(200);
+    assert('publish survives intermediate deaths',
+           received === 1, `received=${received}, victims=${victims}, root=${rootNodeId}`);
   }
 
   // ── Summary ─────────────────────────────────────────────────────────

@@ -1691,6 +1691,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        rules: params.nx1wRules,
       });
     case 'kademlia':
     default:

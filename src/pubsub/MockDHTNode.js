@@ -271,6 +271,13 @@ export class MockDHTNode {
    * liveness for churn handling.
    */
   sendDirect(peerId, type, payload) {
+    // Return value semantics: TRUE = "peer was alive at call time, send
+    // was scheduled" (even if the packet is dropped in flight); FALSE =
+    // "peer is dead or unknown" (caller should remove them from their
+    // state). This mirrors real-world transport: a sender knows
+    // immediately if a connection failed at the OS/transport layer, but
+    // can only learn about in-flight drops via missing acks, which is a
+    // separate mechanism out of scope for this simulator.
     const peer = this.network.getAlive(peerId);
     if (!peer) {
       this.network.stats.dropped++;
@@ -278,7 +285,7 @@ export class MockDHTNode {
     }
     if (this.network.dropFn(this.id, peerId, type)) {
       this.network.stats.dropped++;
-      return false;
+      return true;    // alive but message lost — caller keeps the relationship
     }
     this.network.stats.sentDirect++;
     const latency = this.network.latencyFn(this.id, peerId, type);

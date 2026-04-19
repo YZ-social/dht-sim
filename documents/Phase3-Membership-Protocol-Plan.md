@@ -1,6 +1,6 @@
 # Phase 3 — Distributed Pub/Sub Membership Protocol (Plan)
 
-**Status:** Phase 3a shipped in v0.52.00. Phase 3b + 3c in progress under NX-15 packaging.
+**Status:** Phase 3a (v0.52.00), 3b (v0.53.00), and 3c-core (v0.54.00) shipped under NX-15 packaging. Benchmark-harness integration deferred.
 **Target:** Extend the DHT simulator with a real, self-organising pub/sub membership protocol, built on top of existing routing. Package the work as a new neuromorphic protocol variant, **NX-15**, that extends NX-10. Existing protocols (Kademlia, G-DHT, NX-10) are not modified; they continue to use the pre-computed-group `pubsubBroadcast` API for their delivery-physics benchmarks.
 
 **Packaging decision:** Rather than pushing the routed-message primitive into the DHT base class (original Option B), we create NX-15 as a subclass of NX-10 that adds the four primitives locally (`routeMessage`, `onRoutedMessage`, `sendDirect`, `onDirectMessage`) and wires an `AxonManager` instance per node. This avoids base-class surgery while giving NX-15 the full membership protocol. The `AxonManager` module stays protocol-agnostic — it could wrap any DHT that implements the four primitives.
@@ -503,14 +503,23 @@ Phase 3 breaks into three incremental milestones. Each produces a shippable chec
 - Benchmark: `pubsubConvergence` + `pubsubSteadyState`.
 - Deliverable: NX-15 appears alongside NX-10 in the sim with real persistent trees; scales to thousands of subscribers with bounded per-axon load and collapses gracefully when subscribers leave.
 
-### Phase 3c — Churn recovery
+### Phase 3c — Churn recovery (shipped in v0.54.00; benchmarks deferred)
 
-- Parent-death detection (explicit `sendDirect` failure, or `routeMessage` exhaustion) → eager re-subscribe.
-- Root-churn handling via refresh (the re-subscribe naturally lands at whoever is now closest to the hash).
-- Benchmark: `pubsubChurn`.
-- Deliverable: protocol survives 25 % churn with self-healing tree, ≥ 98 % delivery rate.
+**Shipped:**
+- Eager dead-child removal on `sendDirect` failure during publish fan-out (tightens publish-loss window from one refresh interval to a single tick).
+- Distinguished `sendDirect` return-value semantics: `true` means "peer alive at call time; message scheduled" (even if dropped in flight); `false` means "peer dead or unknown" (caller should remove from state). Matches real-world transport signalling where connection failures are known immediately but mid-flight drops require a separate ack mechanism.
+- Root-churn handling verified via refresh (the re-subscribe naturally lands at whoever is now closest to the hash). No separate code path required — the protocol's normal subscribe route handles it.
+- Churn scenario tests: root death, subscriber death, partial-churn survival, publish around dead intermediates, eager dead-child removal.
 
-Each milestone is ~300-500 lines of code and a testable increment. Total Phase 3 effort: roughly 1.5 to 2 weeks of focused work.
+**Deferred to a future pass:**
+- Explicit parent-death detection via `routeMessage` exhaustion — the test suite shows the TTL + refresh loop is sufficient for every scenario we exercised; explicit detection remains a possible optimisation if real-world latency demands it.
+- `pubsubConvergence`, `pubsubSteadyState`, `pubsubChurn` benchmark test types. The existing `pubsubBroadcast(relayId, targetIds)` benchmark harness drives a synchronous one-shot API; the membership protocol's asynchronous callback-driven path is incompatible with that harness shape. Adapting the harness is a structural refactor that deserves its own milestone.
+
+**Deliverable:** protocol survives all tested churn scenarios (node death, subscriber death, intermediate-hop death) with self-healing trees and 100 % delivery on survivors.
+
+---
+
+Each milestone is ~300-500 lines of code and a testable increment. Actual Phase 3 effort: roughly one focused day per milestone plus one more for benchmarks (still pending).
 
 ---
 

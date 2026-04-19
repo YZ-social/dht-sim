@@ -278,14 +278,21 @@ export class AxonManager {
     // to us. A forwarder is a relay, not a recipient — if they happen to
     // also be a subscriber, they need delivery. The PubSubAdapter's own
     // senderId-based drop handles the publisher's own self-delivery.
+    //
+    // §5.6 eager churn detection: when sendDirect returns false the peer
+    // is dead. Drop them from our children map immediately rather than
+    // waiting for the next TTL sweep. This tightens the publish-loss
+    // window after churn from one refresh interval to a single tick.
+    const deadChildren = [];
     for (const [childId] of role.children) {
       if (childId === this.nodeId) {
-        // We're both axon and subscriber — deliver locally (no network).
         if (this._deliveryCallback) this._deliveryCallback(topicId, json);
         continue;
       }
-      this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json });
+      const ok = this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json });
+      if (!ok) deadChildren.push(childId);
     }
+    for (const dead of deadChildren) role.children.delete(dead);
     return 'consumed';
   }
 

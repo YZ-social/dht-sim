@@ -241,15 +241,19 @@ async function run() {
            /^[0-9a-f]{16}$/.test(topicIdFor('chat', 'hello')),
            topicIdFor('chat', 'hello'));
 
-    // Collision sanity: a thousand variants should have no collisions.
+    // Collision sanity: a thousand variants should have no collisions
+    // AND each must be a valid 16-char positive-hex string (no leading '-').
     const seen = new Set();
     let collisions = 0;
+    let malformed = 0;
     for (let i = 0; i < 1000; i++) {
       const id = topicIdFor('d', 'e' + i);
       if (seen.has(id)) collisions++;
+      if (!/^[0-9a-f]{16}$/.test(id)) malformed++;
       seen.add(id);
     }
     assert('no collisions across 1000 distinct events', collisions === 0, `got ${collisions}`);
+    assert('every topicId is 16-hex positive',          malformed === 0, `got ${malformed}`);
   }
 
   // ── Test 10: onGap per-topic hook fires separately from global ─────────

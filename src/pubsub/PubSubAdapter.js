@@ -74,9 +74,11 @@ export function topicIdFor(domain, event) {
     h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
     h2 = Math.imul(h2 ^ (c * 0x9e3779b1), 0x85ebca6b) >>> 0;
   }
-  // avalanche
-  h1 ^= h1 >>> 16; h1 = Math.imul(h1, 0x7feb352d) >>> 0; h1 ^= h1 >>> 15;
-  h2 ^= h2 >>> 16; h2 = Math.imul(h2, 0x846ca68b) >>> 0; h2 ^= h2 >>> 16;
+  // avalanche. Each step must end with `>>> 0` so the final value is a
+  // uint32 — otherwise toString(16) emits a "-" for negative int32 and
+  // downstream consumers (xorDistance → BigInt('0x' + …)) blow up.
+  h1 ^= h1 >>> 16; h1 = Math.imul(h1, 0x7feb352d); h1 ^= h1 >>> 15; h1 >>>= 0;
+  h2 ^= h2 >>> 16; h2 = Math.imul(h2, 0x846ca68b); h2 ^= h2 >>> 16; h2 >>>= 0;
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
 }
 

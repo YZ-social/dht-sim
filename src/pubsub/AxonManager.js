@@ -52,6 +52,8 @@ export class AxonManager {
     refreshIntervalMs    = DEFAULT_REFRESH_INTERVAL_MS,
     maxSubscriptionAgeMs = DEFAULT_MAX_SUBSCRIPTION_AGE_MS,
     rootGraceMs          = DEFAULT_ROOT_GRACE_MS,
+    pickRecruitPeer      = null,   // protocol-specific override (§5.9)
+    shouldRecruitSubAxon = null,   // protocol-specific override
     now                  = () => Date.now(),
   } = {}) {
     if (!dht) throw Error('AxonManager: dht is required');
@@ -65,6 +67,12 @@ export class AxonManager {
     this.rootGraceMs           = rootGraceMs;
     this._now                  = now;
 
+    // Policy overrides — if provided, replace the default methods. The DHT
+    // (e.g., NX-15) is the usual source; it injects its protocol-specific
+    // selection using its own routing-table state.
+    if (pickRecruitPeer)      this.pickRecruitPeer      = pickRecruitPeer;
+    if (shouldRecruitSubAxon) this.shouldRecruitSubAxon = shouldRecruitSubAxon;
+
     /** topicHash -> TopicRole */
     this.axonRoles = new Map();
 
@@ -75,10 +83,12 @@ export class AxonManager {
     this._deliveryCallback = null;
 
     // Register handlers with the DHT.
-    dht.onRoutedMessage('pubsub:subscribe',   (p, m) => this._onSubscribe(p, m));
-    dht.onRoutedMessage('pubsub:unsubscribe', (p, m) => this._onUnsubscribe(p, m));
-    dht.onRoutedMessage('pubsub:publish',     (p, m) => this._onPublish(p, m));
-    dht.onDirectMessage('pubsub:deliver',     (p, m) => this._onDeliver(p, m));
+    dht.onRoutedMessage('pubsub:subscribe',    (p, m) => this._onSubscribe(p, m));
+    dht.onRoutedMessage('pubsub:unsubscribe',  (p, m) => this._onUnsubscribe(p, m));
+    dht.onRoutedMessage('pubsub:publish',      (p, m) => this._onPublish(p, m));
+    dht.onDirectMessage('pubsub:deliver',      (p, m) => this._onDeliver(p, m));
+    dht.onDirectMessage('pubsub:promote-axon', (p, m) => this._onPromoteAxon(p, m));
+    dht.onDirectMessage('pubsub:dissolve-hint',(p, m) => this._onDissolveHint(p, m));
 
     // Periodic refresh + TTL sweep. We use a single timer driving both
     // actions; refreshTick() is exported for tests that prefer to pump
@@ -125,7 +135,10 @@ export class AxonManager {
   /**
    * SUBSCRIBE routed message handler.
    *
-   * - If we are already the axon for topicId: add/renew the subscriber.
+   * - If we are already the axon for topicId:
+   *     - Renewal: bump lastRenewed.
+   *     - New subscriber under capacity: add to children.
+   *     - New subscriber over capacity: recruit a sub-axon (§5.2, §5.8).
    * - If we are the terminal (closest-to-hash) and no axon exists: become root.
    * - Otherwise: forward along the route.
    */
@@ -135,13 +148,49 @@ export class AxonManager {
     const now = this._now();
 
     if (role) {
+      // Self-subscribe: a non-root axon refreshing upward toward its
+      // parent invokes its own handler at hop 0. We must NOT register
+      // ourselves as our own child. The message should continue toward
+      // the parent (or wherever is closer to the hash). A root that
+      // subscribes to its own topic, however, is legitimate — it's the
+      // terminal and has no upstream to forward to.
+      if (subscriberId === this.nodeId) {
+        if (!role.isRoot) return 'forward';
+        // Root self-subscribes: add/renew self as a child.
+      }
+
       const existing = role.children.get(subscriberId);
       if (existing) {
         existing.lastRenewed = now;
-      } else {
-        // Phase 3a: no recruitment; every subscriber attaches directly.
-        role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
+        return 'consumed';
       }
+
+      if (this.shouldRecruitSubAxon(role)) {
+        // Delegate: the next peer toward the new subscriber becomes a sub-axon.
+        // Default: meta.fromId (the peer that forwarded this subscribe TO us).
+        // Subclass override: NX-15 uses synaptome-weighted selection (§5.9).
+        const recruitId = this.pickRecruitPeer(role, meta, subscriberId);
+
+        // Corner case: the recruit may already be a sub-axon we've registered.
+        // In that case just extend its lastRenewed (it'll pick up the new
+        // subscriber through its own promote-axon handler) and re-send the
+        // promote hint so the recruit adds the subscriber.
+        if (role.children.has(recruitId)) {
+          role.children.get(recruitId).lastRenewed = now;
+        } else {
+          role.children.set(recruitId, { createdAt: now, lastRenewed: now });
+        }
+
+        // Tell the recruit to take over for this subscriber.
+        this.dht.sendDirect(recruitId, 'pubsub:promote-axon', {
+          topicId,
+          newSubscriberId: subscriberId,
+          parentId:        this.nodeId,
+        });
+        return 'consumed';
+      }
+
+      role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
       return 'consumed';
     }
 
@@ -153,12 +202,45 @@ export class AxonManager {
         children:       new Map([[subscriberId, { createdAt: now, lastRenewed: now }]]),
         parentLastSent: 0,
         roleCreatedAt:  now,
-        emptiedAt:      0,   // tracks when children last went empty — §5.7 rootGrace
+        emptiedAt:      0,
+        lowWaterSince:  0,   // §5.8 — when children.size first dropped below minDirectSubs
       });
       return 'consumed';
     }
 
     return 'forward';
+  }
+
+  // ── Policy hooks (overridable by subclasses) ───────────────────────
+
+  /**
+   * Should this axon recruit a sub-axon for the next new subscriber?
+   * Default: when children.size reaches maxDirectSubs.
+   * Override on a subclass (e.g., NX-15) to use protocol-specific
+   * knowledge — for instance to refuse recruitment when no high-weight
+   * synapse is available as a recruit candidate.
+   */
+  shouldRecruitSubAxon(role) {
+    return role.children.size >= this.maxDirectSubs;
+  }
+
+  /**
+   * Pick which peer should be recruited as a sub-axon.
+   *
+   * @param {TopicRole} role        — the current axon's role state
+   * @param {Object}    meta        — routed-message meta ({ fromId, … })
+   * @param {NodeId}    subscriberId — the new subscriber being delegated
+   * @returns {NodeId}              — recruited peer id
+   *
+   * Default: `meta.fromId` (the peer that forwarded the subscribe to us).
+   * This is always on the path from subscriber to axon, so it will see
+   * future subscribes from the same direction and catch them at the
+   * sub-axon level.
+   *
+   * Override: NX-15 prefers forward-progress synaptome peers by weight.
+   */
+  pickRecruitPeer(role, meta, subscriberId) {
+    return meta.fromId;
   }
 
   /**
@@ -209,10 +291,104 @@ export class AxonManager {
 
   /**
    * DIRECT delivery handler — fires when an axon fan-out reaches us.
+   * If we have our own role for this topic, re-fan-out to our children
+   * (we are a sub-axon in the middle of the tree). Otherwise just deliver
+   * locally to the adapter.
    */
   _onDeliver(payload, meta) {
     const { topicId, json } = payload;
+
+    // Sub-axon re-fan-out: we are an intermediate axon in the tree.
+    const role = this.axonRoles.get(topicId);
+    if (role) {
+      for (const [childId] of role.children) {
+        if (childId === meta.fromId) continue;    // don't echo upstream
+        if (childId === this.nodeId) continue;    // self-delivery handled below
+        this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json });
+      }
+    }
+
+    // Local delivery to the adapter (fires whether or not we are also a
+    // sub-axon — matches the app-level "I subscribed to this topic"
+    // expectation).
     if (this._deliveryCallback) this._deliveryCallback(topicId, json);
+  }
+
+  /**
+   * DIRECT handler — an upstream axon has promoted us to sub-axon status.
+   * Payload: { topicId, newSubscriberId, parentId }.
+   *
+   * If we already have a role for this topic, just add newSubscriberId to
+   * our children (the promoter is idempotent; they may send multiple
+   * promote-axon messages as new subscribers arrive through us).
+   *
+   * If we do not have a role, create one with parentId set to the
+   * promoter. Our own refreshTick will issue subscribes upward so the
+   * promoter keeps us in its children.
+   */
+  _onPromoteAxon(payload, meta) {
+    const { topicId, newSubscriberId, parentId } = payload;
+    const now = this._now();
+
+    let role = this.axonRoles.get(topicId);
+    if (!role) {
+      role = {
+        parentId,
+        isRoot:         false,
+        children:       new Map(),
+        parentLastSent: 0,
+        roleCreatedAt:  now,
+        emptiedAt:      0,
+        lowWaterSince:  0,
+      };
+      this.axonRoles.set(topicId, role);
+      // Immediately refresh upward so the promoter sees us as one of
+      // their children right away (without waiting for the next tick).
+      this.dht.routeMessage(topicId, 'pubsub:subscribe',
+                            { topicId, subscriberId: this.nodeId });
+    }
+
+    // Add the new subscriber (or renew if already present).
+    const existing = role.children.get(newSubscriberId);
+    if (existing) existing.lastRenewed = now;
+    else          role.children.set(newSubscriberId, { createdAt: now, lastRenewed: now });
+  }
+
+  /**
+   * DIRECT handler — our parent axon is dissolving and suggests we
+   * re-attach via its own parent (or toward the hash).
+   * Payload: { topicId, suggestedParent }.
+   *
+   * We immediately re-issue our own subscribe. The routed subscribe will
+   * be intercepted by the first live axon on the path — which may be the
+   * suggestedParent (the grandparent in the dissolved tree) or any
+   * intermediate axon that still has capacity.
+   *
+   * Leaf subscribers receive this too — they just re-issue via their
+   * mySubscriptions entry.
+   */
+  _onDissolveHint(payload, meta) {
+    const { topicId } = payload;
+
+    // Case 1: we are a direct subscriber (the hint lands here because the
+    // dissolving axon had us as a leaf child). Re-route the subscribe via
+    // our own pubsubSubscribe path if we still want this topic.
+    if (this.mySubscriptions.has(topicId)) {
+      this.dht.routeMessage(topicId, 'pubsub:subscribe',
+                            { topicId, subscriberId: this.nodeId });
+    }
+
+    // Case 2: we are a sub-axon whose parent dissolved. Clear our parent
+    // pointer and re-issue our upward subscribe so we attach to whoever
+    // is now on the path to the hash.
+    const role = this.axonRoles.get(topicId);
+    if (role && !role.isRoot) {
+      role.parentId = null;
+      if (role.children.size > 0) {
+        this.dht.routeMessage(topicId, 'pubsub:subscribe',
+                              { topicId, subscriberId: this.nodeId });
+      }
+    }
   }
 
   // ── Refresh and TTL sweep ───────────────────────────────────────────
@@ -262,7 +438,34 @@ export class AxonManager {
       }
     }
 
-    // 4. GC empty roles.
+    // 4. §5.8 hysteresis dissolve — a non-root axon whose child count has
+    //    been below minDirectSubs for one full refresh interval sends a
+    //    dissolve-hint to its children and removes its own role. The
+    //    parent's next TTL sweep will drop this (now-silent) axon.
+    //    Root never dissolves via hysteresis — it's bound to the hash.
+    for (const [topicId, role] of this.axonRoles) {
+      if (role.isRoot) continue;
+      if (role.children.size === 0) continue;  // handled in step 5
+      if (role.children.size >= this.minDirectSubs) {
+        role.lowWaterSince = 0;
+        continue;
+      }
+      if (role.lowWaterSince === 0) {
+        role.lowWaterSince = now;
+        continue;
+      }
+      if (now - role.lowWaterSince > this.refreshIntervalMs) {
+        // One full refresh interval below min → dissolve.
+        for (const [childId] of role.children) {
+          this.dht.sendDirect(childId, 'pubsub:dissolve-hint', {
+            topicId, suggestedParent: role.parentId,
+          });
+        }
+        this.axonRoles.delete(topicId);
+      }
+    }
+
+    // 5. GC empty roles.
     for (const [topicId, role] of this.axonRoles) {
       if (role.children.size > 0) continue;
       if (!role.isRoot) {

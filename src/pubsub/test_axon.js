@@ -50,6 +50,8 @@ function buildAxonNetwork(n, opts = {}) {
   for (const node of nodes) {
     const axon = new AxonManager({
       dht: node,
+      maxDirectSubs:        opts.maxDirectSubs        ?? 20,
+      minDirectSubs:        opts.minDirectSubs        ?? 5,
       refreshIntervalMs:    opts.refreshIntervalMs    ?? 100000,   // tests drive manually
       maxSubscriptionAgeMs: opts.maxSubscriptionAgeMs ?? 30000,
       rootGraceMs:          opts.rootGraceMs          ?? 60000,
@@ -380,6 +382,275 @@ async function run() {
     const bumped = [...root.axonRoles.get(topicId).children.values()][0].lastRenewed;
     assert('lastRenewed bumped by refreshTick', bumped > initial,
            `initial=${initial} bumped=${bumped}`);
+  }
+
+  // ── Test 14: Recruitment — axon over capacity delegates to sub-axon ─
+  {
+    console.log('\n[Test 14] Recruitment when children >= maxDirectSubs');
+    const topicId = '8888888888888888';
+    const { nodes, axons } = buildAxonNetwork(10, { maxDirectSubs: 3 });
+
+    // Hand-install a root role with exactly 3 children so the next
+    // subscribe triggers recruitment. This bypasses real routing.
+    const root = axons[0];
+    const now = Date.now();
+    root.axonRoles.set(topicId, {
+      parentId:       null,
+      isRoot:         true,
+      children:       new Map([
+        [nodes[1].id, { createdAt: now, lastRenewed: now }],
+        [nodes[2].id, { createdAt: now, lastRenewed: now }],
+        [nodes[3].id, { createdAt: now, lastRenewed: now }],
+      ]),
+      parentLastSent: 0,
+      roleCreatedAt:  now,
+      emptiedAt:      0,
+      lowWaterSince:  0,
+    });
+
+    // Directly invoke _onSubscribe as if a new subscribe arrived from
+    // nodes[4] through forwarder nodes[5].
+    root._onSubscribe(
+      { topicId, subscriberId: nodes[4].id },
+      { fromId: nodes[5].id, isTerminal: false, hopCount: 1 }
+    );
+
+    assert('root children count still 4 (added recruit, not subscriber)',
+           root.axonRoles.get(topicId).children.size === 4);
+    assert('recruit (forwarder) added to root children',
+           root.axonRoles.get(topicId).children.has(nodes[5].id));
+    assert('actual subscriber NOT in root children directly',
+           !root.axonRoles.get(topicId).children.has(nodes[4].id));
+
+    // Give the promote-axon direct message time to arrive.
+    await sleep(50);
+
+    const recruit = axons[5];
+    assert('recruit now has role for topic', recruit.axonRoles.has(topicId));
+    const recruitRole = recruit.axonRoles.get(topicId);
+    assert('recruit role is non-root',      recruitRole.isRoot === false);
+    assert('recruit parentId is promoter',  recruitRole.parentId === nodes[0].id);
+    assert('recruit has new subscriber as child',
+           recruitRole.children.has(nodes[4].id));
+  }
+
+  // ── Test 15: Idempotent promote — multiple subscribers via same recruit ─
+  {
+    console.log('\n[Test 15] Multiple subscribers routed through same recruit');
+    const topicId = '9999999999999999';
+    const { nodes, axons } = buildAxonNetwork(10, { maxDirectSubs: 2 });
+
+    // Pre-populate root with 2 children.
+    const root = axons[0];
+    const now = Date.now();
+    root.axonRoles.set(topicId, {
+      parentId: null, isRoot: true,
+      children: new Map([
+        [nodes[1].id, { createdAt: now, lastRenewed: now }],
+        [nodes[2].id, { createdAt: now, lastRenewed: now }],
+      ]),
+      parentLastSent: 0, roleCreatedAt: now, emptiedAt: 0, lowWaterSince: 0,
+    });
+
+    // Two different subscribers both arrive via forwarder nodes[5].
+    root._onSubscribe(
+      { topicId, subscriberId: nodes[4].id },
+      { fromId: nodes[5].id, isTerminal: false });
+    root._onSubscribe(
+      { topicId, subscriberId: nodes[6].id },
+      { fromId: nodes[5].id, isTerminal: false });
+
+    await sleep(50);
+
+    const recruit = axons[5];
+    assert('recruit exists once in root children (not duplicated)',
+           root.axonRoles.get(topicId).children.size === 3,
+           `size=${root.axonRoles.get(topicId).children.size}`);
+    assert('recruit role has both subscribers',
+           recruit.axonRoles.get(topicId).children.size === 2);
+    assert('subscriber 4 in recruit children',
+           recruit.axonRoles.get(topicId).children.has(nodes[4].id));
+    assert('subscriber 6 in recruit children',
+           recruit.axonRoles.get(topicId).children.has(nodes[6].id));
+  }
+
+  // ── Test 16: End-to-end publish reaches sub-axon branch ─────────────
+  {
+    console.log('\n[Test 16] Publish fans out through sub-axon to leaf subscribers');
+    const { nodes, axons } = buildAxonNetwork(10, { maxDirectSubs: 2 });
+    // Use axons[0]'s id as the topicId so routing always terminates at
+    // axons[0] (its XOR distance to itself is zero). This lets us plant
+    // the root role at axons[0] and be sure a publish from anywhere will
+    // find it.
+    const topicId = nodes[0].id;
+
+    // Pre-populate root.
+    const root = axons[0];
+    const now = Date.now();
+    root.axonRoles.set(topicId, {
+      parentId: null, isRoot: true,
+      children: new Map([
+        [nodes[1].id, { createdAt: now, lastRenewed: now }],
+        [nodes[2].id, { createdAt: now, lastRenewed: now }],
+      ]),
+      parentLastSent: 0, roleCreatedAt: now, emptiedAt: 0, lowWaterSince: 0,
+    });
+
+    // Install a 'pubsub:deliver' direct handler on nodes[1], nodes[2],
+    // nodes[4], nodes[6]. Count deliveries per node.
+    const delivered = new Map();
+    for (const i of [1, 2, 4, 6]) {
+      axons[i].onPubsubDelivery((tid, json) => {
+        delivered.set(i, (delivered.get(i) || 0) + 1);
+      });
+    }
+
+    // Add two more subscribers through recruit nodes[5].
+    root._onSubscribe({ topicId, subscriberId: nodes[4].id },
+                     { fromId: nodes[5].id, isTerminal: false });
+    root._onSubscribe({ topicId, subscriberId: nodes[6].id },
+                     { fromId: nodes[5].id, isTerminal: false });
+    await sleep(50);
+
+    // Publish from an uninvolved node (nodes[7]).
+    axons[7].pubsubPublish(topicId, '{"x":1}');
+    await sleep(200);
+
+    assert('leaf subscriber 1 (direct at root) received',    delivered.get(1) === 1);
+    assert('leaf subscriber 2 (direct at root) received',    delivered.get(2) === 1);
+    assert('leaf subscriber 4 (under sub-axon) received',    delivered.get(4) === 1);
+    assert('leaf subscriber 6 (under sub-axon) received',    delivered.get(6) === 1);
+  }
+
+  // ── Test 17: Hysteresis dissolve — below min → dissolve-hint to children ─
+  {
+    console.log('\n[Test 17] Non-root axon below minDirectSubs dissolves');
+    let t = 1000;
+    const now = () => t;
+    const topicId = 'bbbb222222222222';
+    const { nodes, axons } = buildAxonNetwork(10, {
+      now, minDirectSubs: 3, refreshIntervalMs: 500, maxSubscriptionAgeMs: 60000,
+    });
+
+    // Inject a non-root role with only 2 children (below minDirectSubs=3).
+    const subAxon = axons[5];
+    subAxon.axonRoles.set(topicId, {
+      parentId:       nodes[0].id,
+      isRoot:         false,
+      children:       new Map([
+        [nodes[1].id, { createdAt: t, lastRenewed: t }],
+        [nodes[2].id, { createdAt: t, lastRenewed: t }],
+      ]),
+      parentLastSent: 0,
+      roleCreatedAt:  t,
+      emptiedAt:      0,
+      lowWaterSince:  0,
+    });
+
+    // First tick: notice low-water, set lowWaterSince. Don't dissolve yet.
+    t = 1400;
+    subAxon.refreshTick();
+    assert('role persists on first low-water tick', subAxon.axonRoles.has(topicId));
+    assert('lowWaterSince set',
+           subAxon.axonRoles.get(topicId).lowWaterSince > 0);
+
+    // Second tick after one refresh interval has passed: dissolve.
+    t = 2500;
+    subAxon.refreshTick();
+    assert('role removed after refreshInterval below min',
+           !subAxon.axonRoles.has(topicId));
+  }
+
+  // ── Test 18: Hysteresis — recovery above min cancels dissolve ───────
+  {
+    console.log('\n[Test 18] lowWaterSince clears when children recover above min');
+    let t = 1000;
+    const now = () => t;
+    const topicId = 'cccc333333333333';
+    const { nodes, axons } = buildAxonNetwork(10, {
+      now, minDirectSubs: 3, refreshIntervalMs: 500, maxSubscriptionAgeMs: 60000,
+    });
+
+    const subAxon = axons[5];
+    subAxon.axonRoles.set(topicId, {
+      parentId: nodes[0].id, isRoot: false,
+      children: new Map([
+        [nodes[1].id, { createdAt: t, lastRenewed: t }],
+        [nodes[2].id, { createdAt: t, lastRenewed: t }],
+      ]),
+      parentLastSent: 0, roleCreatedAt: t, emptiedAt: 0, lowWaterSince: 0,
+    });
+
+    // First tick: mark low-water.
+    t = 1400;
+    subAxon.refreshTick();
+    assert('lowWaterSince set after first low tick',
+           subAxon.axonRoles.get(topicId).lowWaterSince > 0);
+
+    // A new subscriber arrives, bringing us to 3 (at min).
+    subAxon.axonRoles.get(topicId).children.set(
+      nodes[3].id, { createdAt: t, lastRenewed: t });
+
+    // Second tick: we are at min (>= minDirectSubs), so lowWaterSince clears.
+    t = 1900;
+    subAxon.refreshTick();
+    assert('role still present',           subAxon.axonRoles.has(topicId));
+    assert('lowWaterSince reset to 0',
+           subAxon.axonRoles.get(topicId).lowWaterSince === 0);
+  }
+
+  // ── Test 19: Dissolve-hint direct handler re-issues subscribe ───────
+  {
+    console.log('\n[Test 19] Leaf subscriber receiving dissolve-hint re-subscribes');
+    const topicId = 'dddd444444444444';
+    const { nodes, axons } = buildAxonNetwork(8);
+
+    // Leaf subscribes so mySubscriptions has the topic.
+    let reSubscribes = 0;
+    const origRoute = axons[3].dht.routeMessage.bind(axons[3].dht);
+    axons[3].dht.routeMessage = async (...args) => {
+      if (args[1] === 'pubsub:subscribe') reSubscribes++;
+      return origRoute(...args);
+    };
+
+    axons[3].pubsubSubscribe(topicId);
+    await sleep(100);
+    const priorCount = reSubscribes;
+
+    // Deliver a dissolve-hint directly to axons[3].
+    axons[3]._onDissolveHint({ topicId, suggestedParent: nodes[0].id }, { fromId: nodes[1].id });
+    await sleep(50);
+
+    assert('leaf re-issues subscribe on dissolve-hint',
+           reSubscribes > priorCount);
+  }
+
+  // ── Test 20: Root never dissolves via hysteresis ────────────────────
+  {
+    console.log('\n[Test 20] Root axon never dissolves via hysteresis');
+    let t = 1000;
+    const now = () => t;
+    const topicId = 'eeee555555555555';
+    const { nodes, axons } = buildAxonNetwork(5, {
+      now, minDirectSubs: 5, refreshIntervalMs: 500, rootGraceMs: 60000,
+      maxSubscriptionAgeMs: 60000,
+    });
+
+    const root = axons[0];
+    root.axonRoles.set(topicId, {
+      parentId: null, isRoot: true,
+      children: new Map([
+        [nodes[1].id, { createdAt: t, lastRenewed: t }],
+      ]),
+      parentLastSent: 0, roleCreatedAt: t, emptiedAt: 0, lowWaterSince: 0,
+    });
+
+    // Many ticks below minDirectSubs — root must persist.
+    for (let step = 0; step < 10; step++) {
+      t += 700;
+      root.refreshTick();
+    }
+    assert('root persists regardless of low-water', root.axonRoles.has(topicId));
   }
 
   // ── Summary ─────────────────────────────────────────────────────────

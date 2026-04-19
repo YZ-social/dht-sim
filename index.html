@@ -56,6 +56,7 @@
         <option value="ngdhtnx9">NX-9</option>
         <option value="ngdhtnx10">NX-10 ★</option>
         <option value="ngdhtnx13">NX-13</option>
+        <option value="ngdhtnx15">NX-15</option>
       </select>
       <div class="sb-row" style="margin-top:4px;margin-bottom:2px;gap:12px">
         <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
@@ -233,6 +234,7 @@
             <option value="ngdhtnx9"   selected>NX-9</option>
             <option value="ngdhtnx10"  selected>NX-10  ★</option>
             <option value="ngdhtnx13"  selected>NX-13</option>
+            <option value="ngdhtnx15"  selected>NX-15</option>
           </select>
         </div>
         <div class="sb-multisel" data-tip="Select which test conditions to include in the benchmark run. Click to toggle individual items.">
@@ -965,7 +967,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.52.01</div>
+    <div id="legend">Version: 0.53.00</div>
   </div>
 
   </div><!-- /mainRow -->
@@ -1124,6 +1126,7 @@
     ngdhtnx9:   'NX-9: Geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell, recruits same-cell branch nodes for direct 1-hop delivery. Root→branch: DHT routing; branch→subscriber: direct (no lookup).',
     ngdhtnx10:  '★ State of the Art — NX-10: Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). 100% success on all tests including 25% churn and Slice World. As of v0.50, uses strictly 2-hop honest annealing with no access to the global node map.',
     ngdhtnx13:  'NX-13: NX-10 with fully tunable parameters. Every rule can be enabled/disabled and every parameter adjusted via the panel. Use alongside NX-10 for A/B comparison to measure rule impact and find optimal configurations.',
+    ngdhtnx15:  'NX-15: Membership-protocol pub/sub. Extends NX-10 with real distributed subscribe/unsubscribe/publish — topic anchors elected by hash-proximity, axon trees that grow along routing paths when subscribers exceed a capacity threshold, and hysteresis-based orderly collapse. Every axon refreshes on a timer; silent nodes age out via TTL. Synaptome-weighted recruitment prefers high-weight LTP-trusted peers for axon membership. The one-shot pubsubBroadcast inherited from NX-10 still runs so delivery-physics numbers are reproducible; new benchmarks exercise the membership protocol directly.',
   };
   (function () {
     const sel = document.getElementById('dhtProtocol');

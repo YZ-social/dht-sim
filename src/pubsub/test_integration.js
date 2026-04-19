@@ -18,8 +18,20 @@
  */
 
 import { PubSubAdapter, topicIdFor } from './PubSubAdapter.js';
-import { MockDHTNetwork } from './MockDHTNode.js';
+import { MockDHTNetwork, xorDistance } from './MockDHTNode.js';
 import { AxonManager } from './AxonManager.js';
+
+/** Pick the adapter whose node ID is *farthest* from `topic` so it is never
+ *  elected root (its subscribe and the publish will always route over the
+ *  network to a different node, exercising sendDirect + dropFn). */
+function farthestFrom(adapters, topic) {
+  let best = adapters[0], bestDist = 0n;
+  for (const a of adapters) {
+    const d = xorDistance(a.nodeId, topic);
+    if (d > bestDist) { bestDist = d; best = a; }
+  }
+  return best;
+}
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -200,7 +212,15 @@ async function run() {
   {
     console.log('\n[Test 7] Dropped publish triggers __gap__ in the adapter');
     const { net, adapters } = buildStack(10, { latencyMs: 5 });
-    // Drop the first pubsub:deliver that goes out, keep subsequent ones.
+    // Pick a subscriber whose node is farthest from the topic hash so
+    // the subscriber is NEVER the root — guarantees fan-out traverses
+    // the network (via sendDirect + dropFn) rather than the self-delivery
+    // local-callback shortcut.
+    const topic = topicIdFor('g', 'ap');
+    const sub = farthestFrom(adapters, topic);
+    // Publisher is someone else — pick any non-subscriber.
+    const pub = adapters.find(a => a !== sub);
+
     let deliveryIdx = 0;
     net.dropFn = (from, to, type) => {
       if (type !== 'pubsub:deliver') return false;
@@ -211,15 +231,14 @@ async function run() {
 
     const gaps = [];
     const delivered = [];
-    adapters[1].subscribe('g', 'ap',
+    sub.subscribe('g', 'ap',
       (data, meta) => delivered.push(meta.seq),
       { handling: 'immediate',
         onGap: (info) => gaps.push(info) });
     await sleep(150);
 
-    adapters[0].publish('g', 'ap', { i: 1 });   // delivery dropped
-    adapters[0].publish('g', 'ap', { i: 2 });   // delivered; held in reorder buf
-    // Wait long enough for the reorder window to expire and __gap__ to fire.
+    pub.publish('g', 'ap', { i: 1 });   // delivery dropped
+    pub.publish('g', 'ap', { i: 2 });   // delivered; held in reorder buf
     await sleep(400);
 
     assert('gap reported',     gaps.length === 1, `got ${gaps.length}`);
@@ -245,6 +264,10 @@ async function run() {
     const axonHolder = axons.find(a => a.axonRoles.has(topicId));
     assert('axon holds subscriber', axonHolder &&
            axonHolder.axonRoles.get(topicId).children.has(adapters[1].nodeId));
+
+    // Silence the subscriber's leaf refresh so it doesn't re-bump
+    // lastRenewed when it happens to be the same node as the axon holder.
+    axons[1].mySubscriptions.delete(topicId);
 
     // Advance clock past TTL, sweep without refresh.
     t = 2000;

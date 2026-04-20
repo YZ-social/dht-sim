@@ -264,7 +264,9 @@ export class AxonManager {
     if (this.shouldRecruitSubAxon(role)) {
       const meta = { fromId: forwarderId || subscriberId };
       let recruitId = this.pickRecruitPeer(role, meta, subscriberId);
-      if (!role.children.has(recruitId)) {
+      // Override safety: if an override returned self or a non-child,
+      // fall back to the XOR-closest non-self existing child.
+      if (!recruitId || recruitId === this.nodeId || !role.children.has(recruitId)) {
         recruitId = this._pickExistingChildForRecruit(role, subscriberId);
       }
       if (recruitId) {
@@ -276,6 +278,9 @@ export class AxonManager {
         });
         return;
       }
+      // No non-self child to recruit. Only happens if role.children is
+      // empty or contains only us. Just add the subscriber directly —
+      // over-capacity is a lesser evil than infinite recursion.
     }
     role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
   }
@@ -308,17 +313,23 @@ export class AxonManager {
   pickRecruitPeer(role, meta, subscriberId) {
     // Prefer meta.fromId if it happens to already be a child (common case
     // in deep trees where subscribes flow through established sub-axons).
-    if (role.children.has(meta.fromId)) return meta.fromId;
+    // Never recruit self — would infinite-recurse on promote-axon.
+    if (meta.fromId && meta.fromId !== this.nodeId
+        && role.children.has(meta.fromId)) return meta.fromId;
     return this._pickExistingChildForRecruit(role, subscriberId);
   }
 
-  /** XOR-closest existing child to `subscriberId`. Returns null if empty. */
+  /** XOR-closest existing child to `subscriberId`, excluding self.
+   *  Recruiting self would cause infinite recursion (the promote-axon
+   *  would fire on us, we'd pick self again, etc.) — so self is never
+   *  a valid recruit. Returns null if no non-self children are present. */
   _pickExistingChildForRecruit(role, subscriberId) {
     if (role.children.size === 0) return null;
     const subBig = BigInt('0x' + subscriberId);
     let best = null;
     let bestDist = null;
     for (const childId of role.children.keys()) {
+      if (childId === this.nodeId) continue;    // never recruit self
       const d = BigInt('0x' + childId) ^ subBig;
       if (bestDist === null || d < bestDist) { bestDist = d; best = childId; }
     }

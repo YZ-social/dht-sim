@@ -882,6 +882,53 @@ async function run() {
            received === 1, `received=${received}, victims=${victims}, root=${rootNodeId}`);
   }
 
+  // ── Test 24d: Self-recruit prevention ───────────────────────────────
+  //   If a root's children include SELF (self-subscribe case — root is
+  //   also in the K-closest for its own topic), pickRecruitPeer must
+  //   never return self. Returning self would cause promote-axon →
+  //   _onPromoteAxon → pickRecruitPeer → self again → infinite loop.
+  //   The _pickExistingChildForRecruit helper excludes self.
+  {
+    console.log('\n[Test 24d] Recruitment never picks self (would infinite-loop)');
+    const topicId = '00ff00ff00ff00ff';
+    const { nodes, axons } = buildAxonNetwork(10, { maxDirectSubs: 3 });
+    const root = axons[0];
+    const now = Date.now();
+
+    // Inject a role where root.children includes self as a child.
+    root.axonRoles.set(topicId, {
+      parentId: null, isRoot: true, isInRootSet: true,
+      peerRoots: new Set(),
+      children: new Map([
+        [root.nodeId,   { createdAt: now, lastRenewed: now }],   // ← self
+        [nodes[1].id,   { createdAt: now, lastRenewed: now }],
+        [nodes[2].id,   { createdAt: now, lastRenewed: now }],
+      ]),
+      parentLastSent: 0, roleCreatedAt: now, emptiedAt: 0, lowWaterSince: 0,
+    });
+
+    // Trigger recruitment with a new subscriber whose id is closer to
+    // self than to nodes[1]/nodes[2]. Without the guard, self would be
+    // picked → infinite loop when the promote-axon routes back to us.
+    // With the guard, one of nodes[1]/nodes[2] is picked instead.
+    const newSub = nodes[5].id;
+    root._onSubscribe(
+      { topicId, subscriberId: newSub },
+      { fromId: nodes[1].id, isTerminal: false }
+    );
+    await sleep(20);
+
+    // Root should still exist and not have grown its children beyond the cap.
+    assert('root role still exists (no infinite loop)',
+           root.axonRoles.has(topicId));
+    assert('root children cap preserved',
+           root.axonRoles.get(topicId).children.size === 3);
+    // One of nodes[1] or nodes[2] should now have a sub-axon role.
+    const subAxons = [1, 2].map(i => axons[i]).filter(a => a.axonRoles.has(topicId));
+    assert('recruit was nodes[1] or nodes[2] (not self)',
+           subAxons.length === 1);
+  }
+
   // ── Test 24c: Sub-axon cascade — promote-axon also caps at maxDirectSubs ─
   //   When a sub-axon receives multiple promote-axon messages it must run
   //   its own recruitment at capacity. Without this cascade, sub-axons

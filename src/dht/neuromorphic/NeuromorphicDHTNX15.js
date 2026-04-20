@@ -209,23 +209,41 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
       for (const syn of src.highway.values()) addCandidate(this.nodeMap.get(syn.peerId));
     }
 
-    // Standard Kademlia FIND_NODE termination: every round we pick α
-    // unvisited from the CURRENT top-K (not from all candidates) and
-    // query them. We stop only when every node in the top-K has been
-    // queried — that proves the top-K are the actual closest we can
-    // reach, not merely the closest in a prematurely-saturated pool.
+    // Hybrid Kademlia FIND_NODE termination. Stop only when BOTH:
+    //   (a) every node in the current top-K has been queried, AND
+    //   (b) a full round of α probes added no new candidates.
     //
-    // This is the fix for the steady-state 99.9% delivery: different
-    // nodes computing findKClosest from different starting positions
-    // now converge on the same top-K set because every path must
-    // visit the same "closest reachable" nodes.
+    // (a) alone was tighter than the original "pool saturated" check
+    // but regressed in LTP-specialized (post-warmup) networks: the
+    // top-K can get pinned to nodes whose sparse routing tables don't
+    // reach the true closest region, so we terminate on a local optimum.
+    //
+    // (b) alone was the original criterion — exhausts the reachable
+    // pool but doesn't guarantee the top-K are all probed, so two
+    // starting positions can return slightly different top-K sets.
+    //
+    // Requiring BOTH: if top-K is visited AND expansion has saturated,
+    // we've truly converged. If top-K is visited but expansion still
+    // finding things, we keep going (covers the warmup-specialized
+    // case). If expansion saturated but top-K isn't all visited,
+    // the unvisited candidates keep being picked next round.
     const visited = new Set();
+    let lastPoolSize = 0;
+    let stableRounds = 0;
     for (let round = 0; round < maxRounds; round++) {
-      const topK = [...candidates.values()]
-        .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
-        .slice(0, K);
-      const toQuery = topK.filter(n => !visited.has(n.id)).slice(0, alpha);
-      if (toQuery.length === 0) break;                 // all top-K queried — converged
+      const sortedCands = [...candidates.values()]
+        .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1);
+      const topK = sortedCands.slice(0, K);
+      const topKAllVisited = topK.every(n => visited.has(n.id));
+
+      // Pick α unvisited — prefer top-K first, then broader pool.
+      let toQuery = topK.filter(n => !visited.has(n.id)).slice(0, alpha);
+      if (toQuery.length < alpha) {
+        const remaining = alpha - toQuery.length;
+        const beyond = sortedCands.filter(n => !visited.has(n.id) && !topK.includes(n)).slice(0, remaining);
+        toQuery = toQuery.concat(beyond);
+      }
+      if (toQuery.length === 0) break;                   // fully exhausted
 
       for (const peer of toQuery) {
         visited.add(peer.id);
@@ -234,6 +252,14 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
           for (const syn of peer.highway.values()) addCandidate(this.nodeMap.get(syn.peerId));
         }
       }
+
+      const grew = candidates.size > lastPoolSize;
+      lastPoolSize = candidates.size;
+      stableRounds = grew ? 0 : stableRounds + 1;
+      // Terminate only when top-K is fully probed AND pool is stable
+      // for one full α-round. That rules out both "top-K trapped at
+      // local optimum" and "pool saturated before top-K converged".
+      if (topKAllVisited && stableRounds >= 1) break;
     }
 
     return [...candidates.values()]

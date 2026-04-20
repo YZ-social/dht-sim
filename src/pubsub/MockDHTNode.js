@@ -187,22 +187,37 @@ export class MockDHTNode {
     addCandidate(this);
     for (const peer of this.routingTable.values()) addCandidate(peer);
 
-    // Kademlia FIND_NODE termination: query α unvisited from the top-K;
-    // stop only when every top-K node has been queried. This is the
-    // condition that guarantees different sources converge on the
-    // same result set — essential for steady-state 100% delivery.
+    // Hybrid termination (see NX-15 findKClosest for rationale):
+    //   stop only when top-K all visited AND pool has been stable
+    //   for at least one round. Prefer top-K unvisited when picking
+    //   α to query, but fall back to pool-wide unvisited if top-K
+    //   is already exhausted but pool isn't stable yet.
     const visited = new Set();
+    let lastPoolSize = 0;
+    let stableRounds = 0;
     for (let round = 0; round < maxRounds; round++) {
-      const topK = [...candidates.values()]
-        .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
-        .slice(0, K);
-      const toQuery = topK.filter(n => !visited.has(n.id)).slice(0, alpha);
+      const sortedCands = [...candidates.values()]
+        .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1);
+      const topK = sortedCands.slice(0, K);
+      const topKAllVisited = topK.every(n => visited.has(n.id));
+
+      let toQuery = topK.filter(n => !visited.has(n.id)).slice(0, alpha);
+      if (toQuery.length < alpha) {
+        const remaining = alpha - toQuery.length;
+        const beyond = sortedCands.filter(n => !visited.has(n.id) && !topK.includes(n)).slice(0, remaining);
+        toQuery = toQuery.concat(beyond);
+      }
       if (toQuery.length === 0) break;
 
       for (const peer of toQuery) {
         visited.add(peer.id);
         for (const other of peer.routingTable.values()) addCandidate(other);
       }
+
+      const grew = candidates.size > lastPoolSize;
+      lastPoolSize = candidates.size;
+      stableRounds = grew ? 0 : stableRounds + 1;
+      if (topKAllVisited && stableRounds >= 1) break;
     }
 
     return [...candidates.values()]

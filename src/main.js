@@ -1431,6 +1431,7 @@ async function onBenchmark() {
     { key: 'continent', type: 'continent', src: 'NA', dst: 'AS' },
     { key: 'pubsub',    type: 'pubsub',   groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
     { key: 'pubsubm',   type: 'pubsubm',  groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
+    { key: 'pubsubmchurn', type: 'pubsubmchurn', groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage, rate: params.benchChurnPct },
     { key: 'churn',     type: 'churn',    rate: params.benchChurnPct },
   ];
   const testSpecs = ALL_TEST_SPECS

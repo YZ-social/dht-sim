@@ -732,6 +732,162 @@ export class SimulationEngine {
           continue;
         }
 
+        // ── Pub/Sub Membership + Churn (NX-15+) ─────────────────────────────
+        // Measures how K-closest replication + TTL/refresh holds up when a
+        // fraction of nodes die mid-test. Three phases produce three
+        // independent delivery-rate numbers:
+        //
+        //   baseline  — steady-state delivery before any churn
+        //   immediate — delivery right after killing `rate`% of nodes,
+        //               before any refresh cycles run (measures raw
+        //               resilience from K-fold replication alone)
+        //   recovered — delivery after driving refresh ticks across all
+        //               surviving axons (measures whether TTL/refresh +
+        //               K-closest drift-tracking heal the tree)
+        //
+        // Dead subscribers are excluded from the denominator — the
+        // question is "do surviving subscribers still get messages?",
+        // not "can dead nodes receive publishes?" (obviously no).
+        if (spec.type === 'pubsubmchurn') {
+          if (typeof dht.axonFor !== 'function') {
+            data[def.key]['pubsubmchurn'] = { unsupported: true };
+            onStep(`${tag} · Pub/Sub (Membership+Churn) — n/a`);
+            continue;
+          }
+
+          const groupSize = spec.groupSize ?? 32;
+          const coverage  = spec.coverage  ?? 10;
+          const churnRate = spec.rate      ?? 25;
+
+          const aliveNodes  = dht.getNodes().filter(n => n.alive);
+          const targetNodes = Math.ceil(aliveNodes.length * coverage / 100);
+          const numGroups   = Math.max(1, Math.ceil(targetNodes / groupSize));
+          const shuffled    = [...aliveNodes].sort(() => Math.random() - 0.5);
+          const stride      = Math.max(1, Math.floor(shuffled.length / numGroups));
+
+          const groups = [];
+          for (let i = 0; i < numGroups; i++) {
+            const base         = (i * stride) % shuffled.length;
+            const relay        = shuffled[base];
+            const participants = [];
+            for (let j = 1; j <= groupSize; j++) {
+              participants.push(shuffled[(base + j) % shuffled.length]);
+            }
+            groups.push({ id: i, relay, participants });
+          }
+
+          // Pre-register axons on every live node (same reason as pubsubm).
+          for (const node of aliveNodes) dht.axonFor(node);
+
+          // Subscribe every participant and install per-group delivery bits.
+          const entries = new Map();
+          const getEntry = (node) => {
+            let e = entries.get(node.id);
+            if (e) return e;
+            e = { node, adapter: new PubSubAdapter({ transport: dht.axonFor(node) }),
+                  deliveries: new Map() };
+            entries.set(node.id, e);
+            return e;
+          };
+          for (const group of groups) {
+            const gKey = 'g' + group.id;
+            for (const p of group.participants) {
+              const entry = getEntry(p);
+              entry.deliveries.set(group.id, false);
+              entry.adapter.subscribe('bench', gKey,
+                () => { entry.deliveries.set(group.id, true); }, 'immediate');
+            }
+            getEntry(group.relay);
+          }
+
+          const runOneTick = () => {
+            for (const e of entries.values()) {
+              if (!e.node.alive) continue;
+              for (const gid of e.deliveries.keys()) e.deliveries.set(gid, false);
+            }
+            for (const group of groups) {
+              if (!group.relay.alive) continue;
+              const gKey = 'g' + group.id;
+              getEntry(group.relay).adapter.publish('bench', gKey, {});
+            }
+          };
+          const measureDeliveredPct = () => {
+            let delivered = 0, expected = 0;
+            for (const group of groups) {
+              for (const p of group.participants) {
+                if (!p.alive) continue;          // exclude dead subs from denominator
+                expected++;
+                if (entries.get(p.id).deliveries.get(group.id)) delivered++;
+              }
+            }
+            return expected === 0 ? 100 : (delivered / expected) * 100;
+          };
+
+          // Phase 1: warmup (let tree stabilise).
+          onStart(`${tag} · Pub/Sub+Churn · warmup…`);
+          for (let t = 0; t < 3; t++) { if (!this.running) break; runOneTick(); }
+
+          // Phase 2: baseline measurement.
+          onStart(`${tag} · Pub/Sub+Churn · baseline…`);
+          const baselineTicks = 5;
+          const baseline = [];
+          for (let t = 0; t < baselineTicks; t++) {
+            if (!this.running) break;
+            runOneTick();
+            baseline.push(measureDeliveredPct());
+          }
+
+          // Phase 3: kill churnRate% of nodes. Exclude relays so publishes
+          // can keep firing (we're testing subscriber/axon churn, not
+          // publisher failure — publisher failure is a separate concern).
+          const publisherIds = new Set(groups.map(g => g.relay.id));
+          const killable = aliveNodes.filter(n => !publisherIds.has(n.id));
+          killable.sort(() => Math.random() - 0.5);
+          const killTarget = Math.floor(aliveNodes.length * churnRate / 100);
+          const numKilled = Math.min(killTarget, killable.length);
+          for (let i = 0; i < numKilled; i++) killable[i].alive = false;
+          onStart(`${tag} · Pub/Sub+Churn · killed ${numKilled} of ${aliveNodes.length}…`);
+
+          // Phase 4: immediate post-churn measurement (no refresh yet).
+          const immediate = [];
+          for (let t = 0; t < 5; t++) {
+            if (!this.running) break;
+            runOneTick();
+            immediate.push(measureDeliveredPct());
+          }
+
+          // Phase 5: drive refresh cycles so TTL sweeps + re-STOREs can heal
+          // the tree. Multiple rounds let cascading effects settle.
+          for (let r = 0; r < 3; r++) {
+            for (const node of aliveNodes) {
+              if (!node.alive) continue;
+              const axon = dht.axonFor(node);
+              axon.refreshTick();
+            }
+          }
+
+          // Phase 6: post-recovery measurement.
+          const recovered = [];
+          for (let t = 0; t < 5; t++) {
+            if (!this.running) break;
+            runOneTick();
+            recovered.push(measureDeliveredPct());
+          }
+
+          data[def.key]['pubsubmchurn'] = {
+            baseline:       computeStats(baseline),
+            immediate:      computeStats(immediate),
+            recovered:      computeStats(recovered),
+            killedCount:    numKilled,
+            totalNodes:     aliveNodes.length,
+            churnRate,
+            numGroups,
+            groupSize,
+          };
+          onStep(`${tag} · Pub/Sub+Churn ✓`);
+          continue;
+        }
+
         const cellLabel = `${tag} · ${specLabel(spec)}`;
         onStart(`${cellLabel}…`);
 

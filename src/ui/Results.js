@@ -1118,23 +1118,25 @@ export class Results {
     const contName = { NA:'N.Am.', SA:'S.Am.', EU:'Europe', AF:'Africa', AS:'Asia', OC:'Oceania' };
 
     // Stable key and column label for each test spec.
-    const specKey   = s => s.type === 'regional'  ? `r${s.radius}`
-                         : s.type === 'dest'       ? `dest_${s.pct}`
-                         : s.type === 'source'     ? `src_${s.pct}`
-                         : s.type === 'srcdest'    ? `srcdest_${s.srcPct}_${s.destPct}`
-                         : s.type === 'churn'      ? `churn_${s.rate}`
-                         : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
-                         : s.type === 'pubsub'     ? 'pubsub'
-                         : s.type === 'pubsubm'    ? 'pubsubm'
+    const specKey   = s => s.type === 'regional'     ? `r${s.radius}`
+                         : s.type === 'dest'          ? `dest_${s.pct}`
+                         : s.type === 'source'        ? `src_${s.pct}`
+                         : s.type === 'srcdest'       ? `srcdest_${s.srcPct}_${s.destPct}`
+                         : s.type === 'churn'         ? `churn_${s.rate}`
+                         : s.type === 'continent'     ? `cont_${s.src}_${s.dst}`
+                         : s.type === 'pubsub'        ? 'pubsub'
+                         : s.type === 'pubsubm'       ? 'pubsubm'
+                         : s.type === 'pubsubmchurn'  ? 'pubsubmchurn'
                          : 'global';
-    const specLabel = s => s.type === 'regional'  ? `${s.radius} km`
-                         : s.type === 'dest'       ? `${s.pct}% dest`
-                         : s.type === 'source'     ? `${s.pct}% src`
-                         : s.type === 'srcdest'    ? `${s.srcPct}%→${s.destPct}%`
-                         : s.type === 'churn'      ? `${s.rate}% churn`
-                         : s.type === 'continent'  ? `${contName[s.src]??s.src}→${contName[s.dst]??s.dst}`
-                         : s.type === 'pubsub'     ? 'Pub/Sub'
-                         : s.type === 'pubsubm'    ? 'Pub/Sub (Membership)'
+    const specLabel = s => s.type === 'regional'     ? `${s.radius} km`
+                         : s.type === 'dest'          ? `${s.pct}% dest`
+                         : s.type === 'source'        ? `${s.pct}% src`
+                         : s.type === 'srcdest'       ? `${s.srcPct}%→${s.destPct}%`
+                         : s.type === 'churn'         ? `${s.rate}% churn`
+                         : s.type === 'continent'     ? `${contName[s.src]??s.src}→${contName[s.dst]??s.dst}`
+                         : s.type === 'pubsub'        ? 'Pub/Sub'
+                         : s.type === 'pubsubm'       ? 'Pub/Sub (Membership)'
+                         : s.type === 'pubsubmchurn'  ? `Pub/Sub (M+${s.rate}% Churn)`
                          : 'Global';
     const specTip   = s => s.type === 'regional'
       ? `Regional lookups: source and destination chosen within ${s.radius} km of each other. Tests geographic locality routing.`
@@ -1152,6 +1154,8 @@ export class Results {
       ? `Pub/Sub overlay: nodes form ${s.coverage ?? 10}% coverage concordance groups (1 relay + ${s.groupSize ?? 32} participants each). Left column (→relay) = avg hops from a random participant to its relay. Right column (bcast) = avg hops from the relay back to each participant. Neuromorphic protocols receive 2× the standard warmup budget using actual pub/sub traffic so synaptomes learn relay-centric routes before measurement.`
       : s.type === 'pubsubm'
       ? `Pub/Sub (Membership): NX-15+ distributed pub/sub via the AxonManager membership protocol. Every participant subscribes through its own PubSubAdapter; subscribes route toward hash(topic) and attach at the first axon on the path. Each tick the relay publishes via its adapter and we measure: (1) delivered % — fraction of subscribers that received the publish, (2) axon roles — total axon nodes holding this topic across the network, (3) max subs/axon — largest axon's child count (capacity = maxDirectSubs), (4) tree depth. Only runs on protocols that implement axonFor() (currently NX-15).`
+      : s.type === 'pubsubmchurn'
+      ? `Pub/Sub (Membership+Churn): drives K-closest pub/sub through a kill-and-heal cycle. Phase 1 measures baseline delivery on a stable tree; phase 2 kills ${s.rate}% of nodes (excluding publishers) and measures IMMEDIATE delivery with no protocol repair yet — this tests raw redundancy from K replication alone; phase 3 drives refresh ticks across surviving axons (TTL sweeps dead children, re-STOREs shift subscriptions to the new K-closest set), then measures RECOVERED delivery. Dead subscribers are excluded from the denominator — the question is whether survivors still get messages.`
       : 'Global: both source and destination chosen uniformly at random from all nodes. Worst-case baseline — no locality or hot-spot bias.';
 
     // Protocol row tooltip descriptions.
@@ -1203,6 +1207,9 @@ export class Results {
       } else if (s.type === 'pubsubm') {
         const tip = specTip(s);
         html += `<th colspan="4" class="pubsubm-col" data-tip="${tip}">Pub/Sub (Membership)</th>`;
+      } else if (s.type === 'pubsubmchurn') {
+        const tip = specTip(s);
+        html += `<th colspan="4" class="pubsubm-col" data-tip="${tip}">Pub/Sub (M+${s.rate}% Churn)</th>`;
       } else {
         html += `<th colspan="2"${cls} data-tip="${specTip(s)}">${specLabel(s)}</th>`;
       }
@@ -1229,6 +1236,11 @@ export class Results {
         html += `<th class="sub pubsubm-sub" data-tip="Total axon nodes in the network holding this topic. 1 = flat tree (root only); > 1 = sub-axons recruited.">axons</th>`;
         html += `<th class="sub pubsubm-sub" data-tip="Largest direct-child count at any single axon. Capped by maxDirectSubs (default 20).">max/ax</th>`;
         html += `<th class="sub pubsubm-sub" data-tip="Rough tree depth: 1 = flat, 2 = has sub-axons.">depth</th>`;
+      } else if (s.type === 'pubsubmchurn') {
+        html += `<th class="sub pubsubm-sub" data-tip="Delivery % BEFORE any nodes die. Should be ~100% at steady state.">base%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Delivery % IMMEDIATELY after killing nodes, before any refresh. Measures raw K-closest redundancy.">imm%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Delivery % after refresh ticks run across surviving axons. Measures TTL+refresh recovery.">rec%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Number of nodes killed during the run.">killed</th>`;
       } else {
         html += `<th class="sub${sub}">hops</th><th class="sub${sub}">ms</th>`;
       }
@@ -1275,7 +1287,8 @@ export class Results {
         const isContinent = s.type === 'continent';
         const isPubSub    = s.type === 'pubsub';
         const isPubSubM   = s.type === 'pubsubm';
-        const specCls     = isSrc ? ' src-cell' : isDest ? ' dest-cell' : isSrcDest ? ' srcdest-cell' : isChurn ? ' churn-cell' : isContinent ? ' continent-cell' : isPubSub ? ' pubsub-cell' : isPubSubM ? ' pubsubm-cell' : '';
+        const isPubSubMC  = s.type === 'pubsubmchurn';
+        const specCls     = isSrc ? ' src-cell' : isDest ? ' dest-cell' : isSrcDest ? ' srcdest-cell' : isChurn ? ' churn-cell' : isContinent ? ' continent-cell' : isPubSub ? ' pubsub-cell' : (isPubSubM || isPubSubMC) ? ' pubsubm-cell' : '';
 
         // Pub/Sub: five separate cells — relay hops, relay ms, bcast hops, bcast ms, max fan-out
         if (isPubSub) {
@@ -1306,6 +1319,27 @@ export class Results {
           html += `<td class="hops-cell pubsub-bcell">${depth}</td>`;
           const avgSubs = cell.avgSubsPerNode?.mean != null ? cell.avgSubsPerNode.mean.toFixed(1) : '—';
           html += `<td class="hops-cell pubsub-bcell">${avgSubs}</td>`;
+          continue;
+        }
+
+        // Pub/Sub (M+Churn): four cells — baseline%, immediate%, recovered%, killed.
+        if (isPubSubMC) {
+          if (!cell) {
+            html += `<td class="no-data pubsubm-cell" colspan="4">—</td>`;
+            continue;
+          }
+          if (cell.unsupported) {
+            html += `<td class="no-data pubsubm-cell" colspan="4" data-tip="protocol does not support membership pub/sub">n/a</td>`;
+            continue;
+          }
+          const base = cell.baseline?.mean  != null ? cell.baseline.mean.toFixed(1) + '%'  : '—';
+          const imm  = cell.immediate?.mean != null ? cell.immediate.mean.toFixed(1) + '%' : '—';
+          const rec  = cell.recovered?.mean != null ? cell.recovered.mean.toFixed(1) + '%' : '—';
+          const kill = cell.killedCount     ?? '—';
+          html += `<td class="hops-cell pubsubm-cell">${base}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${imm}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${rec}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${kill}</td>`;
           continue;
         }
 
@@ -1413,6 +1447,8 @@ export class Results {
         headerCols.push(`${lbl} →relay hops`, `${lbl} →relay ms`, `${lbl} bcast hops`, `${lbl} bcast ms`, `${lbl} max fan-out`, `${lbl} tree depth`, `${lbl} avg subs/node`);
       } else if (s.type === 'pubsubm') {
         headerCols.push(`${lbl} delivered%`, `${lbl} axon roles`, `${lbl} max subs/axon`, `${lbl} tree depth`);
+      } else if (s.type === 'pubsubmchurn') {
+        headerCols.push(`${lbl} baseline%`, `${lbl} immediate%`, `${lbl} recovered%`, `${lbl} killed`);
       } else {
         headerCols.push(`${lbl} hops`, `${lbl} ms`, `${lbl} success%`);
       }
@@ -1446,6 +1482,17 @@ export class Results {
               cell?.treeDepth          != null ? cell.treeDepth + ''                    : '0',
             );
           }
+        } else if (s.type === 'pubsubmchurn') {
+          if (cell?.unsupported) {
+            cols.push('n/a', 'n/a', 'n/a', 'n/a');
+          } else {
+            cols.push(
+              cell?.baseline?.mean  != null ? cell.baseline.mean.toFixed(1) + '%'  : '',
+              cell?.immediate?.mean != null ? cell.immediate.mean.toFixed(1) + '%' : '',
+              cell?.recovered?.mean != null ? cell.recovered.mean.toFixed(1) + '%' : '',
+              cell?.killedCount     != null ? cell.killedCount + ''                 : '',
+            );
+          }
         } else {
           cols.push(
             cell?.hops?.mean        != null ? cell.hops.mean.toFixed(3)                     : '',
@@ -1469,11 +1516,11 @@ export class Results {
         extra.push(['Source pool %', params.sourcePct]);
       if (hasType('dest') || hasType('srcdest'))
         extra.push(['Dest pool %', params.destPct]);
-      if (hasType('pubsub') || hasType('pubsubm')) {
+      if (hasType('pubsub') || hasType('pubsubm') || hasType('pubsubmchurn')) {
         extra.push(['Pub/Sub group size',  params.pubsubGroupSize]);
         extra.push(['Pub/Sub coverage %',  params.pubsubCoverage]);
       }
-      if (hasType('pubsubm') && params.nx15Params) {
+      if ((hasType('pubsubm') || hasType('pubsubmchurn')) && params.nx15Params) {
         const m = params.nx15Params;
         if (m.rootSetSize          != null) extra.push(['NX-15 rootSetSize (K)',      m.rootSetSize]);
         if (m.maxDirectSubs        != null) extra.push(['NX-15 maxDirectSubs',        m.maxDirectSubs]);

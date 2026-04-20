@@ -629,6 +629,15 @@ export class SimulationEngine {
             groups.push({ id: i, relay, participants });
           }
 
+          // Pre-register an AxonManager on every live node. The membership
+          // protocol needs a handler on whichever node happens to be the
+          // terminal (closest to hash(topic)) for each group's topic —
+          // otherwise the routed subscribe walks all the way to terminal
+          // and silently fizzles because no handler intercepts it. We
+          // can't know in advance which node the hash will land on, so we
+          // blanket-register. Handler/state footprint is ~1 KB per node.
+          for (const node of aliveNodes) dht.axonFor(node);
+
           // Set up one PubSubAdapter per distinct node (relay or participant).
           // `entries.get(nodeId) = { adapter, deliveries: Map<groupId, bool> }`.
           // We subscribe each participant to its own group's topic and

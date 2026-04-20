@@ -1423,6 +1423,7 @@ export class Results {
                             : s.type === 'continent'  ? `${s.src}→${s.dst}`
                             : s.type === 'pubsub'     ? 'pubsub'
                             : s.type === 'pubsubm'    ? 'pubsubm'
+                            : s.type === 'pubsubmchurn' ? `pubsubm+${s.rate}%churn`
                             : 'global';
     const csvSpecKey   = s => s.type === 'regional'  ? `r${s.radius}`
                             : s.type === 'dest'       ? `dest_${s.pct}`
@@ -1432,6 +1433,7 @@ export class Results {
                             : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
                             : s.type === 'pubsub'     ? 'pubsub'
                             : s.type === 'pubsubm'    ? 'pubsubm'
+                            : s.type === 'pubsubmchurn' ? 'pubsubmchurn'
                             : 'global';
 
     // Comment line: init mode

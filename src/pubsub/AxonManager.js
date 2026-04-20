@@ -212,55 +212,14 @@ export class AxonManager {
     const now = this._now();
 
     if (role) {
-      // Self-subscribe: a non-root axon refreshing upward toward its
-      // parent invokes its own handler at hop 0. We must NOT register
-      // ourselves as our own child. The message should continue toward
-      // the parent (or wherever is closer to the hash). A root that
-      // subscribes to its own topic, however, is legitimate — it's the
-      // terminal and has no upstream to forward to.
+      // Self-subscribe: a non-root axon refreshing upward invokes its own
+      // handler at hop 0. Don't register ourselves as our own child; let
+      // the message continue toward the parent. A root self-subscribing
+      // is legitimate — it's the terminal with no upstream.
       if (subscriberId === this.nodeId) {
         if (!role.isRoot) return 'forward';
-        // Root self-subscribes: add/renew self as a child.
       }
-
-      const existing = role.children.get(subscriberId);
-      if (existing) {
-        existing.lastRenewed = now;
-        return 'consumed';
-      }
-
-      if (this.shouldRecruitSubAxon(role)) {
-        // At capacity: promote an EXISTING child to sub-axon and delegate the
-        // new subscriber to them. We deliberately do NOT add the new
-        // subscriber OR a fresh peer to our own children — that would grow
-        // the axon beyond maxDirectSubs, defeating the whole point of
-        // recruitment. The promoted child now doubles as both a leaf
-        // subscriber AND an intermediate axon; its own _onPromoteAxon
-        // handler creates a role and adds the new subscriber under it.
-        let recruitId = this.pickRecruitPeer(role, meta, subscriberId);
-        if (!role.children.has(recruitId)) {
-          // Policy returned a non-child (e.g., meta.fromId isn't yet in our
-          // children). Fall back to picking the existing child with the
-          // smallest XOR distance to the new subscriber — that peer sits
-          // on the natural routing path toward future subscribers in the
-          // same region of the ID space.
-          recruitId = this._pickExistingChildForRecruit(role, subscriberId);
-        }
-        if (recruitId) {
-          role.children.get(recruitId).lastRenewed = now;
-          this.dht.sendDirect(recruitId, 'pubsub:promote-axon', {
-            topicId,
-            newSubscriberId: subscriberId,
-            parentId:        this.nodeId,
-          });
-          return 'consumed';
-        }
-        // Degenerate fallback — shouldn't occur once children.size ≥ 1.
-        role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
-        return 'consumed';
-      }
-
-      role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
+      this._addOrRecruitChild(topicId, role, subscriberId, meta.fromId);
       return 'consumed';
     }
 
@@ -279,6 +238,46 @@ export class AxonManager {
     }
 
     return 'forward';
+  }
+
+  // ── Shared add-or-recruit primitive ─────────────────────────────────
+
+  /**
+   * Add `subscriberId` as a child of `role`, or — if `role` is at
+   * capacity — promote an existing child to sub-axon and delegate. The
+   * recruit pathway always preserves `role.children.size ≤ maxDirectSubs`.
+   *
+   * This is invoked from every code path that materialises a new child:
+   *   - _onSubscribe         (routed subscribe landing at a terminal)
+   *   - _onSubscribeDirect   (K-closest STORE)
+   *   - _onPromoteAxon       (parent telling us to take a delegated sub)
+   *
+   * Sharing the implementation is essential: without it, sub-axons that
+   * receive repeated promote-axon messages accumulate subscribers past
+   * the cap because the recruit-check was only in the subscribe paths.
+   */
+  _addOrRecruitChild(topicId, role, subscriberId, forwarderId = null) {
+    const now = this._now();
+    const existing = role.children.get(subscriberId);
+    if (existing) { existing.lastRenewed = now; return; }
+
+    if (this.shouldRecruitSubAxon(role)) {
+      const meta = { fromId: forwarderId || subscriberId };
+      let recruitId = this.pickRecruitPeer(role, meta, subscriberId);
+      if (!role.children.has(recruitId)) {
+        recruitId = this._pickExistingChildForRecruit(role, subscriberId);
+      }
+      if (recruitId) {
+        role.children.get(recruitId).lastRenewed = now;
+        this.dht.sendDirect(recruitId, 'pubsub:promote-axon', {
+          topicId,
+          newSubscriberId: subscriberId,
+          parentId:        this.nodeId,
+        });
+        return;
+      }
+    }
+    role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
   }
 
   // ── Policy hooks (overridable by subclasses) ───────────────────────
@@ -438,10 +437,11 @@ export class AxonManager {
                             { topicId, subscriberId: this.nodeId });
     }
 
-    // Add the new subscriber (or renew if already present).
-    const existing = role.children.get(newSubscriberId);
-    if (existing) existing.lastRenewed = now;
-    else          role.children.set(newSubscriberId, { createdAt: now, lastRenewed: now });
+    // Use the shared add-or-recruit path so we cascade into our OWN
+    // recruitment when at capacity, instead of hoarding subscribers past
+    // maxDirectSubs. The parent in the payload tells us who promoted us,
+    // but from the new subscriber's perspective WE are its parent.
+    this._addOrRecruitChild(topicId, role, newSubscriberId, meta.fromId);
   }
 
   /**
@@ -516,23 +516,7 @@ export class AxonManager {
       }
     }
 
-    const existing = role.children.get(subscriberId);
-    if (existing) { existing.lastRenewed = now; return; }
-
-    if (this.shouldRecruitSubAxon(role)) {
-      let recruitId = this.pickRecruitPeer(role, { fromId: subscriberId }, subscriberId);
-      if (!role.children.has(recruitId)) {
-        recruitId = this._pickExistingChildForRecruit(role, subscriberId);
-      }
-      if (recruitId) {
-        role.children.get(recruitId).lastRenewed = now;
-        this.dht.sendDirect(recruitId, 'pubsub:promote-axon', {
-          topicId, newSubscriberId: subscriberId, parentId: this.nodeId,
-        });
-        return;
-      }
-    }
-    role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
+    this._addOrRecruitChild(topicId, role, subscriberId, subscriberId);
   }
 
   _onUnsubscribeDirect(payload, meta) {

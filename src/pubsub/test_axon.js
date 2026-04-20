@@ -882,6 +882,50 @@ async function run() {
            received === 1, `received=${received}, victims=${victims}, root=${rootNodeId}`);
   }
 
+  // ── Test 24c: Sub-axon cascade — promote-axon also caps at maxDirectSubs ─
+  //   When a sub-axon receives multiple promote-axon messages it must run
+  //   its own recruitment at capacity. Without this cascade, sub-axons
+  //   accumulate children far beyond maxDirectSubs (observed as
+  //   "max subs/axon = 182" in a benchmark run before the fix).
+  {
+    console.log('\n[Test 24c] Sub-axon cascades recruitment on promote-axon overflow');
+    const topicId = '7777ababcdcd0000';
+    const { nodes, axons } = buildAxonNetwork(15, { maxDirectSubs: 3 });
+
+    const subAxon = axons[5];
+    const parentHex = nodes[0].id;
+    const now = Date.now();
+
+    // Pre-populate the sub-axon with 3 children (at its cap of 3).
+    subAxon.axonRoles.set(topicId, {
+      parentId: parentHex, isRoot: false,
+      children: new Map([
+        [nodes[1].id, { createdAt: now, lastRenewed: now }],
+        [nodes[2].id, { createdAt: now, lastRenewed: now }],
+        [nodes[3].id, { createdAt: now, lastRenewed: now }],
+      ]),
+      parentLastSent: 0, roleCreatedAt: now, emptiedAt: 0, lowWaterSince: 0,
+    });
+
+    // Promoter sends a new subscriber via promote-axon — sub-axon is full,
+    // so it must cascade by promoting one of its own children.
+    subAxon._onPromoteAxon(
+      { topicId, newSubscriberId: nodes[7].id, parentId: parentHex },
+      { fromId: parentHex }
+    );
+    await sleep(20);
+
+    assert('sub-axon children cap preserved under promote-axon pressure',
+           subAxon.axonRoles.get(topicId).children.size === 3,
+           `size=${subAxon.axonRoles.get(topicId).children.size}`);
+
+    // One of nodes[1..3] should now hold a role (the cascaded promote).
+    const grandchildren = [1, 2, 3].map(i => axons[i])
+                                    .filter(a => a.axonRoles.has(topicId));
+    assert('sub-axon cascaded to exactly one grand-sub',
+           grandchildren.length === 1, `got ${grandchildren.length}`);
+  }
+
   // ── Test 25: K-closest subscribe replicates to all K roots ─────────
   //   Explicit test of the K-closest mode: a single subscriber subscribes
   //   and we verify that K different nodes all hold a role for the topic

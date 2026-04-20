@@ -412,7 +412,10 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
    */
   _pickRecruitPeer(node, role, meta, subscriberId) {
     if (role.children.size === 0) return null;
-    const selfHex = nodeIdToHex(node.id);
+    const selfHex    = nodeIdToHex(node.id);
+    const forwarder  = meta.fromId;   // never recruit the peer that just
+                                      // forwarded this to us (see loop
+                                      // explanation in AxonManager).
 
     // Build an index of our synaptome+highway weights keyed by hex-string peerId,
     // so we can look them up quickly while walking role.children.
@@ -433,7 +436,8 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     let bestChildId = null;
     let bestScore = -Infinity;
     for (const childId of role.children.keys()) {
-      if (childId === selfHex) continue;               // never recruit self
+      if (childId === selfHex)   continue;
+      if (childId === forwarder) continue;
       const s = synapseWeights.get(childId);
       if (!s) continue;
       const score = s.weight * 1_000_000 - s.latency;
@@ -441,13 +445,12 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     }
     if (bestChildId) return bestChildId;
 
-    // No synaptome-matched child — fall through to XOR-closest existing
-    // child, still excluding self.
     const subBig = topicToBigInt(subscriberId);
     let best = null;
     let bestDist = null;
     for (const childId of role.children.keys()) {
-      if (childId === selfHex) continue;
+      if (childId === selfHex)   continue;
+      if (childId === forwarder) continue;
       const d = BigInt('0x' + childId) ^ subBig;
       if (bestDist === null || d < bestDist) { bestDist = d; best = childId; }
     }

@@ -289,10 +289,13 @@ export class AxonManager {
     if (this.shouldRecruitSubAxon(role)) {
       const meta = { fromId: forwarderId || subscriberId };
       let recruitId = this.pickRecruitPeer(role, meta, subscriberId);
-      // Override safety: if an override returned self or a non-child,
-      // fall back to the XOR-closest non-self existing child.
-      if (!recruitId || recruitId === this.nodeId || !role.children.has(recruitId)) {
-        recruitId = this._pickExistingChildForRecruit(role, subscriberId);
+      // Override safety: if an override returned self, the forwarder,
+      // or a non-child, fall back to the XOR-closest non-self,
+      // non-forwarder existing child.
+      if (!recruitId || recruitId === this.nodeId
+          || recruitId === forwarderId
+          || !role.children.has(recruitId)) {
+        recruitId = this._pickExistingChildForRecruit(role, subscriberId, forwarderId);
       }
       if (recruitId) {
         role.children.get(recruitId).lastRenewed = now;
@@ -336,25 +339,32 @@ export class AxonManager {
    * node's synaptome with high weight.
    */
   pickRecruitPeer(role, meta, subscriberId) {
-    // Prefer meta.fromId if it happens to already be a child (common case
-    // in deep trees where subscribes flow through established sub-axons).
-    // Never recruit self — would infinite-recurse on promote-axon.
-    if (meta.fromId && meta.fromId !== this.nodeId
-        && role.children.has(meta.fromId)) return meta.fromId;
-    return this._pickExistingChildForRecruit(role, subscriberId);
+    // Always pick the XOR-closest non-self, non-forwarder existing child.
+    // Short-cutting to meta.fromId caused a ping-pong loop when two
+    // cross-recruited sub-axons each had the other in children:
+    //   A picks B → promote-axon to B → B.meta.fromId = A → B picks A →
+    //   promote-axon to A → A.meta.fromId = B → A picks B → loop.
+    return this._pickExistingChildForRecruit(role, subscriberId, meta.fromId);
   }
 
-  /** XOR-closest existing child to `subscriberId`, excluding self.
-   *  Recruiting self would cause infinite recursion (the promote-axon
-   *  would fire on us, we'd pick self again, etc.) — so self is never
-   *  a valid recruit. Returns null if no non-self children are present. */
-  _pickExistingChildForRecruit(role, subscriberId) {
+  /** XOR-closest existing child to `subscriberId`, excluding self AND the
+   *  peer that forwarded us this message. Recruiting either creates
+   *  infinite loops:
+   *    - Self: promote-axon to self → loop back into _onPromoteAxon → loop.
+   *    - Forwarder: if they're a cross-recruited sub-axon (i.e., they
+   *      have US in THEIR children too), they'll pick us as recruit
+   *      when processing the promote, and we ping-pong. Both nodes
+   *      being each other's children happens when a common parent
+   *      delegated both as sub-axons with the other as newSubscriberId.
+   */
+  _pickExistingChildForRecruit(role, subscriberId, excludeId = null) {
     if (role.children.size === 0) return null;
     const subBig = BigInt('0x' + subscriberId);
     let best = null;
     let bestDist = null;
     for (const childId of role.children.keys()) {
       if (childId === this.nodeId) continue;    // never recruit self
+      if (childId === excludeId)   continue;    // never recruit the forwarder
       const d = BigInt('0x' + childId) ^ subBig;
       if (bestDist === null || d < bestDist) { bestDist = d; best = childId; }
     }

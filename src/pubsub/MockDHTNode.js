@@ -173,7 +173,7 @@ export class MockDHTNode {
    * synchronous (all routing tables are in-process memory); a real
    * implementation would issue α parallel RPCs per round.
    */
-  findKClosest(targetId, K = 5, { alpha = 3, maxRounds = 20 } = {}) {
+  findKClosest(targetId, K = 5, { alpha = 3, maxRounds = 40 } = {}) {
     const targetBig = BigInt('0x' + targetId);
     const dist = (id) => BigInt('0x' + id) ^ targetBig;
     const candidates = new Map();   // id → node
@@ -187,21 +187,22 @@ export class MockDHTNode {
     addCandidate(this);
     for (const peer of this.routingTable.values()) addCandidate(peer);
 
+    // Kademlia FIND_NODE termination: query α unvisited from the top-K;
+    // stop only when every top-K node has been queried. This is the
+    // condition that guarantees different sources converge on the
+    // same result set — essential for steady-state 100% delivery.
     const visited = new Set();
     for (let round = 0; round < maxRounds; round++) {
-      // Pick α unvisited candidates nearest to target.
-      const unvisited = [...candidates.values()]
-        .filter(n => !visited.has(n.id))
+      const topK = [...candidates.values()]
         .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
-        .slice(0, alpha);
-      if (unvisited.length === 0) break;
+        .slice(0, K);
+      const toQuery = topK.filter(n => !visited.has(n.id)).slice(0, alpha);
+      if (toQuery.length === 0) break;
 
-      const sizeBefore = candidates.size;
-      for (const peer of unvisited) {
+      for (const peer of toQuery) {
         visited.add(peer.id);
         for (const other of peer.routingTable.values()) addCandidate(other);
       }
-      if (candidates.size === sizeBefore) break;   // converged
     }
 
     return [...candidates.values()]

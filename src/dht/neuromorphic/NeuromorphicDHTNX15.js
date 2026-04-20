@@ -189,7 +189,7 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
    * computes the root set in a single pass so the protocol can fan out
    * subscribe/publish without further iterative work.
    */
-  findKClosest(sourceNode, targetId, K = 5, { alpha = 3, maxRounds = 20 } = {}) {
+  findKClosest(sourceNode, targetId, K = 5, { alpha = 3, maxRounds = 40 } = {}) {
     const src = this._resolveNode(sourceNode);
     if (!src) return [];
     const targetBig = topicToBigInt(targetId);
@@ -209,23 +209,31 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
       for (const syn of src.highway.values()) addCandidate(this.nodeMap.get(syn.peerId));
     }
 
+    // Standard Kademlia FIND_NODE termination: every round we pick α
+    // unvisited from the CURRENT top-K (not from all candidates) and
+    // query them. We stop only when every node in the top-K has been
+    // queried — that proves the top-K are the actual closest we can
+    // reach, not merely the closest in a prematurely-saturated pool.
+    //
+    // This is the fix for the steady-state 99.9% delivery: different
+    // nodes computing findKClosest from different starting positions
+    // now converge on the same top-K set because every path must
+    // visit the same "closest reachable" nodes.
     const visited = new Set();
     for (let round = 0; round < maxRounds; round++) {
-      const unvisited = [...candidates.values()]
-        .filter(n => !visited.has(n.id))
+      const topK = [...candidates.values()]
         .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
-        .slice(0, alpha);
-      if (unvisited.length === 0) break;
+        .slice(0, K);
+      const toQuery = topK.filter(n => !visited.has(n.id)).slice(0, alpha);
+      if (toQuery.length === 0) break;                 // all top-K queried — converged
 
-      const sizeBefore = candidates.size;
-      for (const peer of unvisited) {
+      for (const peer of toQuery) {
         visited.add(peer.id);
         for (const syn of peer.synaptome.values()) addCandidate(this.nodeMap.get(syn.peerId));
         if (peer.highway) {
           for (const syn of peer.highway.values()) addCandidate(this.nodeMap.get(syn.peerId));
         }
       }
-      if (candidates.size === sizeBefore) break;
     }
 
     return [...candidates.values()]

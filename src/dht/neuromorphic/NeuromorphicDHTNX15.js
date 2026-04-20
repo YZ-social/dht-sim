@@ -80,6 +80,10 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     // controls these via Controls.getNX15Params() → main.js createDHT.
     // Any field left undefined uses AxonManager's default.
     this._membershipOpts = opts.membership || {};
+
+    // sendDirect drain-loop state (see sendDirect docstring for rationale).
+    this._sendQueue    = null;
+    this._sendDraining = false;
   }
 
   // ── AxonManager lifecycle ───────────────────────────────────────────
@@ -321,21 +325,60 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
   // ── Point-to-point ──────────────────────────────────────────────────
 
   /**
-   * Deliver `payload` directly to `peerId`. Returns `true` if the peer was
-   * live at call time, `false` if dropped (peer dead or unknown). This is
-   * fire-and-forget — the handler fires synchronously in the simulator;
-   * the real network would substitute a UDP/WebRTC send.
+   * Deliver `payload` directly to `peerId`. Returns `true` if the peer
+   * was live at call time, `false` if dropped (peer dead or unknown).
+   *
+   * Iterative BFS-drain implementation: the liveness check and handler
+   * lookup happen synchronously (so the return value is accurate and the
+   * caller's eager-dead-child removal still works), but the handler
+   * invocation is put on a FIFO queue drained by an outer while-loop.
+   * This keeps a fan-out through a deep axon tree off the synchronous
+   * call stack — otherwise a 3-level axonal tree with 20-way fan-out
+   * blows past Node's ~10K frame limit and crashes with
+   * "Maximum call stack size exceeded".
+   *
+   * Publish-time semantics are preserved: all handlers dispatched by a
+   * single top-level sendDirect invocation complete before that call
+   * returns, so benchmarks that count deliveries immediately after
+   * publish() still see the correct numbers.
    */
   sendDirect(fromNode, peerId, type, payload) {
     const peer = this.nodeMap.get(topicToBigInt(peerId));
     if (!peer?.alive) return false;
     const handlers = this._directHandlers.get(peer);
     const handler = handlers?.get(type);
-    if (!handler) return true;
+    if (!handler) return true;        // peer alive, no handler registered — no-op
+
+    const item = {
+      handler,
+      payload,
+      meta: { fromId: nodeIdToHex(fromNode.id), type },
+      peerId: peer.id,
+      type,
+    };
+
+    if (this._sendDraining) {
+      // Nested call from inside another handler — enqueue; the outer
+      // drain loop will pick it up.
+      this._sendQueue.push(item);
+      return true;
+    }
+
+    // Top-level: start a drain loop.
+    this._sendQueue   = [item];
+    this._sendDraining = true;
     try {
-      handler(payload, { fromId: nodeIdToHex(fromNode.id), type });
-    } catch (err) {
-      console.error(`NX-15 direct handler error at peer ${peer.id} for '${type}':`, err);
+      while (this._sendQueue.length > 0) {
+        const next = this._sendQueue.shift();
+        try {
+          next.handler(next.payload, next.meta);
+        } catch (err) {
+          console.error(`NX-15 direct handler error at peer ${next.peerId} for '${next.type}':`, err);
+        }
+      }
+    } finally {
+      this._sendDraining = false;
+      this._sendQueue    = null;
     }
     return true;
   }

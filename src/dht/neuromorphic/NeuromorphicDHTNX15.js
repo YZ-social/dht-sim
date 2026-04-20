@@ -202,12 +202,20 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
       distances.set(node.id, node.id ^ targetBig);
     };
 
-    // Seed with source node + its immediate routing tables.
+    // Seed with source node + ALL three of its routing tiers. Including
+    // incomingSynapses (the reverse index) is important in LTP-
+    // specialized networks where the outgoing synaptome is biased toward
+    // frequently-used traffic. Incoming synapses provide backup reach
+    // into sparsely-connected regions of the ID space — the same
+    // technique NX-6's own _synaptomeFindClosest uses.
     addCandidate(src);
-    for (const syn of src.synaptome.values()) addCandidate(this.nodeMap.get(syn.peerId));
-    if (src.highway) {
-      for (const syn of src.highway.values()) addCandidate(this.nodeMap.get(syn.peerId));
-    }
+    const addTier = (tier) => {
+      if (!tier) return;
+      for (const syn of tier.values()) addCandidate(this.nodeMap.get(syn.peerId));
+    };
+    addTier(src.synaptome);
+    addTier(src.highway);
+    addTier(src.incomingSynapses);
 
     // Hybrid Kademlia FIND_NODE termination. Stop only when BOTH:
     //   (a) every node in the current top-K has been queried, AND
@@ -247,10 +255,14 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
 
       for (const peer of toQuery) {
         visited.add(peer.id);
-        for (const syn of peer.synaptome.values()) addCandidate(this.nodeMap.get(syn.peerId));
-        if (peer.highway) {
-          for (const syn of peer.highway.values()) addCandidate(this.nodeMap.get(syn.peerId));
-        }
+        // Per-hop expansion uses OUTGOING routing (synaptome + highway)
+        // only. incomingSynapses is a reverse index — those entries
+        // aren't topologically-meaningful for expanding toward a
+        // target, and including them bloats the candidate pool with
+        // essentially-random nodes. Seed-only is enough to break out
+        // of LTP-specialized local minima.
+        addTier(peer.synaptome);
+        addTier(peer.highway);
       }
 
       const grew = candidates.size > lastPoolSize;

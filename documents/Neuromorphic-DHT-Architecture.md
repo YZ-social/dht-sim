@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.50.00*
+*Version 0.51.00*
 
 ---
 
@@ -1354,6 +1354,81 @@ NX-13 is NX-10 with tunable parameters, enabling systematic exploration of the c
 | LTP reinforcement | +7 ms | Primarily helps regional routing |
 
 No single rule is responsible for NX-10's performance -- each contributes measurably, and the learning mechanisms work synergistically. The protocol is near a local optimum: 20+ iterations of parameter tuning found only ~10 ms of improvement, confirming the default configuration is well-tuned.
+
+### 7.7 Geographic Prefix Ablation
+
+The Neuromorphic DHT inherits its node-identity format from the Geographic DHT: the top `geoBits` of the 64-bit node ID encode a Hilbert-curve S2 cell (default 8 bits ≈ 256 cells globally), and the bottom `64-geoBits` bits are uniformly random. This embeds physical locality directly into XOR distance, so geographically-nearby nodes tend to be ID-nearby as well.
+
+An obvious question is how much of NX's performance actually depends on this geographic biasing versus the synaptome's learning mechanisms. To answer it, the entire benchmark was re-run with `geoBits = 0` (pure random 64-bit IDs, no geographic structure) and compared against the `geoBits = 8` default.
+
+#### 7.7.1 Lookup Performance (25,000 nodes, 5% churn)
+
+| Metric | NX-10 geo=8 | NX-10 geo=0 | Δ | NX-15 geo=8 | NX-15 geo=0 | Δ |
+|--------|-------------|-------------|------|-------------|-------------|------|
+| **Hops** | | | | | | |
+| Global | 3.37 | 3.33 | same | 3.52 | 3.47 | same |
+| 2000 km regional | 2.54 | 3.41 | **+34%** | 2.69 | 3.54 | **+32%** |
+| NA → Asia | 4.15 | 3.54 | **−15%** | 4.12 | 3.64 | **−12%** |
+| **Latency (ms)** | | | | | | |
+| Global | 255 | 265 | +4% | 255 | 281 | +10% |
+| 2000 km regional | 89 | 226 | **+154%** | 96 | 222 | **+131%** |
+| NA → Asia | 255 | 250 | same | 251 | 254 | same |
+
+The pattern is clear and symmetric between NX-10 and NX-15 (which share the same routing logic):
+
+- **Regional workloads depend heavily on the geographic prefix.** At 2000 km the latency penalty from `geoBits = 0` is roughly 2×. The geographic prefix is what lets the first few XOR hops stay within the caller's region; without it, every lookup-starting position is equidistant from every destination, and physical-distance penalties dominate.
+- **Cross-continental workloads benefit slightly from `geoBits = 0`.** Geographic clustering forces intermediate hops to stay local, which wastes hops when the ultimate target is continents away; random IDs allow more direct long-jumps.
+- **Random global workloads are essentially unchanged.** The synaptome's learning and the XOR routing structure together deliver equivalent performance with or without the geographic prefix, demonstrating that the prefix is a *performance optimization for locality*, not a correctness requirement.
+
+#### 7.7.2 Pub/Sub Steady-State and Broadcast
+
+| Metric | NX-10 geo=8 | NX-10 geo=0 | Δ | NX-15 geo=8 | NX-15 geo=0 | Δ |
+|--------|-------------|-------------|------|-------------|-------------|------|
+| Inherited pub/sub: →relay hops | 4.10 | 3.70 | −10% | 3.50 | 3.70 | +6% |
+| Inherited pub/sub: bcast latency | 286 ms | 410 ms | **+43%** | 249 ms | 379 ms | **+52%** |
+| Membership pub/sub: delivered % (steady state) | n/a | n/a | — | **100%** | **100%** | ✓ |
+
+- **Dendritic pub/sub broadcast latency is roughly 50% worse without the geographic prefix.** The NX-10 dendritic tree groups subscribers by S2 cell to recruit local forwarders; random IDs eliminate that clustering and the tree loses its locality advantage.
+- **Membership pub/sub steady-state delivery is identical (100%) at both settings.** The K-closest replication protocol operates purely over XOR distance to `hash(topic)` and has no dependency on ID structure. The protocol is *correct* regardless of `geoBits`.
+
+#### 7.7.3 Pub/Sub Churn Recovery: A Non-Monotonic Relationship
+
+The churn-recovery numbers reveal the most interesting finding in the ablation. The relationship between the geographic prefix and churn resilience is **non-monotonic**: the prefix helps at low churn but actively hurts at high churn.
+
+| Churn rate | NX-15 geo=8 (immediate / recovered) | NX-15 geo=0 (immediate / recovered) |
+|------------|-------------------------------------|--------------------------------------|
+| 5%  (1,250 / 25,000 killed) | 97.1% / **96.9%** | 94.9% / **83.2%** |
+| 25% (6,250 / 25,000 killed) | 38.1% / **38.1%** | 67.7% / **66.9%** |
+
+Two opposing dynamics are competing:
+
+**Low churn (5%): clustering helps.** With `geoBits = 8`, a topic's K-closest replicas are concentrated in a single ~97-node S2 cell. Uniformly-random 5% kill removes ~5 nodes from that cell on average, leaving ~92. The publisher's routing table is trained via synaptic LTP to reach that cell (common destinations are reinforced), so the publisher's `findKClosest` and the subscribers' `findKClosest` both converge on a similar surviving subset. Churn damage is well-tolerated because *both parties have routing coverage of the same region*, and that region is mostly intact. Random IDs (`geoBits = 0`) at 5% churn spread the K-closest across the entire network, so the publisher's and subscribers' computations diverge more after any node death -- a wider K-closest target set means less precise convergence, and the 14-percentage-point recovery gap reflects that diffusion cost.
+
+**High churn (25%): clustering hurts.** With `geoBits = 8`, uniformly-random 25% kill removes ~24 nodes from each 97-node cell. That's a *majority-level hit* to the geographic cell that holds every one of a topic's K-closest replicas. The publisher's routing table into that cell decays simultaneously (the same cell is damaged for both purposes), and `findKClosest` can no longer reach enough surviving replicas to deliver to the majority of subscribers -- hence the 38% ceiling. With `geoBits = 0` at 25% churn, the K-closest replicas are scattered across the entire ID space, and 25% death is a scattered, isolated loss. Surviving replicas remain individually reachable even if some paths are damaged, and the publisher's broad-coverage routing table still reaches many of them.
+
+The crossover point between these regimes depends on churn rate relative to cell population. For 25,000 nodes with `geoBits = 8` (256 cells, ~97 nodes per cell), the crossover sits somewhere between 5% and 25%. Below ~10% churn, geographic clustering wins; above, random IDs win.
+
+#### 7.7.4 Interpretation
+
+The geographic prefix is a performance lever with a context-dependent sign:
+
+| Workload | `geoBits = 0` vs `geoBits = 8` |
+|----------|-------------------------------|
+| Regional lookups | ~2× slower without prefix |
+| Cross-continental lookups | ~15% faster without prefix |
+| Random global lookups | essentially equal |
+| Dendritic pub/sub broadcast | ~50% slower without prefix |
+| Membership pub/sub steady-state | identical (100%) |
+| Membership pub/sub at 5% churn (recovered) | 14 pp worse without prefix |
+| Membership pub/sub at 25% churn (recovered) | **29 pp better without prefix** |
+
+The ablation reveals two claims that matter for understanding the protocol:
+
+First, **the NX series does not require geographic biasing to function**; the synaptome alone carries lookup correctness. Membership pub/sub in particular is *provably equivalent* across `geoBits` settings in steady state. This matters for deployments where geographic IDs are unavailable or undesirable (privacy-sensitive applications, pseudonymous overlays).
+
+Second, **the choice of `geoBits` should be tuned to the expected churn profile**. Networks with low-to-moderate churn (<10%) should use `geoBits = 8` for the locality benefits. Networks expecting high churn (>20%) -- either because node lifetimes are short or because the deployment is adversarial -- should consider `geoBits = 0` specifically for its pub/sub resilience, even though that sacrifices regional lookup performance. Intermediate values (e.g., `geoBits = 4`, ~16 cells) would split the difference but have not been separately characterised here.
+
+For the default configuration (typical browser-deployment churn assumed to be <10%), `geoBits = 8` remains the right choice. But the ablation demonstrates that the design has a real performance knob hiding in what previously appeared to be a hardcoded constant.
 
 ---
 

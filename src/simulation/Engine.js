@@ -1,4 +1,5 @@
 import { randomU64, computeStats, haversine, continentOf, buildXorRoutingTable } from '../utils/geo.js';
+import { PubSubAdapter, topicIdFor } from '../pubsub/PubSubAdapter.js';
 
 /**
  * SimulationEngine – orchestrates lookup tests and churn tests on a DHT.
@@ -589,6 +590,137 @@ export class SimulationEngine {
           };
           onStep(`${tag} · Pub/Sub ✓`);
           continue; // skip the normal runLookupTest path
+        }
+
+        // ── Pub/Sub Membership measurement (NX-15+) ─────────────────────────
+        // Drives the AxonManager-based membership protocol rather than the
+        // inherited one-shot pubsubBroadcast. Each participant in every
+        // group subscribes via a PubSubAdapter; each tick, the relay
+        // publishes via its own adapter; we count deliveries per-group and
+        // inspect the resulting axon tree. Only supported on DHTs that
+        // expose `axonFor` (NX-15 and descendants).
+        if (spec.type === 'pubsubm') {
+          if (typeof dht.axonFor !== 'function') {
+            data[def.key]['pubsubm'] = {
+              unsupported: true,
+              reason:      'protocol does not expose axonFor()',
+            };
+            onStep(`${tag} · Pub/Sub (Membership) — n/a`);
+            continue;
+          }
+
+          const groupSize = spec.groupSize ?? 32;
+          const coverage  = spec.coverage  ?? 10;
+
+          const aliveNodes  = dht.getNodes().filter(n => n.alive);
+          const targetNodes = Math.ceil(aliveNodes.length * coverage / 100);
+          const numGroups   = Math.max(1, Math.ceil(targetNodes / groupSize));
+          const shuffled    = [...aliveNodes].sort(() => Math.random() - 0.5);
+          const stride      = Math.max(1, Math.floor(shuffled.length / numGroups));
+
+          const groups = [];
+          for (let i = 0; i < numGroups; i++) {
+            const base         = (i * stride) % shuffled.length;
+            const relay        = shuffled[base];
+            const participants = [];
+            for (let j = 1; j <= groupSize; j++) {
+              participants.push(shuffled[(base + j) % shuffled.length]);
+            }
+            groups.push({ id: i, relay, participants });
+          }
+
+          // Set up one PubSubAdapter per distinct node (relay or participant).
+          // `entries.get(nodeId) = { adapter, deliveries: Map<groupId, bool> }`.
+          // We subscribe each participant to its own group's topic and
+          // install a per-group callback that flips the delivery bit when
+          // a publish arrives.
+          const entries = new Map();
+          const getEntry = (node) => {
+            let e = entries.get(node.id);
+            if (e) return e;
+            e = { node, adapter: new PubSubAdapter({ transport: dht.axonFor(node) }), deliveries: new Map() };
+            entries.set(node.id, e);
+            return e;
+          };
+
+          for (const group of groups) {
+            const gKey = 'g' + group.id;
+            for (const p of group.participants) {
+              const entry = getEntry(p);
+              entry.deliveries.set(group.id, false);
+              // Capture by-group delivery via the subscribe callback.
+              entry.adapter.subscribe('bench', gKey,
+                () => { entry.deliveries.set(group.id, true); }, 'immediate');
+            }
+            // Publisher adapter (may be different node than any participant).
+            getEntry(group.relay);
+          }
+
+          // Short warmup — let the tree stabilise before we start counting.
+          const warmupTicks = 3;
+          onStart(`${tag} · Pub/Sub (Membership) warmup (${warmupTicks} ticks)…`);
+          const runOneTick = () => {
+            // Reset per-group delivery bits.
+            for (const e of entries.values()) {
+              for (const gid of e.deliveries.keys()) e.deliveries.set(gid, false);
+            }
+            // Publish on each group (synchronous under NX-15 — no await needed).
+            for (const group of groups) {
+              const gKey = 'g' + group.id;
+              getEntry(group.relay).adapter.publish('bench', gKey, {});
+            }
+          };
+          for (let t = 0; t < warmupTicks; t++) { if (!this.running) break; runOneTick(); }
+
+          const measTicks = Math.max(10, Math.ceil(numMessages / (groupSize + 1)));
+          onStart(`${tag} · Pub/Sub (Membership) (${measTicks} ticks)…`);
+
+          const perTickDeliveredPct = [];
+          const perTickAxonRoles    = [];
+          const perTickMaxChildren  = [];
+          const perTickTreeDepth    = [];
+          for (let t = 0; t < measTicks; t++) {
+            if (!this.running) break;
+            runOneTick();
+
+            // Count per-group delivery rate for this tick.
+            let delivered = 0, expected = 0;
+            for (const group of groups) {
+              for (const p of group.participants) {
+                expected++;
+                if (entries.get(p.id).deliveries.get(group.id)) delivered++;
+              }
+            }
+            perTickDeliveredPct.push(expected === 0 ? 100 : (delivered / expected) * 100);
+
+            // Inspect the network's axon roles for each topic.
+            let totalRoles = 0, maxChildren = 0, maxDepth = 1;
+            for (const group of groups) {
+              const topicId = topicIdFor('bench', 'g' + group.id);
+              for (const axon of dht._axonsByNode.values()) {
+                const role = axon.axonRoles.get(topicId);
+                if (!role) continue;
+                totalRoles++;
+                maxChildren = Math.max(maxChildren, role.children.size);
+                if (!role.isRoot) maxDepth = Math.max(maxDepth, 2); // simple depth proxy
+              }
+            }
+            perTickAxonRoles.push(totalRoles);
+            perTickMaxChildren.push(maxChildren);
+            perTickTreeDepth.push(maxDepth);
+          }
+
+          data[def.key]['pubsubm'] = {
+            deliveredPct:  computeStats(perTickDeliveredPct),
+            axonRoles:     computeStats(perTickAxonRoles),
+            maxChildren:   computeStats(perTickMaxChildren),
+            treeDepth:     Math.max(...perTickTreeDepth, 1),
+            numGroups,
+            groupSize,
+            totalTicks:    measTicks,
+          };
+          onStep(`${tag} · Pub/Sub (Membership) ✓`);
+          continue;
         }
 
         const cellLabel = `${tag} · ${specLabel(spec)}`;

@@ -254,6 +254,7 @@
             <option value="srcdest"   selected>10%→10%</option>
             <option value="continent" selected>NA→Asia</option>
             <option value="pubsub"    selected>Pub/Sub</option>
+            <option value="pubsubm"   selected>Pub/Sub (Membership)</option>
             <option value="churn"     selected>5% Churn</option>
           </select>
         </div>
@@ -823,6 +824,26 @@
 
     </div><!-- /nx13-panel -->
 
+    <div id="nx15-panel" class="sb-sec">
+      <div class="sb-sec-lbl">NX-15 Pub/Sub Membership</div>
+
+      <details class="nx-rule nx-always" open><summary>Axon Tree</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl" data-tip="Recruit a sub-axon when an axon's child count reaches this value.">Max Direct Subs</span><input type="number" id="x15-maxDirectSubs" class="nx-pv" value="20" min="2" max="200" step="1">
+        <span class="nx-pl" data-tip="Dissolve a non-root axon when its child count falls below this value for one refresh interval (hysteresis with Max Direct Subs).">Min Direct Subs</span><input type="number" id="x15-minDirectSubs" class="nx-pv" value="5" min="1" max="50" step="1">
+      </div></div></details>
+
+      <details class="nx-rule nx-always"><summary>Refresh / TTL</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl" data-tip="How often each axon re-issues its own subscribe upward. Production would use minutes; the simulator uses seconds so we can observe behaviour in short runs.">Refresh Interval (ms)</span><input type="number" id="x15-refreshIntervalMs" class="nx-pv" value="10000" min="500" max="600000" step="500">
+        <span class="nx-pl" data-tip="A child entry is swept if its lastRenewed is older than this. Default = 3 × refresh interval (survives one missed refresh).">Max Sub Age (ms)</span><input type="number" id="x15-maxSubscriptionAgeMs" class="nx-pv" value="30000" min="1500" max="1800000" step="500">
+        <span class="nx-pl" data-tip="An empty root persists this long before dissolving (absorbs transient subscribe lulls).">Root Grace (ms)</span><input type="number" id="x15-rootGraceMs" class="nx-pv" value="60000" min="1000" max="3600000" step="1000">
+      </div></div></details>
+
+      <details class="nx-rule nx-always"><summary>Adapter (Sequencing)</summary><div class="nx-rule-body"><div class="nx-params nx-single">
+        <span class="nx-pl" data-tip="Per-sender reorder buffer window. Publishes arriving out of order are held this long before declaring a gap.">Reorder Window (ms)</span><input type="number" id="x15-reorderWindowMs" class="nx-pv" value="100" min="10" max="5000" step="10">
+      </div></div></details>
+
+    </div><!-- /nx15-panel -->
+
   </div><!-- /sidebar -->
 
   <!-- ── Globe fills remaining space ───────────────────────────────────── -->
@@ -967,7 +988,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.54.00</div>
+    <div id="legend">Version: 0.55.00</div>
   </div>
 
   </div><!-- /mainRow -->

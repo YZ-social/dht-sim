@@ -67,9 +67,7 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     super(opts);
 
     // Per-node handler maps. Handlers are installed lazily when AxonManager
-    // registers them for a given node. WeakMap semantics are not required —
-    // nodes live for the lifetime of the DHT, and we want fast iteration, so
-    // plain Maps are fine.
+    // registers them for a given node.
     this._routedHandlers = new Map();  // NeuronNode → Map<type, handler>
     this._directHandlers = new Map();  // NeuronNode → Map<type, handler>
 
@@ -77,11 +75,11 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     // the cost is zero for nodes that never participate in a topic.
     this._axonsByNode = new Map();     // NeuronNode → AxonManager
 
-    // Adapter-ready: any benchmark or app that wants to wire a PubSubAdapter
-    // to this DHT can call `dht.axonFor(nodeId)` to get the per-node axon
-    // and then construct an adapter against it:
-    //     const axon    = dht.axonFor(nodeId);
-    //     const adapter = new PubSubAdapter({ transport: axon });
+    // Membership protocol parameters — inherited by every AxonManager we
+    // create via axonFor(). The UI panel in index.html (id="nx15-panel")
+    // controls these via Controls.getNX15Params() → main.js createDHT.
+    // Any field left undefined uses AxonManager's default.
+    this._membershipOpts = opts.membership || {};
   }
 
   // ── AxonManager lifecycle ───────────────────────────────────────────
@@ -97,8 +95,16 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     let axon = this._axonsByNode.get(node);
     if (axon) return axon;
 
+    // Apply UI-tunable membership parameters; any field left undefined
+    // falls through to AxonManager's compiled-in defaults.
+    const m = this._membershipOpts;
     axon = new AxonManager({
       dht: this._nodeShim(node),
+      maxDirectSubs:        m.maxDirectSubs,
+      minDirectSubs:        m.minDirectSubs,
+      refreshIntervalMs:    m.refreshIntervalMs,
+      maxSubscriptionAgeMs: m.maxSubscriptionAgeMs,
+      rootGraceMs:          m.rootGraceMs,
       // NX-15's override: prefer forward-progress synaptome peers by weight.
       pickRecruitPeer: (role, meta, subscriberId) =>
         this._pickRecruitPeer(node, role, meta, subscriberId),

@@ -1430,6 +1430,7 @@ async function onBenchmark() {
     { key: 'srcdest',   type: 'srcdest',  srcPct: params.sourcePct, destPct: params.destPct },
     { key: 'continent', type: 'continent', src: 'NA', dst: 'AS' },
     { key: 'pubsub',    type: 'pubsub',   groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
+    { key: 'pubsubm',   type: 'pubsubm',  groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
     { key: 'churn',     type: 'churn',    rate: params.benchChurnPct },
   ];
   const testSpecs = ALL_TEST_SPECS
@@ -1692,6 +1693,7 @@ function createDHT(params) {
         alpha: params.alpha,
         bits: params.bits,
         rules: params.nx1wRules,
+        membership: params.nx15Params,   // UI-tunable pub/sub membership params
       });
     case 'kademlia':
     default:

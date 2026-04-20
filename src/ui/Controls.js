@@ -273,6 +273,7 @@ export class Controls {
       nx1wRules: this.getNX1WRules(),
       nx2wRules: this.getNX2WRules(),
       nx13Rules: this.getNX13Rules(),
+      nx15Params: this.getNX15Params(),
     };
   }
 
@@ -291,6 +292,8 @@ export class Controls {
     if (p2) p2.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx2w');
     const nx13 = this._el('nx13-panel');
     if (nx13) nx13.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx13');
+    const nx15 = this._el('nx15-panel');
+    if (nx15) nx15.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx15');
   }
 
   /** Read all NX-1W rule parameters from DOM inputs. */
@@ -499,6 +502,21 @@ export class Controls {
       // NX-6 churn
       churnReheat:        { tReheat:                   num('x3-tReheat') },
       deadEviction:       { enabled: chk('x3-deadEviction-en') },
+    };
+  }
+
+  /** Read all NX-15 (pub/sub membership) parameters from DOM inputs. */
+  getNX15Params() {
+    const num = id => { const el = this._el(id); return el ? parseFloat(el.value) : undefined; };
+    const int = id => { const el = this._el(id); return el ? parseInt(el.value) : undefined; };
+
+    return {
+      maxDirectSubs:        int('x15-maxDirectSubs'),
+      minDirectSubs:        int('x15-minDirectSubs'),
+      refreshIntervalMs:    int('x15-refreshIntervalMs'),
+      maxSubscriptionAgeMs: int('x15-maxSubscriptionAgeMs'),
+      rootGraceMs:          int('x15-rootGraceMs'),
+      reorderWindowMs:      int('x15-reorderWindowMs'),
     };
   }
 

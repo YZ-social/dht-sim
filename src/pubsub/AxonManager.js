@@ -70,6 +70,20 @@ export class AxonManager {
     this.rootSetSize           = rootSetSize;
     this._now                  = now;
 
+    // Per-node outgoing publishId counter (monotonic, combined with
+    // nodeId to be globally unique across the network).
+    this._publishCounter = 0;
+
+    // Per-node LRU of publishIds we have already processed, so a node
+    // never fans out or delivers the same publish twice. Without this,
+    // the K-closest replication + sub-axon recruitment produces
+    // exponential duplication: a subscriber that appears in multiple
+    // sub-axons' children maps receives many copies, and if they are
+    // themselves a sub-axon, each copy triggers another fan-out round.
+    this._seenPublishes = new Map();     // publishId -> insertedAt (ms)
+    this._seenPublishCap = 4096;         // bounded size (LRU-ish)
+    this._seenPublishTtlMs = 60_000;     // entries expire after 60 s
+
     // Policy overrides — if provided, replace the default methods. The DHT
     // (e.g., NX-15) is the usual source; it injects its protocol-specific
     // selection using its own routing-table state.
@@ -121,21 +135,32 @@ export class AxonManager {
    * current closest-to-hash roots and sendDirect — they have replicated
    * subscriber lists, so any one of K is sufficient. Falls back to a
    * routed publish when the transport doesn't expose findKClosest.
+   *
+   * Every publish carries a globally-unique publishId (nodeId + counter).
+   * Receivers track publishIds they've already processed to prevent
+   * exponential duplication when the fan-out tree has overlapping paths
+   * (common under K-closest replication + sub-axon recruitment).
    */
   pubsubPublish(topicId, json) {
+    const publishId = `${this.nodeId}:${++this._publishCounter}`;
     if (this._useKClosestMode()) {
       const roots = this.dht.findKClosest(topicId, this.rootSetSize);
       if (roots.length > 0) {
-        // Pick a random root for load-balancing; any replica serves a full
-        // subscriber list since subscribers STORE at all K.
-        const target = roots[Math.floor(Math.random() * roots.length)];
-        this.dht.sendDirect(target, 'pubsub:publish-k', { topicId, json });
+        // Send to ALL K roots, not just one. Publisher's K-closest set
+        // and subscriber's K-closest set diverge under routing-table
+        // instability (churn especially), so subscribers stored at a
+        // slightly different set than the publisher now sees. Sending
+        // to ALL K guarantees coverage as long as SOME root holds the
+        // subscriber. The publishId dedup at each receiver prevents
+        // duplicate fan-out, so the cost is K small sendDirect calls
+        // to the K roots (not K× amplification on fan-out).
+        for (const target of roots) {
+          this.dht.sendDirect(target, 'pubsub:publish-k', { topicId, json, publishId });
+        }
         return;
       }
-      // Degenerate (empty lookup result — no peers) — fall through to
-      // routed publish so we don't silently drop.
     }
-    this.dht.routeMessage(topicId, 'pubsub:publish', { topicId, json });
+    this.dht.routeMessage(topicId, 'pubsub:publish', { topicId, json, publishId });
   }
 
   /**
@@ -363,26 +388,18 @@ export class AxonManager {
    * sendDirect. Otherwise, forward along the route.
    */
   _onPublish(payload, meta) {
-    const { topicId, json } = payload;
+    const { topicId, json, publishId } = payload;
     const role = this.axonRoles.get(topicId);
     if (!role) return 'forward';
+    if (this._alreadySeenPublish(publishId)) return 'consumed';
 
-    // Note: we deliberately do NOT skip the peer that forwarded the publish
-    // to us. A forwarder is a relay, not a recipient — if they happen to
-    // also be a subscriber, they need delivery. The PubSubAdapter's own
-    // senderId-based drop handles the publisher's own self-delivery.
-    //
-    // §5.6 eager churn detection: when sendDirect returns false the peer
-    // is dead. Drop them from our children map immediately rather than
-    // waiting for the next TTL sweep. This tightens the publish-loss
-    // window after churn from one refresh interval to a single tick.
     const deadChildren = [];
     for (const [childId] of role.children) {
       if (childId === this.nodeId) {
         if (this._deliveryCallback) this._deliveryCallback(topicId, json);
         continue;
       }
-      const ok = this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json });
+      const ok = this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json, publishId });
       if (!ok) deadChildren.push(childId);
     }
     for (const dead of deadChildren) role.children.delete(dead);
@@ -390,27 +407,69 @@ export class AxonManager {
   }
 
   /**
+   * Publish-id deduplication. Returns true if we've already processed
+   * this publishId and should drop; returns false (first-time) and
+   * records it otherwise. Bounded by _seenPublishCap and TTL'd by
+   * _seenPublishTtlMs; both are enforced opportunistically on insert.
+   */
+  _alreadySeenPublish(publishId) {
+    if (!publishId) return false;            // legacy / untagged publishes never dedup
+    const now = this._now();
+    if (this._seenPublishes.has(publishId)) {
+      this._seenPublishes.get(publishId);    // insertion order unchanged
+      return true;
+    }
+    this._seenPublishes.set(publishId, now);
+    if (this._seenPublishes.size > this._seenPublishCap) {
+      // Evict oldest half. Map iterates in insertion order.
+      const toDrop = this._seenPublishCap / 2;
+      let i = 0;
+      for (const k of this._seenPublishes.keys()) {
+        if (i++ >= toDrop) break;
+        this._seenPublishes.delete(k);
+      }
+    }
+    return false;
+  }
+
+  /**
    * DIRECT delivery handler — fires when an axon fan-out reaches us.
-   * If we have our own role for this topic, re-fan-out to our children
-   * (we are a sub-axon in the middle of the tree). Otherwise just deliver
-   * locally to the adapter.
+   *
+   * Re-fan rule: only NON-ROOT axons (sub-axons recruited beneath a root)
+   * re-broadcast to their children. Roots — the K-closest replicas for a
+   * topic — never re-fan from a received pubsub:deliver. Rationale:
+   *
+   *   The publisher chose ONE root out of K and sent publish-k to it.
+   *   That root's _onPublishDirect already initiated a complete fan-out
+   *   through its own subtree. The other K-1 roots are not involved in
+   *   this publish at all; their subscriber lists are full replicas but
+   *   the protocol only uses one root per publish.
+   *
+   *   Without this rule, a subscriber that happens to also be a K-closest
+   *   root creates a cycle: Root A fans to child S (= Root B). S's
+   *   _onDeliver fires, S re-fans to its children (including A). A's
+   *   _onDeliver fires, re-fans to S. Ping-pong forever.
+   *
+   * Leaves (no role) and sub-axons (role.isRoot === false) still deliver
+   * locally + fan down appropriately.
    */
   _onDeliver(payload, meta) {
-    const { topicId, json } = payload;
+    const { topicId, json, publishId } = payload;
+    if (this._alreadySeenPublish(publishId)) return;
 
-    // Sub-axon re-fan-out: we are an intermediate axon in the tree.
     const role = this.axonRoles.get(topicId);
-    if (role) {
+    if (role && !role.isRoot) {
+      // Sub-axon: re-fan to our children. Skip the upstream peer and self.
       for (const [childId] of role.children) {
-        if (childId === meta.fromId) continue;    // don't echo upstream
-        if (childId === this.nodeId) continue;    // self-delivery handled below
-        this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json });
+        if (childId === meta.fromId) continue;
+        if (childId === this.nodeId) continue;
+        this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json, publishId });
       }
     }
 
-    // Local delivery to the adapter (fires whether or not we are also a
-    // sub-axon — matches the app-level "I subscribed to this topic"
-    // expectation).
+    // Local delivery to the adapter — always fires, whether or not we
+    // have a role for this topic. Matches the app-level "I subscribed
+    // to this topic" expectation.
     if (this._deliveryCallback) this._deliveryCallback(topicId, json);
   }
 
@@ -540,9 +599,25 @@ export class AxonManager {
   }
 
   _onPublishDirect(payload, meta) {
-    const { topicId, json } = payload;
+    const { topicId, json, publishId } = payload;
+    if (this._alreadySeenPublish(publishId)) return;
     const role = this.axonRoles.get(topicId);
-    if (!role) return;   // subscriber list didn't replicate here — drop
+    if (!role) {
+      // The publisher's findKClosest picked us but we don't hold this
+      // topic. Fall back to a routed publish so the greedy walk toward
+      // hash(topic) reaches a node that does. Dedup prevents loops.
+      //
+      // Known limitation: under heavy churn (25%+ in this sim's
+      // sparsely-connected 50-edge routing), the publisher's and
+      // subscribers' K-closest sets can diverge so much that even a
+      // routed walk lands on role-holders that cover only a fraction
+      // of the subscriber set. Full Kademlia-style iterative lookup
+      // would converge more reliably; we have the primitives for that
+      // in NX-6 but haven't wired them in as the K-closest fallback
+      // path. Flagged as follow-up work in Phase 3 notes.
+      this.dht.routeMessage(topicId, 'pubsub:publish', { topicId, json, publishId });
+      return;
+    }
 
     const deadChildren = [];
     for (const [childId] of role.children) {
@@ -550,7 +625,7 @@ export class AxonManager {
         if (this._deliveryCallback) this._deliveryCallback(topicId, json);
         continue;
       }
-      const ok = this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json });
+      const ok = this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json, publishId });
       if (!ok) deadChildren.push(childId);
     }
     for (const dead of deadChildren) role.children.delete(dead);

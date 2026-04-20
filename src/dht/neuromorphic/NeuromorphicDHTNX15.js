@@ -367,9 +367,23 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     // Top-level: start a drain loop.
     this._sendQueue   = [item];
     this._sendDraining = true;
+    let processed = 0;
+    let peakSize  = 1;
+    const ABORT_CAP = 200000;
     try {
       while (this._sendQueue.length > 0) {
+        if (this._sendQueue.length > peakSize) peakSize = this._sendQueue.length;
+        if (processed >= ABORT_CAP) {
+          const typeCounts = {};
+          for (const q of this._sendQueue) typeCounts[q.type] = (typeCounts[q.type] || 0) + 1;
+          console.error(`NX-15 drain loop aborted after ${processed} items (queue size ${this._sendQueue.length}, peak ${peakSize}). Top-level type='${item.type}'. Queue contents: ${JSON.stringify(typeCounts)}`);
+          // Sample a few items to diagnose.
+          const samples = this._sendQueue.slice(0, 5).map(q => ({ type: q.type, peerId: String(q.peerId).slice(0, 8), fromId: String(q.meta?.fromId).slice(0, 8) }));
+          console.error('  samples:', JSON.stringify(samples));
+          break;
+        }
         const next = this._sendQueue.shift();
+        processed++;
         try {
           next.handler(next.payload, next.meta);
         } catch (err) {

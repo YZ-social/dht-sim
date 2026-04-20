@@ -9,7 +9,7 @@
  */
 
 import { NeuromorphicDHTNX15 } from '../dht/neuromorphic/NeuromorphicDHTNX15.js';
-import { PubSubAdapter } from './PubSubAdapter.js';
+import { PubSubAdapter, topicIdFor } from './PubSubAdapter.js';
 
 const NODES = Number(process.argv[2]) || 2000;
 const COVERAGE = Number(process.argv[3]) || 0.10;
@@ -93,10 +93,14 @@ async function main() {
       if (!e.node.alive) continue;
       for (const gid of e.deliveries.keys()) e.deliveries.set(gid, false);
     }
+    console.log(`[${elapsed(t0)}s] Tick ${label}: publishing…`);
     for (const group of groups) {
       if (!group.relay.alive) continue;
       const gKey = 'g' + group.id;
+      const pubStart = now();
       getEntry(group.relay).adapter.publish('bench', gKey, {});
+      const pubMs = now() - pubStart;
+      if (pubMs > 100) console.log(`[${elapsed(t0)}s]   group ${group.id} publish took ${pubMs}ms`);
     }
     let delivered = 0, expected = 0;
     for (const group of groups) {
@@ -110,10 +114,65 @@ async function main() {
     return { delivered, expected };
   };
 
+  // Diagnostic: for each group topic, count roles held across the network
+  // and report how many are "live" (isRoot=true), how many sub-axon.
+  const snapshotTopics = (label) => {
+    for (const group of groups) {
+      const tid = topicIdFor('bench', 'g' + group.id);
+      let rootCount = 0, subCount = 0, totalChildren = 0, liveTargetsHoldingRole = 0;
+      for (const [n, axon] of dht._axonsByNode) {
+        const role = axon.axonRoles.get(tid);
+        if (!role) continue;
+        if (role.isRoot) rootCount++; else subCount++;
+        totalChildren += role.children.size;
+        if (n.alive) liveTargetsHoldingRole++;
+      }
+      // Also: what does the publisher's findKClosest return?
+      const pubKList = dht.axonFor(group.relay).dht.findKClosest(tid, K);
+      let pubKHasRole = 0;
+      for (const peerHex of pubKList) {
+        // peerHex is hex string — find the node.
+        for (const [n, axon] of dht._axonsByNode) {
+          const nHex = n.id.toString(16).padStart(16, '0');
+          if (nHex === peerHex && axon.axonRoles.has(tid)) pubKHasRole++;
+        }
+      }
+      console.log(`[${elapsed(t0)}s]   topic g${group.id} [${label}]: roots=${rootCount}, subaxons=${subCount}, live-holders=${liveTargetsHoldingRole}, totalChildren=${totalChildren}, pubK-with-role=${pubKHasRole}/${pubKList.length}`);
+    }
+  };
+
   for (let t = 0; t < 3; t++) runOneTick(`warmup-${t+1}`);
   for (let t = 0; t < 3; t++) runOneTick(`baseline-${t+1}`);
+  snapshotTopics('pre-kill');
 
-  // Report axon sizes for diagnostics.
+  // ─── Full pubsubmchurn lifecycle: kill 25%, measure, refresh, re-measure ───
+  const churnRate = 0.25;
+  const publisherIds = new Set(groups.map(g => g.relay.id));
+  const killable = aliveNodes.filter(n => !publisherIds.has(n.id));
+  killable.sort(() => rand() - 0.5);
+  const killTarget = Math.floor(aliveNodes.length * churnRate);
+  console.log(`[${elapsed(t0)}s] Killing ${killTarget} nodes (${(churnRate*100).toFixed(0)}% churn, excluding publishers)…`);
+  for (let i = 0; i < killTarget; i++) killable[i].alive = false;
+
+  snapshotTopics('immediately-after-kill');
+  for (let t = 0; t < 3; t++) runOneTick(`immediate-${t+1}`);
+
+  console.log(`[${elapsed(t0)}s] Driving refresh ticks on all surviving axons…`);
+  const refreshStart = now();
+  for (let r = 0; r < 3; r++) {
+    let calls = 0;
+    for (const node of aliveNodes) {
+      if (!node.alive) continue;
+      dht.axonFor(node).refreshTick();
+      calls++;
+    }
+    console.log(`[${elapsed(t0)}s]   refresh round ${r+1}: ${calls} refreshTick calls in ${((now()-refreshStart)/1000).toFixed(2)}s`);
+  }
+
+  snapshotTopics('post-refresh');
+  for (let t = 0; t < 3; t++) runOneTick(`recovered-${t+1}`);
+
+  // Report final axon sizes for diagnostics.
   let totalRoles = 0, maxChildren = 0;
   for (const axon of dht._axonsByNode.values()) {
     for (const role of axon.axonRoles.values()) {
@@ -121,7 +180,7 @@ async function main() {
       if (role.children.size > maxChildren) maxChildren = role.children.size;
     }
   }
-  console.log(`[${elapsed(t0)}s] Axon state: ${totalRoles} roles, max children on any axon = ${maxChildren}`);
+  console.log(`[${elapsed(t0)}s] Final axon state: ${totalRoles} roles, max children on any axon = ${maxChildren}`);
 
   console.log(`[${elapsed(t0)}s] DONE`);
 }

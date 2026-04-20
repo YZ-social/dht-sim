@@ -221,10 +221,15 @@ async function run() {
     // Publisher is someone else — pick any non-subscriber.
     const pub = adapters.find(a => a !== sub);
 
+    // Drop enough pubsub:deliver messages to suppress the first
+    // publish's fan-out across all K redundant paths. With K=5, the
+    // publisher sends to 5 roots and each fans to this subscriber, so
+    // up to 5 deliver attempts arrive for the first publish. Dropping
+    // 5 covers them; leaves the second publish's 5 attempts intact.
     let deliveryIdx = 0;
     net.dropFn = (from, to, type) => {
       if (type !== 'pubsub:deliver') return false;
-      const drop = deliveryIdx === 0;
+      const drop = deliveryIdx < 5;
       deliveryIdx++;
       return drop;
     };

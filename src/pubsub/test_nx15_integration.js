@@ -38,7 +38,11 @@ function assert(name, cond, detail = '') {
  * omniscient-init path, then attach a PubSubAdapter to each node.
  */
 async function buildNX15Stack(n, adapterOpts = {}) {
-  const dht = new NeuromorphicDHTNX15({ k: 20, alpha: 3, bits: 64 });
+  // Tests here manually inject role state into specific axons. We turn
+  // K-closest mode OFF by default so publishes always route to the same
+  // (deterministic) terminal. Individual tests can opt in to K-closest.
+  const membership = adapterOpts.membership ?? { rootSetSize: 0 };
+  const dht = new NeuromorphicDHTNX15({ k: 20, alpha: 3, bits: 64, membership });
 
   // Create nodes at deterministic pseudo-random globe coordinates so the
   // test is reproducible across runs. Same PRNG seed shape as main.js's
@@ -149,107 +153,92 @@ async function run() {
            !role || !role.children.has(adapters[2].nodeId));
   }
 
-  // ── Test 5: Synaptome-weighted pickRecruitPeer ──────────────────────
-  //   Directly test the override method rather than triggering recruitment
-  //   over the wire. We construct a small role and meta, then verify the
-  //   override picks the highest-weight synapse that makes forward
-  //   progress toward the subscriber.
+  // ── Test 5: Synaptome-weighted pickRecruitPeer (existing children) ──
+  //   The new contract: pickRecruitPeer must return an ID that is already
+  //   in role.children (we never grow the axon beyond maxDirectSubs
+  //   during recruitment). NX-15's override scores existing children by
+  //   synapse weight in the node's synaptome; children with no synapse
+  //   fall through to XOR-distance selection.
   {
-    console.log('\n[Test 5] NX-15 pickRecruitPeer prefers high-weight synapse');
+    console.log('\n[Test 5] NX-15 pickRecruitPeer picks high-weight existing child');
     const { dht, nodes } = await buildNX15Stack(8);
     const node = nodes[0];
 
-    // Find the synaptome entries that make forward progress toward a
-    // chosen subscriber. Then verify the override picks the one with
-    // highest weight.
-    const subscriberId = nodes[7].id;
-    const subTarget = subscriberId;   // already BigInt
-    const selfDist = node.id ^ subTarget;
-
-    // Collect eligible synapses from node.
-    const eligible = [];
-    for (const syn of node.synaptome.values()) {
-      const d = syn.peerId ^ subTarget;
-      if (d < selfDist) {
-        eligible.push({ peerId: syn.peerId, weight: syn.weight, latency: syn.latency ?? syn.latencyMs });
-      }
-    }
-
-    // There must be some eligible candidate in a reasonable routing table.
-    // If not, the pick will fall back to meta.fromId and the assertion
-    // below adapts accordingly.
-    if (eligible.length > 0) {
-      // Force one synapse to have a dominating weight.
-      const synList = [...node.synaptome.values()].filter(s => {
-        const d = s.peerId ^ subTarget;
-        return d < selfDist;
-      });
-      synList[0].weight = 0.99;
-      for (let i = 1; i < synList.length; i++) synList[i].weight = 0.1;
-
-      const pickHex = dht._pickRecruitPeer(node, {}, { fromId: 'fallbackId' }, subscriberId.toString(16).padStart(16, '0'));
-      const expected = synList[0].peerId.toString(16).padStart(16, '0');
-      assert('high-weight forward-progress peer selected',
-             pickHex === expected, `got ${pickHex} expected ${expected}`);
+    // Build a synthetic role whose children happen to include some of
+    // node's synaptome peers. Assign weights so one child dominates.
+    const subscriberId = nodes[7].id.toString(16).padStart(16, '0');
+    const synChildren = [...node.synaptome.values()].slice(0, 3);
+    if (synChildren.length < 2) {
+      assert('skipped — synaptome too small for this node', true);
     } else {
-      // No forward-progress synapse → falls back to meta.fromId.
-      const pickHex = dht._pickRecruitPeer(node, {}, { fromId: 'fallbackId' }, subscriberId.toString(16).padStart(16, '0'));
-      assert('falls back to meta.fromId when no synapse candidate',
-             pickHex === 'fallbackId');
+      synChildren[0].weight = 0.99;
+      for (let i = 1; i < synChildren.length; i++) synChildren[i].weight = 0.1;
+
+      const role = {
+        children: new Map(synChildren.map(s => [
+          s.peerId.toString(16).padStart(16, '0'),
+          { createdAt: 0, lastRenewed: 0 },
+        ])),
+      };
+
+      const pickHex = dht._pickRecruitPeer(node, role, { fromId: 'fallbackId' }, subscriberId);
+      const expected = synChildren[0].peerId.toString(16).padStart(16, '0');
+      assert('high-weight child picked as recruit',
+             pickHex === expected, `got ${pickHex} expected ${expected}`);
     }
   }
 
   // ── Test 6: Recruitment triggers at maxDirectSubs ──────────────────
-  //   We bypass the full subscribe-routing path and invoke _onSubscribe
-  //   directly at an axon whose children are at capacity. The recruit
-  //   must be selected from the node's synaptome (or fall back).
+  //   New contract: root's children cap is preserved. An EXISTING child
+  //   gets promoted to sub-axon and the new subscriber joins under it.
+  //   One of nodes[1..3] should end up with a role for this topic.
   {
-    console.log('\n[Test 6] Recruitment fires when axon reaches capacity');
+    console.log('\n[Test 6] Recruitment: existing child promoted, root cap preserved');
     const { dht, nodes } = await buildNX15Stack(15);
 
-    // Pick a node and install an AxonManager with a small capacity.
     const rootNode = nodes[0];
     const axon = dht.axonFor(rootNode);
     axon.maxDirectSubs = 3;
 
-    // Install an axon role at capacity (3 children).
     const topicId = 'fedc000000000000';
     const now = Date.now();
+    const childHexIds = [1, 2, 3].map(i =>
+      nodes[i].id.toString(16).padStart(16, '0'));
     axon.axonRoles.set(topicId, {
       parentId: null, isRoot: true,
-      children: new Map([
-        [nodes[1].id.toString(16).padStart(16, '0'), { createdAt: now, lastRenewed: now }],
-        [nodes[2].id.toString(16).padStart(16, '0'), { createdAt: now, lastRenewed: now }],
-        [nodes[3].id.toString(16).padStart(16, '0'), { createdAt: now, lastRenewed: now }],
-      ]),
+      children: new Map(childHexIds.map(id => [id, { createdAt: now, lastRenewed: now }])),
       parentLastSent: 0, roleCreatedAt: now, emptiedAt: 0, lowWaterSince: 0,
     });
 
     const before = axon.axonRoles.get(topicId).children.size;
-    // Simulate an incoming subscribe from a new subscriber via forwarder.
-    const forwarderHex = nodes[5].id.toString(16).padStart(16, '0');
+    const forwarderHex   = nodes[5].id.toString(16).padStart(16, '0');
+    const subscriberHex  = nodes[10].id.toString(16).padStart(16, '0');
     axon._onSubscribe(
-      { topicId, subscriberId: nodes[10].id.toString(16).padStart(16, '0') },
+      { topicId, subscriberId: subscriberHex },
       { fromId: forwarderHex, isTerminal: false, hopCount: 1 }
     );
     await sleep(20);
 
     const after = axon.axonRoles.get(topicId).children.size;
-    assert('root children grew by exactly one (recruit added, not subscriber)',
-           after === before + 1, `before=${before} after=${after}`);
+    assert('root children cap preserved', after === before,
+           `before=${before} after=${after}`);
     assert('direct subscriber NOT in root children',
-           !axon.axonRoles.get(topicId).children.has(nodes[10].id.toString(16).padStart(16, '0')));
+           !axon.axonRoles.get(topicId).children.has(subscriberHex));
+    assert('forwarder NOT injected into root children',
+           !axon.axonRoles.get(topicId).children.has(forwarderHex));
 
-    // One of the children should be a recruit. It might be the forwarder
-    // (default fallback) or a high-weight synaptome peer (NX-15 override).
-    // Either way it should NOT be the original subscriber.
-    const childIds = [...axon.axonRoles.get(topicId).children.keys()];
-    const newChildren = childIds.filter(cid =>
-      cid !== nodes[1].id.toString(16).padStart(16, '0') &&
-      cid !== nodes[2].id.toString(16).padStart(16, '0') &&
-      cid !== nodes[3].id.toString(16).padStart(16, '0')
-    );
-    assert('recruit present', newChildren.length === 1, `new children: ${newChildren}`);
+    // One of the existing children (nodes[1..3]) should now hold a
+    // sub-axon role containing the new subscriber.
+    const promoted = [1, 2, 3].map(i => dht.axonFor(nodes[i]))
+                              .filter(a => a.axonRoles.has(topicId));
+    assert('exactly one existing child promoted', promoted.length === 1,
+           `got ${promoted.length} promoted`);
+    if (promoted.length === 1) {
+      const subRole = promoted[0].axonRoles.get(topicId);
+      assert('promoted child role is non-root', subRole.isRoot === false);
+      assert('promoted child holds new subscriber',
+             subRole.children.has(subscriberHex));
+    }
   }
 
   // ── Test 7: Full-stack publish through recruited sub-axon ───────────

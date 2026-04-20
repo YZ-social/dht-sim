@@ -59,6 +59,7 @@ function buildAxonNetwork(n, opts = {}) {
       refreshIntervalMs:    opts.refreshIntervalMs    ?? 100000,   // tests drive manually
       maxSubscriptionAgeMs: opts.maxSubscriptionAgeMs ?? 30000,
       rootGraceMs:          opts.rootGraceMs          ?? 60000,
+      rootSetSize:          opts.rootSetSize          ?? 0,        // routed mode by default
       now:                  opts.now || (() => Date.now()),
     });
     axons.push(axon);
@@ -388,14 +389,17 @@ async function run() {
            `initial=${initial} bumped=${bumped}`);
   }
 
-  // ── Test 14: Recruitment — axon over capacity delegates to sub-axon ─
+  // ── Test 14: Recruitment — axon at cap promotes existing child ──────
   {
-    console.log('\n[Test 14] Recruitment when children >= maxDirectSubs');
+    console.log('\n[Test 14] Recruitment: existing child promoted (root cap unchanged)');
     const topicId = '8888888888888888';
     const { nodes, axons } = buildAxonNetwork(10, { maxDirectSubs: 3 });
 
     // Hand-install a root role with exactly 3 children so the next
-    // subscribe triggers recruitment. This bypasses real routing.
+    // subscribe triggers recruitment. Deterministic IDs (0x02, 0x03, 0x04)
+    // mean we can compute which child will be promoted for subscriber
+    // nodes[4].id (0x05): XOR distances are 0x07, 0x06, 0x01 — so
+    // nodes[3] (0x04) is closest.
     const root = axons[0];
     const now = Date.now();
     root.axonRoles.set(topicId, {
@@ -412,25 +416,25 @@ async function run() {
       lowWaterSince:  0,
     });
 
-    // Directly invoke _onSubscribe as if a new subscribe arrived from
-    // nodes[4] through forwarder nodes[5].
     root._onSubscribe(
       { topicId, subscriberId: nodes[4].id },
       { fromId: nodes[5].id, isTerminal: false, hopCount: 1 }
     );
 
-    assert('root children count still 4 (added recruit, not subscriber)',
-           root.axonRoles.get(topicId).children.size === 4);
-    assert('recruit (forwarder) added to root children',
-           root.axonRoles.get(topicId).children.has(nodes[5].id));
-    assert('actual subscriber NOT in root children directly',
+    assert('root children cap preserved (still 3, not grown)',
+           root.axonRoles.get(topicId).children.size === 3);
+    assert('new subscriber NOT added to root children',
            !root.axonRoles.get(topicId).children.has(nodes[4].id));
+    assert('forwarder NOT added to root children (since not already present)',
+           !root.axonRoles.get(topicId).children.has(nodes[5].id));
 
-    // Give the promote-axon direct message time to arrive.
     await sleep(50);
 
-    const recruit = axons[5];
-    assert('recruit now has role for topic', recruit.axonRoles.has(topicId));
+    // The existing child with smallest XOR to nodes[4] is nodes[3]
+    // (d=0x01 vs 0x06 and 0x07 for nodes[2] and nodes[1]).
+    const recruit = axons[3];
+    assert('XOR-closest existing child got the promote-axon',
+           recruit.axonRoles.has(topicId));
     const recruitRole = recruit.axonRoles.get(topicId);
     assert('recruit role is non-root',      recruitRole.isRoot === false);
     assert('recruit parentId is promoter',  recruitRole.parentId === nodes[0].id);
@@ -438,13 +442,17 @@ async function run() {
            recruitRole.children.has(nodes[4].id));
   }
 
-  // ── Test 15: Idempotent promote — multiple subscribers via same recruit ─
+  // ── Test 15: Two new subscribers to same sub-axon ───────────────────
   {
-    console.log('\n[Test 15] Multiple subscribers routed through same recruit');
+    console.log('\n[Test 15] Two subscribers routed via same existing-child recruit');
     const topicId = '9999999999999999';
     const { nodes, axons } = buildAxonNetwork(10, { maxDirectSubs: 2 });
 
-    // Pre-populate root with 2 children.
+    // Pre-populate root with 2 children (nodes[1]=0x02, nodes[2]=0x03).
+    // New subscribers nodes[4] (0x05) and nodes[6] (0x07).
+    //   XOR(nodes[1], nodes[4]) = 0x07 | XOR(nodes[2], nodes[4]) = 0x06 → nodes[2] chosen.
+    //   XOR(nodes[1], nodes[6]) = 0x05 | XOR(nodes[2], nodes[6]) = 0x04 → nodes[2] chosen.
+    // Both delegated to nodes[2].
     const root = axons[0];
     const now = Date.now();
     root.axonRoles.set(topicId, {
@@ -456,7 +464,6 @@ async function run() {
       parentLastSent: 0, roleCreatedAt: now, emptiedAt: 0, lowWaterSince: 0,
     });
 
-    // Two different subscribers both arrive via forwarder nodes[5].
     root._onSubscribe(
       { topicId, subscriberId: nodes[4].id },
       { fromId: nodes[5].id, isTerminal: false });
@@ -466,12 +473,14 @@ async function run() {
 
     await sleep(50);
 
-    const recruit = axons[5];
-    assert('recruit exists once in root children (not duplicated)',
-           root.axonRoles.get(topicId).children.size === 3,
-           `size=${root.axonRoles.get(topicId).children.size}`);
-    assert('recruit role has both subscribers',
-           recruit.axonRoles.get(topicId).children.size === 2);
+    assert('root children cap preserved (still 2)',
+           root.axonRoles.get(topicId).children.size === 2);
+    const recruit = axons[2];      // nodes[2] is XOR-closest for both subscribers
+    assert('recruit has role',
+           recruit.axonRoles.has(topicId));
+    assert('recruit role holds both delegated subscribers',
+           recruit.axonRoles.get(topicId).children.size === 2,
+           `size=${recruit.axonRoles.get(topicId).children.size}`);
     assert('subscriber 4 in recruit children',
            recruit.axonRoles.get(topicId).children.has(nodes[4].id));
     assert('subscriber 6 in recruit children',
@@ -482,13 +491,9 @@ async function run() {
   {
     console.log('\n[Test 16] Publish fans out through sub-axon to leaf subscribers');
     const { nodes, axons } = buildAxonNetwork(10, { maxDirectSubs: 2 });
-    // Use axons[0]'s id as the topicId so routing always terminates at
-    // axons[0] (its XOR distance to itself is zero). This lets us plant
-    // the root role at axons[0] and be sure a publish from anywhere will
-    // find it.
     const topicId = nodes[0].id;
 
-    // Pre-populate root.
+    // Pre-populate root with [nodes[1]=0x02, nodes[2]=0x03].
     const root = axons[0];
     const now = Date.now();
     root.axonRoles.set(topicId, {
@@ -875,6 +880,46 @@ async function run() {
     await sleep(200);
     assert('publish survives intermediate deaths',
            received === 1, `received=${received}, victims=${victims}, root=${rootNodeId}`);
+  }
+
+  // ── Test 25: K-closest subscribe replicates to all K roots ─────────
+  //   Explicit test of the K-closest mode: a single subscriber subscribes
+  //   and we verify that K different nodes all hold a role for the topic
+  //   (replicating the subscriber list). Subsequent publishes from any
+  //   peer should be delivered to the subscriber regardless of which
+  //   root the publish's lookup lands at.
+  {
+    console.log('\n[Test 25] K-closest subscribe replicates at all K roots');
+    const topicId = 'feedface1234abcd';
+    const K = 3;
+    const { axons } = buildAxonNetwork(12, { rootSetSize: K });
+
+    let received = 0;
+    axons[7].onPubsubDelivery(() => received++);
+    axons[7].pubsubSubscribe(topicId);
+    await sleep(50);
+
+    // Exactly K distinct nodes should now hold a role for this topic.
+    const holders = axons.filter(a => a.axonRoles.has(topicId));
+    assert(`K (=${K}) roots hold the topic`,
+           holders.length === K, `got ${holders.length}`);
+
+    // Every holder's role is marked isInRootSet.
+    for (const h of holders) {
+      const role = h.axonRoles.get(topicId);
+      assert(`root ${h.nodeId.slice(0, 4)} marked isInRootSet`,
+             role.isInRootSet === true);
+      assert(`root ${h.nodeId.slice(0, 4)} has subscriber`,
+             role.children.has(axons[7].nodeId));
+    }
+
+    // Publish from a non-subscriber. Because the publisher picks one of
+    // K roots at random and sends direct, the subscriber should always
+    // get the message regardless of which root was selected.
+    axons[3].pubsubPublish(topicId, '{"test":1}');
+    await sleep(50);
+    assert('subscriber received from K-closest publish', received === 1,
+           `received=${received}`);
   }
 
   // ── Summary ─────────────────────────────────────────────────────────

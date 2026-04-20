@@ -162,6 +162,54 @@ export class MockDHTNode {
     this._directMessageHandlers.set(type, handler);
   }
 
+  // ── K-closest lookup ────────────────────────────────────────────────
+
+  /**
+   * Return up to K nodes (including ourselves when appropriate) whose IDs
+   * are closest to `targetId`. Implements the Kademlia-style iterative
+   * FIND_NODE: start with our own routing-table candidates, expand each
+   * iteration by querying the closest unvisited candidates' tables, stop
+   * when no closer nodes appear. In the simulator this is fully
+   * synchronous (all routing tables are in-process memory); a real
+   * implementation would issue α parallel RPCs per round.
+   */
+  findKClosest(targetId, K = 5, { alpha = 3, maxRounds = 20 } = {}) {
+    const targetBig = BigInt('0x' + targetId);
+    const dist = (id) => BigInt('0x' + id) ^ targetBig;
+    const candidates = new Map();   // id → node
+    const distances  = new Map();   // id → BigInt
+    const addCandidate = (node) => {
+      if (!node.isAlive() || candidates.has(node.id)) return;
+      candidates.set(node.id, node);
+      distances.set(node.id, dist(node.id));
+    };
+
+    addCandidate(this);
+    for (const peer of this.routingTable.values()) addCandidate(peer);
+
+    const visited = new Set();
+    for (let round = 0; round < maxRounds; round++) {
+      // Pick α unvisited candidates nearest to target.
+      const unvisited = [...candidates.values()]
+        .filter(n => !visited.has(n.id))
+        .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
+        .slice(0, alpha);
+      if (unvisited.length === 0) break;
+
+      const sizeBefore = candidates.size;
+      for (const peer of unvisited) {
+        visited.add(peer.id);
+        for (const other of peer.routingTable.values()) addCandidate(other);
+      }
+      if (candidates.size === sizeBefore) break;   // converged
+    }
+
+    return [...candidates.values()]
+      .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
+      .slice(0, K)
+      .map(n => n.id);
+  }
+
   // ── Greedy routing primitive ────────────────────────────────────────
 
   /**

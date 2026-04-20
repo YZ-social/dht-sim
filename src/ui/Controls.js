@@ -511,6 +511,7 @@ export class Controls {
     const int = id => { const el = this._el(id); return el ? parseInt(el.value) : undefined; };
 
     return {
+      rootSetSize:          int('x15-rootSetSize'),
       maxDirectSubs:        int('x15-maxDirectSubs'),
       minDirectSubs:        int('x15-minDirectSubs'),
       refreshIntervalMs:    int('x15-refreshIntervalMs'),

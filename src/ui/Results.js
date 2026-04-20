@@ -1475,6 +1475,7 @@ export class Results {
       }
       if (hasType('pubsubm') && params.nx15Params) {
         const m = params.nx15Params;
+        if (m.rootSetSize          != null) extra.push(['NX-15 rootSetSize (K)',      m.rootSetSize]);
         if (m.maxDirectSubs        != null) extra.push(['NX-15 maxDirectSubs',        m.maxDirectSubs]);
         if (m.minDirectSubs        != null) extra.push(['NX-15 minDirectSubs',        m.minDirectSubs]);
         if (m.refreshIntervalMs    != null) extra.push(['NX-15 refreshIntervalMs',    m.refreshIntervalMs]);

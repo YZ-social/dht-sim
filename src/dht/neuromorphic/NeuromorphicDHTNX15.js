@@ -105,7 +105,10 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
       refreshIntervalMs:    m.refreshIntervalMs,
       maxSubscriptionAgeMs: m.maxSubscriptionAgeMs,
       rootGraceMs:          m.rootGraceMs,
-      // NX-15's override: prefer forward-progress synaptome peers by weight.
+      rootSetSize:          m.rootSetSize,
+      // NX-15's override: prefer existing child that is also a high-weight
+      // synapse of this node. Must return an existing child; never grows
+      // the axon beyond maxDirectSubs.
       pickRecruitPeer: (role, meta, subscriberId) =>
         this._pickRecruitPeer(node, role, meta, subscriberId),
     });
@@ -138,6 +141,11 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
       onDirectMessage(type, handler) {
         self.onDirectMessage(node, type, handler);
       },
+      /** K-closest lookup — AxonManager uses this in K-closest mode. */
+      findKClosest(targetId, K, opts) {
+        return self.findKClosest(node, targetId, K, opts)
+                   .map(peer => nodeIdToHex(peer.id));
+      },
     };
   }
 
@@ -160,6 +168,65 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     let table = this._directHandlers.get(node);
     if (!table) { table = new Map(); this._directHandlers.set(node, table); }
     table.set(type, handler);
+  }
+
+  // ── K-closest lookup ────────────────────────────────────────────────
+
+  /**
+   * Return up to K nodes whose IDs are closest to `targetId` (as hex string),
+   * using Kademlia-style iterative FIND_NODE over the local synaptome +
+   * highway. Reuses the same algorithmic pattern as NX-6's addNode
+   * iterative-lookup helper; returns bare NeuronNodes. K defaults to 5.
+   *
+   * This is the primitive the membership protocol (AxonManager K-closest
+   * mode) uses to find the replicated root set for a topic: subscribe
+   * STOREs at every node in the returned list, and publishers route to
+   * any-of-K rather than one-true-closest. Making this function pre-
+   * computes the root set in a single pass so the protocol can fan out
+   * subscribe/publish without further iterative work.
+   */
+  findKClosest(sourceNode, targetId, K = 5, { alpha = 3, maxRounds = 20 } = {}) {
+    const src = this._resolveNode(sourceNode);
+    if (!src) return [];
+    const targetBig = topicToBigInt(targetId);
+
+    const candidates = new Map();   // BigInt id → NeuronNode
+    const distances  = new Map();   // BigInt id → BigInt distance
+    const addCandidate = (node) => {
+      if (!node?.alive || candidates.has(node.id)) return;
+      candidates.set(node.id, node);
+      distances.set(node.id, node.id ^ targetBig);
+    };
+
+    // Seed with source node + its immediate routing tables.
+    addCandidate(src);
+    for (const syn of src.synaptome.values()) addCandidate(this.nodeMap.get(syn.peerId));
+    if (src.highway) {
+      for (const syn of src.highway.values()) addCandidate(this.nodeMap.get(syn.peerId));
+    }
+
+    const visited = new Set();
+    for (let round = 0; round < maxRounds; round++) {
+      const unvisited = [...candidates.values()]
+        .filter(n => !visited.has(n.id))
+        .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
+        .slice(0, alpha);
+      if (unvisited.length === 0) break;
+
+      const sizeBefore = candidates.size;
+      for (const peer of unvisited) {
+        visited.add(peer.id);
+        for (const syn of peer.synaptome.values()) addCandidate(this.nodeMap.get(syn.peerId));
+        if (peer.highway) {
+          for (const syn of peer.highway.values()) addCandidate(this.nodeMap.get(syn.peerId));
+        }
+      }
+      if (candidates.size === sizeBefore) break;
+    }
+
+    return [...candidates.values()]
+      .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
+      .slice(0, K);
   }
 
   // ── Greedy single-step routing ──────────────────────────────────────
@@ -276,43 +343,53 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
   // ── Recruitment policy: synaptome-weighted peer selection ───────────
 
   /**
-   * Pick a sub-axon recruit from `node`'s synaptome — the peer that makes
-   * strict forward progress toward the new subscriber AND has the highest
-   * synapse weight (ties broken by lowest latency). Falls back to the
-   * default (the peer that forwarded the subscribe) if no suitable
-   * synaptome candidate exists.
+   * Pick an EXISTING child to promote as sub-axon, preferring those that
+   * also appear in this node's synaptome with high weight. High-weight
+   * synapses have been validated by LTP as reliable, so promoting them
+   * yields trees whose backbone sits on proven connections.
    *
-   * Rationale: axon membership is long-lived. High-weight synapses have
-   * been validated by LTP as reliable. Picking them as recruits yields
-   * trees whose backbone sits on proven connections, reducing the amount
-   * of churn-induced re-subscription the membership protocol has to do.
+   * Contract: the return value MUST already be present in role.children —
+   * recruitment never grows the axon beyond maxDirectSubs. If no child
+   * has a synaptome match, falls back to AxonManager's default (XOR-
+   * closest existing child to the new subscriber).
    */
   _pickRecruitPeer(node, role, meta, subscriberId) {
-    const subTarget = topicToBigInt(subscriberId);
-    const selfDist = node.id ^ subTarget;
+    if (role.children.size === 0) return null;
 
-    let bestPeerId = null;
-    let bestScore = -Infinity;
-
-    // Search synaptome + highway for forward-progress candidates.
+    // Build an index of our synaptome+highway weights keyed by hex-string peerId,
+    // so we can look them up quickly while walking role.children.
+    const synapseWeights = new Map();  // hex nodeId → { weight, latency }
     const tiers = [node.synaptome];
     if (node.highway) tiers.push(node.highway);
-
     for (const tier of tiers) {
       for (const syn of tier.values()) {
-        const d = syn.peerId ^ subTarget;
-        if (d >= selfDist) continue;                   // not forward progress
         const peer = this.nodeMap.get(syn.peerId);
         if (!peer?.alive) continue;
-        // Score: weight dominates, latency is a tie-breaker. Weight ∈ [0,1];
-        // multiplying by 1_000_000 gives it priority over any sensible
-        // latency value (typically tens to hundreds of ms).
-        const score = syn.weight * 1_000_000 - (syn.latency ?? syn.latencyMs ?? 0);
-        if (score > bestScore) { bestScore = score; bestPeerId = syn.peerId; }
+        synapseWeights.set(nodeIdToHex(syn.peerId), {
+          weight:  syn.weight,
+          latency: syn.latency ?? syn.latencyMs ?? 0,
+        });
       }
     }
 
-    if (bestPeerId !== null) return nodeIdToHex(bestPeerId);
-    return meta.fromId;  // default fallback
+    let bestChildId = null;
+    let bestScore = -Infinity;
+    for (const childId of role.children.keys()) {
+      const s = synapseWeights.get(childId);
+      if (!s) continue;                                // child isn't a synapse of ours
+      const score = s.weight * 1_000_000 - s.latency;  // weight primary, latency tie-breaker
+      if (score > bestScore) { bestScore = score; bestChildId = childId; }
+    }
+    if (bestChildId) return bestChildId;
+
+    // No synaptome-matched child — fall through to XOR-closest existing child.
+    const subBig = topicToBigInt(subscriberId);
+    let best = null;
+    let bestDist = null;
+    for (const childId of role.children.keys()) {
+      const d = BigInt('0x' + childId) ^ subBig;
+      if (bestDist === null || d < bestDist) { bestDist = d; best = childId; }
+    }
+    return best;
   }
 }

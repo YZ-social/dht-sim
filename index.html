@@ -827,7 +827,8 @@
     <div id="nx15-panel" class="sb-sec">
       <div class="sb-sec-lbl">NX-15 Pub/Sub Membership</div>
 
-      <details class="nx-rule nx-always" open><summary>Axon Tree</summary><div class="nx-rule-body"><div class="nx-params">
+      <details class="nx-rule nx-always" open><summary>Root Set / Axon Tree</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl" data-tip="K in K-closest replication. Every subscribe is STOREd at this many nodes (the ones closest to hash(topic) in the DHT). Publishers hit any one of the K for full delivery. Higher K = more churn resilience and better delivery with sparse routing, at the cost of K× write amplification at subscribe time. Set 0 to fall back to single-root routed subscribe (not recommended).">Root Set (K)</span><input type="number" id="x15-rootSetSize" class="nx-pv" value="5" min="0" max="50" step="1">
         <span class="nx-pl" data-tip="Recruit a sub-axon when an axon's child count reaches this value.">Max Subs</span><input type="number" id="x15-maxDirectSubs" class="nx-pv" value="20" min="2" max="200" step="1">
         <span class="nx-pl" data-tip="Dissolve a non-root axon when its child count falls below this value for one refresh interval (hysteresis with Max Subs).">Min Subs</span><input type="number" id="x15-minDirectSubs" class="nx-pv" value="5" min="1" max="50" step="1">
       </div></div></details>
@@ -988,7 +989,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.55.02</div>
+    <div id="legend">Version: 0.55.03</div>
   </div>
 
   </div><!-- /mainRow -->

@@ -31,6 +31,7 @@ const DEFAULT_MIN_DIRECT_SUBS        = 5;            // §5.8 hysteresis (unused
 const DEFAULT_REFRESH_INTERVAL_MS    = 10_000;       // §5.5
 const DEFAULT_MAX_SUBSCRIPTION_AGE_MS = 30_000;      // §5.7 — 3× refresh
 const DEFAULT_ROOT_GRACE_MS          = 60_000;       // §5.7 — 6× refresh
+const DEFAULT_ROOT_SET_SIZE          = 5;            // K in K-closest replication
 
 // ── AxonManager ────────────────────────────────────────────────────────────
 
@@ -52,6 +53,7 @@ export class AxonManager {
     refreshIntervalMs    = DEFAULT_REFRESH_INTERVAL_MS,
     maxSubscriptionAgeMs = DEFAULT_MAX_SUBSCRIPTION_AGE_MS,
     rootGraceMs          = DEFAULT_ROOT_GRACE_MS,
+    rootSetSize          = DEFAULT_ROOT_SET_SIZE,    // K in K-closest replication
     pickRecruitPeer      = null,   // protocol-specific override (§5.9)
     shouldRecruitSubAxon = null,   // protocol-specific override
     now                  = () => Date.now(),
@@ -65,6 +67,7 @@ export class AxonManager {
     this.refreshIntervalMs     = refreshIntervalMs;
     this.maxSubscriptionAgeMs  = maxSubscriptionAgeMs;
     this.rootGraceMs           = rootGraceMs;
+    this.rootSetSize           = rootSetSize;
     this._now                  = now;
 
     // Policy overrides — if provided, replace the default methods. The DHT
@@ -89,6 +92,10 @@ export class AxonManager {
     dht.onDirectMessage('pubsub:deliver',      (p, m) => this._onDeliver(p, m));
     dht.onDirectMessage('pubsub:promote-axon', (p, m) => this._onPromoteAxon(p, m));
     dht.onDirectMessage('pubsub:dissolve-hint',(p, m) => this._onDissolveHint(p, m));
+    // K-closest mode (available when dht.findKClosest exists).
+    dht.onDirectMessage('pubsub:subscribe-k',  (p, m) => this._onSubscribeDirect(p, m));
+    dht.onDirectMessage('pubsub:publish-k',    (p, m) => this._onPublishDirect(p, m));
+    dht.onDirectMessage('pubsub:unsubscribe-k',(p, m) => this._onUnsubscribeDirect(p, m));
 
     // Periodic refresh + TTL sweep. We use a single timer driving both
     // actions; refreshTick() is exported for tests that prefer to pump
@@ -109,21 +116,78 @@ export class AxonManager {
 
   // ── PubSubAdapter transport contract ────────────────────────────────
 
+  /**
+   * Publish over the network. In K-closest mode, pick the best of the K
+   * current closest-to-hash roots and sendDirect — they have replicated
+   * subscriber lists, so any one of K is sufficient. Falls back to a
+   * routed publish when the transport doesn't expose findKClosest.
+   */
   pubsubPublish(topicId, json) {
+    if (this._useKClosestMode()) {
+      const roots = this.dht.findKClosest(topicId, this.rootSetSize);
+      if (roots.length > 0) {
+        // Pick a random root for load-balancing; any replica serves a full
+        // subscriber list since subscribers STORE at all K.
+        const target = roots[Math.floor(Math.random() * roots.length)];
+        this.dht.sendDirect(target, 'pubsub:publish-k', { topicId, json });
+        return;
+      }
+      // Degenerate (empty lookup result — no peers) — fall through to
+      // routed publish so we don't silently drop.
+    }
     this.dht.routeMessage(topicId, 'pubsub:publish', { topicId, json });
   }
 
+  /**
+   * Subscribe to a topic. In K-closest mode, STOREs the subscription at
+   * each of the K nodes closest to hash(topic) so the publisher can hit
+   * any one of them and still find us. Falls back to a routed subscribe
+   * when the transport doesn't expose findKClosest.
+   */
   pubsubSubscribe(topicId) {
-    // Track our own subscription so refreshTick() can renew it.
     this.mySubscriptions.set(topicId, { subscribedAt: this._now() });
+
+    if (this._useKClosestMode()) {
+      const roots = this.dht.findKClosest(topicId, this.rootSetSize);
+      if (roots.length > 0) {
+        for (const peerId of roots) {
+          this.dht.sendDirect(peerId, 'pubsub:subscribe-k', {
+            topicId,
+            subscriberId: this.nodeId,
+            peerRoots:    roots,          // gossip the K-set so each root
+                                          // knows its peers (used by root
+                                          // reconciliation in the future)
+          });
+        }
+        return;
+      }
+    }
     this.dht.routeMessage(topicId, 'pubsub:subscribe',
                           { topicId, subscriberId: this.nodeId });
   }
 
   pubsubUnsubscribe(topicId) {
     this.mySubscriptions.delete(topicId);
+
+    if (this._useKClosestMode()) {
+      const roots = this.dht.findKClosest(topicId, this.rootSetSize);
+      if (roots.length > 0) {
+        for (const peerId of roots) {
+          this.dht.sendDirect(peerId, 'pubsub:unsubscribe-k', {
+            topicId,
+            subscriberId: this.nodeId,
+          });
+        }
+        return;
+      }
+    }
     this.dht.routeMessage(topicId, 'pubsub:unsubscribe',
                           { topicId, subscriberId: this.nodeId });
+  }
+
+  /** True when the underlying transport supports K-closest lookup. */
+  _useKClosestMode() {
+    return this.rootSetSize > 0 && typeof this.dht.findKClosest === 'function';
   }
 
   onPubsubDelivery(callback) {
@@ -166,27 +230,33 @@ export class AxonManager {
       }
 
       if (this.shouldRecruitSubAxon(role)) {
-        // Delegate: the next peer toward the new subscriber becomes a sub-axon.
-        // Default: meta.fromId (the peer that forwarded this subscribe TO us).
-        // Subclass override: NX-15 uses synaptome-weighted selection (§5.9).
-        const recruitId = this.pickRecruitPeer(role, meta, subscriberId);
-
-        // Corner case: the recruit may already be a sub-axon we've registered.
-        // In that case just extend its lastRenewed (it'll pick up the new
-        // subscriber through its own promote-axon handler) and re-send the
-        // promote hint so the recruit adds the subscriber.
-        if (role.children.has(recruitId)) {
-          role.children.get(recruitId).lastRenewed = now;
-        } else {
-          role.children.set(recruitId, { createdAt: now, lastRenewed: now });
+        // At capacity: promote an EXISTING child to sub-axon and delegate the
+        // new subscriber to them. We deliberately do NOT add the new
+        // subscriber OR a fresh peer to our own children — that would grow
+        // the axon beyond maxDirectSubs, defeating the whole point of
+        // recruitment. The promoted child now doubles as both a leaf
+        // subscriber AND an intermediate axon; its own _onPromoteAxon
+        // handler creates a role and adds the new subscriber under it.
+        let recruitId = this.pickRecruitPeer(role, meta, subscriberId);
+        if (!role.children.has(recruitId)) {
+          // Policy returned a non-child (e.g., meta.fromId isn't yet in our
+          // children). Fall back to picking the existing child with the
+          // smallest XOR distance to the new subscriber — that peer sits
+          // on the natural routing path toward future subscribers in the
+          // same region of the ID space.
+          recruitId = this._pickExistingChildForRecruit(role, subscriberId);
         }
-
-        // Tell the recruit to take over for this subscriber.
-        this.dht.sendDirect(recruitId, 'pubsub:promote-axon', {
-          topicId,
-          newSubscriberId: subscriberId,
-          parentId:        this.nodeId,
-        });
+        if (recruitId) {
+          role.children.get(recruitId).lastRenewed = now;
+          this.dht.sendDirect(recruitId, 'pubsub:promote-axon', {
+            topicId,
+            newSubscriberId: subscriberId,
+            parentId:        this.nodeId,
+          });
+          return 'consumed';
+        }
+        // Degenerate fallback — shouldn't occur once children.size ≥ 1.
+        role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
         return 'consumed';
       }
 
@@ -225,22 +295,35 @@ export class AxonManager {
   }
 
   /**
-   * Pick which peer should be recruited as a sub-axon.
+   * Pick which EXISTING child should be promoted to sub-axon. The return
+   * value MUST be an id already present in `role.children` — we never
+   * grow an axon beyond its cap during recruitment.
    *
-   * @param {TopicRole} role        — the current axon's role state
-   * @param {Object}    meta        — routed-message meta ({ fromId, … })
-   * @param {NodeId}    subscriberId — the new subscriber being delegated
-   * @returns {NodeId}              — recruited peer id
+   * Default: the existing child with smallest XOR distance to the new
+   * subscriber. That child sits on the natural routing path toward future
+   * subscribers in the same ID-space region.
    *
-   * Default: `meta.fromId` (the peer that forwarded the subscribe to us).
-   * This is always on the path from subscriber to axon, so it will see
-   * future subscribes from the same direction and catch them at the
-   * sub-axon level.
-   *
-   * Override: NX-15 prefers forward-progress synaptome peers by weight.
+   * Override: NX-15 prefers existing children that also appear in the
+   * node's synaptome with high weight.
    */
   pickRecruitPeer(role, meta, subscriberId) {
-    return meta.fromId;
+    // Prefer meta.fromId if it happens to already be a child (common case
+    // in deep trees where subscribes flow through established sub-axons).
+    if (role.children.has(meta.fromId)) return meta.fromId;
+    return this._pickExistingChildForRecruit(role, subscriberId);
+  }
+
+  /** XOR-closest existing child to `subscriberId`. Returns null if empty. */
+  _pickExistingChildForRecruit(role, subscriberId) {
+    if (role.children.size === 0) return null;
+    const subBig = BigInt('0x' + subscriberId);
+    let best = null;
+    let bestDist = null;
+    for (const childId of role.children.keys()) {
+      const d = BigInt('0x' + childId) ^ subBig;
+      if (bestDist === null || d < bestDist) { bestDist = d; best = childId; }
+    }
+    return best;
   }
 
   /**
@@ -398,6 +481,86 @@ export class AxonManager {
     }
   }
 
+  // ── K-closest direct handlers ───────────────────────────────────────
+  //
+  // In K-closest mode subscribers STORE at every node in the K-closest
+  // root set via sendDirect. Each such node treats itself as "in the
+  // root set" for the topic and independently runs axonal recruitment
+  // below itself. These handlers mirror the routed versions but skip the
+  // terminal-election check (caller already decided we're a root).
+
+  _onSubscribeDirect(payload, meta) {
+    const { topicId, subscriberId, peerRoots } = payload;
+    const now = this._now();
+
+    let role = this.axonRoles.get(topicId);
+    if (!role) {
+      role = {
+        parentId:       null,
+        isRoot:         true,
+        isInRootSet:    true,
+        peerRoots:      new Set((peerRoots || []).filter(id => id !== this.nodeId)),
+        children:       new Map(),
+        parentLastSent: 0,
+        roleCreatedAt:  now,
+        emptiedAt:      0,
+        lowWaterSince:  0,
+      };
+      this.axonRoles.set(topicId, role);
+    } else {
+      // Refresh our view of peer roots if the subscriber sent us a fresher
+      // K-set (e.g., after churn drifted the K-closest).
+      role.isInRootSet = true;
+      if (peerRoots) {
+        for (const p of peerRoots) if (p !== this.nodeId) role.peerRoots?.add(p);
+      }
+    }
+
+    const existing = role.children.get(subscriberId);
+    if (existing) { existing.lastRenewed = now; return; }
+
+    if (this.shouldRecruitSubAxon(role)) {
+      let recruitId = this.pickRecruitPeer(role, { fromId: subscriberId }, subscriberId);
+      if (!role.children.has(recruitId)) {
+        recruitId = this._pickExistingChildForRecruit(role, subscriberId);
+      }
+      if (recruitId) {
+        role.children.get(recruitId).lastRenewed = now;
+        this.dht.sendDirect(recruitId, 'pubsub:promote-axon', {
+          topicId, newSubscriberId: subscriberId, parentId: this.nodeId,
+        });
+        return;
+      }
+    }
+    role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
+  }
+
+  _onUnsubscribeDirect(payload, meta) {
+    const { topicId, subscriberId } = payload;
+    const role = this.axonRoles.get(topicId);
+    if (role && role.children.has(subscriberId)) {
+      role.children.delete(subscriberId);
+      if (role.children.size === 0) role.emptiedAt = this._now();
+    }
+  }
+
+  _onPublishDirect(payload, meta) {
+    const { topicId, json } = payload;
+    const role = this.axonRoles.get(topicId);
+    if (!role) return;   // subscriber list didn't replicate here — drop
+
+    const deadChildren = [];
+    for (const [childId] of role.children) {
+      if (childId === this.nodeId) {
+        if (this._deliveryCallback) this._deliveryCallback(topicId, json);
+        continue;
+      }
+      const ok = this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json });
+      if (!ok) deadChildren.push(childId);
+    }
+    for (const dead of deadChildren) role.children.delete(dead);
+  }
+
   // ── Refresh and TTL sweep ───────────────────────────────────────────
 
   /**
@@ -413,10 +576,21 @@ export class AxonManager {
   refreshTick() {
     const now = this._now();
 
-    // 1. Leaf refresh — re-issue each of our own subscribes.
+    // 1. Leaf refresh — re-issue each of our own subscribes. In K-closest
+    //    mode, the refresh re-STOREs at the current K-closest set so the
+    //    root set tracks any ID-space drift from churn.
     for (const topicId of this.mySubscriptions.keys()) {
-      this.dht.routeMessage(topicId, 'pubsub:subscribe',
-                            { topicId, subscriberId: this.nodeId });
+      if (this._useKClosestMode()) {
+        const roots = this.dht.findKClosest(topicId, this.rootSetSize);
+        for (const peerId of roots) {
+          this.dht.sendDirect(peerId, 'pubsub:subscribe-k', {
+            topicId, subscriberId: this.nodeId, peerRoots: roots,
+          });
+        }
+      } else {
+        this.dht.routeMessage(topicId, 'pubsub:subscribe',
+                              { topicId, subscriberId: this.nodeId });
+      }
     }
 
     // 2. Axon refresh — a non-root axon must refresh upward so its parent

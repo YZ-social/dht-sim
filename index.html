@@ -91,7 +91,7 @@
       </div>
       <div class="sb-row">
         <span class="sb-lbl" data-tip="Number of high-order bits in G-DHT node IDs that encode the geographic S2 cell. More bits = finer geographic resolution (2^n cells worldwide). Only affects G-DHT protocols.">G-DHT Bits</span>
-        <input type="number" id="geoBits" class="sb-num" value="8" min="1" max="32" step="1" style="width:36px">
+        <input type="number" id="geoBits" class="sb-num" value="8" min="0" max="32" step="1" style="width:36px">
       </div>
       <div class="sb-btns">
         <button class="btn btn-primary btn-action" id="btnInit" data-tip="Build the network: place nodes on land, assign random IDs, and populate all routing tables. Re-clicking resets everything.">&#9632; Init Network</button>
@@ -990,7 +990,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.57.00</div>
+    <div id="legend">Version: 0.57.01</div>
   </div>
 
   </div><!-- /mainRow -->

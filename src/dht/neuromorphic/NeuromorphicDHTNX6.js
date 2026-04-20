@@ -95,7 +95,12 @@ export class NeuromorphicDHTNX6 extends DHT {
     this.EN_LOAD_BALANCING  = e('loadBalancing', false);  // off by default
 
     // ── Rule 1: Bootstrap ─────────────────────────────────────────────────────
-    this.GEO_BITS      = 8;   // fixed — defines the ID format
+    // GEO_BITS controls how many top bits of the 64-bit node ID encode a
+    // Hilbert-curve geographic cell prefix. 0 = no geographic bias (pure
+    // random IDs); 8 = ~256 cells (default); up to 32 for maximum
+    // geographic clustering. Configurable from the UI's G-DHT Bits slider
+    // so NX-* can be characterised against G-DHT at matching prefix widths.
+    this.GEO_BITS      = Math.min(32, Math.max(0, Number.isFinite(+config.geoBits) ? +config.geoBits : 8));
     this.K_BOOT_FACTOR = p('bootstrap', 'kBootFactor', 1);
 
     // ── Rule 2: Two-Tier Synaptome ────────────────────────────────────────────

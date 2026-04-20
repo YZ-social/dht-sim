@@ -1616,6 +1616,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
       });
     case 'ngdhtnx2w':
@@ -1623,6 +1624,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx2wRules,
       });
     case 'ngdhtnx3':
@@ -1630,6 +1632,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
       });
     case 'ngdhtnx4':
@@ -1637,6 +1640,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
       });
     case 'ngdhtnx5':
@@ -1644,6 +1648,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
       });
     case 'ngdhtnx6':
@@ -1651,6 +1656,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
       });
     case 'ngdhtnx7':
@@ -1658,6 +1664,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
       });
     case 'ngdhtnx8':
@@ -1665,6 +1672,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
       });
     case 'ngdhtnx9':
@@ -1672,6 +1680,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
       });
     case 'ngdhtnx10':
@@ -1679,6 +1688,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
       });
     case 'ngdhtnx13':
@@ -1686,6 +1696,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx13Rules,
       });
     case 'ngdhtnx15':
@@ -1693,6 +1704,7 @@ function createDHT(params) {
         k: params.k,
         alpha: params.alpha,
         bits: params.bits,
+        geoBits: params.geoBits,
         rules: params.nx1wRules,
         membership: params.nx15Params,   // UI-tunable pub/sub membership params
       });

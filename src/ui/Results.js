@@ -508,6 +508,7 @@ export class Results {
     const s = history[history.length - 1];
     this._setText('msTick',      s.tick);
     this._setText('msDelivered', `${s.deliveredPct.toFixed(1)}%`);
+    this._setText('msCumulative', s.cumulativePct != null ? `${s.cumulativePct.toFixed(1)}%` : '—');
     this._setText('msKilled',    `${s.cumulativeKilled} (${s.cumulativeKilledPct.toFixed(1)}%)`);
     this._setText('msAxons',     s.axonRoles);
     this._setText('msFanout',    s.maxFanout);
@@ -549,6 +550,7 @@ export class Results {
     const pointRadii  = history.map(h => h.didChurn ? 4 : 1);
 
     const deliveredData  = history.map(h => h.deliveredPct);
+    const cumulativeData = history.map(h => h.cumulativePct);
     const killedData     = history.map(h => h.cumulativeKilledPct);
     const overlapData    = history.map(h => h.overlapPct);
     const labels         = history.map(h => `t${h.tick}`);
@@ -559,8 +561,9 @@ export class Results {
       c.data.datasets[0].data = deliveredData;
       c.data.datasets[0].pointStyle  = pointStyles;
       c.data.datasets[0].pointRadius = pointRadii;
-      c.data.datasets[1].data = killedData;
-      c.data.datasets[2].data = overlapData;
+      c.data.datasets[1].data = cumulativeData;
+      c.data.datasets[2].data = killedData;
+      c.data.datasets[3].data = overlapData;
       c.update('none');
       return;
     }
@@ -581,6 +584,17 @@ export class Results {
             pointRadius: pointRadii,
             pointBackgroundColor: '#00ff88',
             borderWidth: 2,
+          },
+          {
+            label: 'Cumulative Delivered %',
+            data: cumulativeData,
+            borderColor: '#ffaa00',
+            backgroundColor: '#ffaa0022',
+            yAxisID: 'yPct',
+            tension: 0.25,
+            pointRadius: 0,
+            borderWidth: 2,
+            spanGaps: true,
           },
           {
             label: 'Cumulative Killed %',
@@ -650,6 +664,7 @@ export class Results {
     if (!this._membershipSimHistory?.length) return '';
     const rows = [
       ['Tick', 'Delivered%', 'Delivered', 'Expected',
+       'Cumulative%', 'CumReceived', 'CumExpected',
        'KilledThisTick', 'CumulativeKilled', 'CumulativeKilled%',
        'AxonRoles', 'MaxFanout', 'TreeDepth', 'KOverlap%', 'FullConverge%', 'ChurnThisTick'].join(','),
     ];
@@ -659,6 +674,9 @@ export class Results {
         h.deliveredPct?.toFixed(2)        ?? '',
         h.delivered                        ?? '',
         h.expected                         ?? '',
+        h.cumulativePct != null ? h.cumulativePct.toFixed(2) : '',
+        h.cumReceived                     ?? '',
+        h.cumExpected                     ?? '',
         h.killedThisTick                   ?? '',
         h.cumulativeKilled                 ?? '',
         h.cumulativeKilledPct?.toFixed(2) ?? '',

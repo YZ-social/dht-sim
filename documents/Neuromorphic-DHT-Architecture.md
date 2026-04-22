@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.52.00*
+*Version 0.53.00*
 
 ---
 
@@ -10,23 +10,29 @@
 
 Distributed hash tables (DHTs) are the backbone of decentralized systems -- they allow a network of independent computers to collectively store and retrieve data without any central server. Since their introduction in the early 2000s, DHTs have powered file sharing, content delivery, blockchain networks, and decentralized communication. Yet the core routing mechanisms have changed remarkably little since Kademlia's[^2] publication in 2002.
 
-All three protocols compared in this work -- Kademlia, the Geographic DHT, and the Neuromorphic DHT -- are *recursive* DHTs: a lookup is forwarded hop-by-hop through intermediate nodes, each choosing the next best peer, until the target is reached. (This assumption is now standard practice and rarely stated explicitly, but it frames how learning, churn recovery, and pub/sub mechanisms operate -- each hop is both a routing event and a learning opportunity.)
+This document focuses on **three DHT protocols**:
+
+1. **Kademlia** — the 2002 foundation that set the template for every DHT since. Included here as historical baseline and comparison reference.
+2. **The Geographic DHT (G-DHT)** — a simple extension that encodes physical location into node identifiers via S2 geometry, halving lookup latency without sacrificing reachability.
+3. **The Neuromorphic DHT (NX-17)** — the current state-of-the-art design: a biologically-inspired adaptive routing layer plus a self-healing, publisher-prefix axonal pub/sub tree with bounded replay cache.
+
+NX-17 is the seventeenth iteration in a series of experiments that built the neuromorphic protocol's rules, learning mechanisms, and pub/sub design through empirical ablation. The final protocol is presented in full in the main chapters below; the full evolutionary sequence — NX-1 through NX-17, including dead ends — is documented in the appendix for researchers who want to understand why each design decision exists.
+
+All three protocols are *recursive* DHTs: a lookup is forwarded hop-by-hop through intermediate nodes, each choosing the next best peer, until the target is reached. (This assumption is now standard practice and rarely stated explicitly, but it frames how learning, churn recovery, and pub/sub mechanisms operate -- each hop is both a routing event and a learning opportunity.)
 
 ### A Restricted, Browser-Realistic Model
 
-This work studies DHTs under the constraints imposed by a web-browser deployment. Each node is assumed to maintain at most **50 concurrent peer connections** (a realistic ceiling for WebRTC data channels in modern browsers). Node IDs are 64 bits, the network is uniformly distributed across land on Earth, and round-trip times (RTTs) are computed from great-circle distance plus a fixed per-hop cost. The benchmarks that follow use 25,000 such nodes. These constraints matter because they eliminate an entire category of "just add more connections" optimization: every protocol must deliver its performance within the same tight per-node budget. Server-class and mixed-device deployments with higher connection limits would see absolute latencies drop across the board -- Chapter 7 includes an uncapped-connection comparison that confirms the relative picture holds, and in several cases widens, when every protocol is given unlimited capacity.
+This work studies DHTs under the constraints imposed by a web-browser deployment. Each node is assumed to maintain at most **50 concurrent peer connections** (a realistic ceiling for WebRTC data channels in modern browsers). Node IDs are 64 bits, the network is uniformly distributed across land on Earth, and round-trip times (RTTs) are computed from great-circle distance plus a fixed per-hop cost. The benchmarks that follow use 25,000 such nodes. These constraints matter because they eliminate an entire category of "just add more connections" optimization: every protocol must deliver its performance within the same tight per-node budget. Server-class and mixed-device deployments with higher connection limits would see absolute latencies drop across the board -- Chapter 6 includes an uncapped-connection comparison that confirms the relative picture holds, and in several cases widens, when every protocol is given unlimited capacity.
 
 All reported numbers are averages over 500 lookups per measurement cell, themselves aggregated over multiple benchmark runs. Individual runs show small natural variation (typically ±5% on latency) due to the randomised bootstrap, probabilistic annealing, and epsilon-greedy exploration. The means are stable; the protocol orderings reported in this document do not flip on repeated runs.
 
-### Two New Protocols
-
-This document describes two new approaches developed as part of this research effort:
+### Two Major Advances Over Kademlia
 
 1. A **Geographic DHT (G-DHT)** that extends Kademlia by encoding a node's physical location into its identifier using S2 geometry[^16]. This simple modification halves lookup latency by making XOR routing geographically aware, while a stratified allocation strategy maintains Kademlia's 100% reachability guarantee.
 
-2. A **Neuromorphic DHT** that replaces static routing tables entirely with adaptive, biologically-inspired mechanisms. Drawing from neuroscience[^20], each node maintains a dynamic set of weighted connections (a *synaptome*) that strengthens on successful routes and weakens through disuse -- mirroring how biological neurons form and prune synaptic connections[^23]. The system learns the network's topology through experience rather than relying on rigid algorithmic structure.
+2. A **Neuromorphic DHT (NX-17)** that replaces static routing tables entirely with adaptive, biologically-inspired mechanisms. Drawing from neuroscience[^20], each node maintains a dynamic set of weighted connections (a *synaptome*) that strengthens on successful routes and weakens through disuse -- mirroring how biological neurons form and prune synaptic connections[^23]. The system learns the network's topology through experience rather than relying on rigid algorithmic structure.
 
-Built atop the Neuromorphic routing layer is the **Axonal Pub/Sub** system -- a scalable publish/subscribe mechanism where broadcast trees emerge from the routing topology itself. Named after the axonal arbor (the branching output structure of a neuron that delivers signals to many downstream targets), this tree delegates delivery to intermediate nodes that are already on the natural routing path, achieving near-zero overhead for broadcast distribution. We have not attempted to build competitive pub/sub overlays for Kademlia or G-DHT; their baseline behaviour in our pub/sub tests is the naive flat-delivery case (the relay looks up every subscriber individually). At scale, only the Axonal tree produces workable pub/sub performance -- so the pub/sub comparison in this document should be read as "Neuromorphic + Axonal tree vs. no serious pub/sub on the other protocols," not as a head-to-head evaluation of pub/sub designs.
+Built atop the neuromorphic routing layer is the **Axonal Pub/Sub** system (Chapter 5) — a distributed, self-healing publish/subscribe mechanism. Named after the axonal arbor (the branching output structure of a neuron that delivers signals to many downstream targets), the tree grows dynamically as subscribers join, heals itself through continuous re-subscription under churn, and uses a bounded per-relay replay cache to recover messages missed during tree disruption. We have not attempted to build competitive pub/sub overlays for Kademlia or G-DHT; their baseline behaviour in our pub/sub tests is the naive flat-delivery case (the relay looks up every subscriber individually). At scale, only the axonal tree produces workable pub/sub performance — so the pub/sub comparison in this document should be read as "NX-17 axonal pub/sub vs. no serious pub/sub on the other protocols," not as a head-to-head evaluation of pub/sub designs.
 
 ### Why Local Performance Matters Most
 
@@ -291,9 +297,11 @@ The G-DHT cuts latency by 60% through geographic awareness while maintaining 100
 
 ---
 
-## Chapter 4: The Neuromorphic DHT
+## Chapter 4: The Neuromorphic DHT (NX-17)
 
 The Neuromorphic DHT replaces Kademlia's static k-bucket routing with a biologically-inspired adaptive system. Every aspect of routing -- connection selection, learning, maintenance, and recovery -- draws from neuroscience principles.
+
+NX-17 is the current state-of-the-art design, developed through seventeen numbered iterations (NX-1 through NX-17). Each iteration added, tested, or retired a specific rule. This chapter presents NX-17's final routing layer — the synaptome structure, activation-potential routing, the complete learning and recovery mechanisms, and realistic bootstrap. Chapter 5 covers NX-17's axonal pub/sub layer. Appendix A walks through the evolution from NX-1 to NX-17, including the rule-by-rule ablation that established which mechanisms contribute measurably to performance, and the NX-16 masked-distance dead end that shaped NX-17's addressing scheme.
 
 ### 4.1 Design Philosophy
 
@@ -803,11 +811,625 @@ function lookup(sourceId, targetId, maxHops=40):
 
 ---
 
-## Chapter 5: NX-10 Protocol Specification — Rule-by-Rule Breakdown
+
+## Chapter 5: NX-17 Axonal Pub/Sub
+
+The Axonal Pub/Sub system provides scalable group communication atop the Neuromorphic DHT. Named after the axonal arbor[^23] — the branching output structure of a neuron that delivers signals from one cell body to many downstream targets — NX-17's axonal tree grows dynamically toward subscribers as they join, heals itself through continuous re-subscription under churn, and provides bounded message replay for subscribers who miss publishes during tree disruption.
+
+The original axonal design (NX-10 through NX-15) built a *static* forwarding tree per publish cycle from the relay's current synaptome topology — efficient for single-shot broadcast but unable to sustain independent, long-lived topic membership or graceful recovery from node churn. NX-17's design solves the full distributed pub/sub problem: topics persist independently of any single node, subscribers join or leave at any time, publishers don't need to know the subscriber set, and delivery continues through significant network churn. The historical static-tree design is preserved in Appendix A.3 for context.
+
+### 5.1 The Five Requirements
+
+A realistic distributed pub/sub needs to provide:
+
+1. **Topic persistence**: topics outlive any single node.
+2. **Dynamic membership**: subscribers can join or leave at any time.
+3. **Publisher independence**: publishers need not know who their subscribers are.
+4. **Churn resilience**: delivery continues through node death.
+5. **No global coordination**: no central authority, no gossip, no global state.
+
+NX-17 addresses all five through a small set of interlocking mechanisms: publisher-prefix addressing (§5.2), the axonal tree grown by routed subscribe (§5.3), capacity-driven external-peer batch adoption (§5.4), all-axon periodic re-subscribe for self-healing (§5.5), and a bounded per-relay replay cache for missed-message recovery (§5.6).
+
+### 5.2 Topic Addressing: The Publisher Prefix
+
+A topic identifier is constructed as:
+
+```
+topic_id = publisher.cell_prefix (8 bits) || hash_56(topic_name)
+```
+
+embedded in topic names via a `@XX/domain/event` convention, where `XX` is the two-hex-digit publisher cell prefix. Both publisher and subscribers derive the same ID deterministically from the topic name. Because the top 8 bits match a specific S2 cell, the topic's root is pinned into the publisher's own cell — typically close to subscribers, and the region the publisher's synaptome is most strongly LTP-trained to reach through ordinary lookup traffic.
+
+Earlier iterations used a uniform hash for the topic ID. This produced a structural weakness: the cell the hash happened to land in was uncorrelated with the publisher, subscribers, or any real-world locality. A US-east chat group could find its root pinned to a cell over central Asia, and every publish had to traverse oceans before fanning out to subscribers who were physically near the publisher. The publisher-prefix scheme trades a small amount of address determinism (topic IDs are only pseudo-random in their lower 56 bits) for major locality benefits.
+
+### 5.3 The Axonal Tree
+
+Trees are built from the routing topology itself. Three operations: subscribe, publish, and deliver.
+
+#### 6.3.1 Subscribe
+
+Every subscribe is a `routeMessage(topicId, 'pubsub:subscribe')`. The walk greedily heads toward topicId. At each hop, the current node checks whether it already holds an axon role for this topic:
+
+- **If yes:** intercept — add the subscriber to `role.children` and return `consumed`. The walker stops.
+- **If no:** forward to the next hop.
+
+When the walk reaches a **terminal** (no peer strictly closer in the current node's synaptome), the terminal performs a globality check: `findKClosest(topicId, 1)`. This check reaches through 2-hop synaptome expansion and incomingSynapses, so it can identify a globally-closer live peer that the node's own synaptome did not directly contain. If such a peer is found, the walk forwards there; if not, the current node is confirmed as the globally-closest live node, opens an axon role, and becomes the topic root.
+
+The globality check is critical. Without it, greedy routing converges on different *local* terminals from different starting points, and two subscribers from different origins would elect different roots for the same topic — fracturing the tree into disconnected subtrees.
+
+#### 6.3.2 Publish
+
+Every publish is a `routeMessage(topicId, 'pubsub:publish')`. Only the **root** consumes the publish and initiates fan-out. Sub-axons on the routing path forward without intercepting.
+
+Root-only consumption is essential. The routed walk toward the topic root may naturally cross several sub-axons before reaching the root itself. Without the root-only rule, a sub-axon would intercept the publish and fan out to only its own subtree — every other subscriber (leaves of the root and other sub-axon subtrees) would silently miss. The rule keeps fan-out single-sourced from the root, which then cascades through the entire tree via the normal `root → children → sub-axon → leaf` path.
+
+#### 6.3.3 Delivery
+
+When the root fans out via `sendDirect('pubsub:deliver', …)`, each child receives the delivery message:
+
+- **Leaf subscriber:** the local delivery callback fires; the node's `_lastSeenTsByTopic` is updated; the publishId is recorded in `_receivedPublishIds` (used for replay dedup and the cumulative-delivery metric).
+- **Sub-axon child:** the sub-axon re-fans to its own children, then also delivers locally.
+
+A per-node publishId LRU prevents duplicate delivery if the tree topology ever creates overlap (for example, when the same node is both a direct child and a descendant through a different branch during reorganisation).
+
+### 5.4 Capacity and Growth: External-Peer Batch Adoption
+
+When an axon's direct-child count exceeds `maxDirectSubs` (default 20), it must shed load. NX-17 chooses a **fresh external synaptome peer** — not an existing child — to become a new sub-axon, and hands over a batch of subscribers in a single direct message.
+
+Earlier iterations promoted an existing child to sub-axon on each overflow (see Appendix A.3 for the earlier axonal designs). That approach produced a cascade of tiny sub-axons, each holding only one or two subscribers, because each overflow spawned a fresh sub-axon rather than reusing existing ones. NX-17's external-peer design gives the tree a geographic spread that naturally matches the subscriber distribution.
+
+The overflow algorithm:
+
+1. **Choose a relay peer.** `pickRelayPeer` returns the synaptome peer XOR-closest to the new subscriber's id, excluding self, the forwarder (the peer that just sent us this subscribe), and anyone already in `role.children`.
+2. **Partition children toward the relay.** Rank existing children by XOR distance to the chosen relay id; take the top K = maxDirectSubs / 2 closest. Append the new subscriber. This is the batch.
+3. **Pre-add the relay to our own children.** When the relay's self-subscribe walks back to us (the common case, since we are usually the closest-to-topicId live axon on the relay's path), the arrival is idempotent rather than triggering another overflow.
+4. **Send the batch** as a single `pubsub:adopt-subscribers` direct message: `{ topicId, subscriberIds: [...] }`.
+5. **Remove the batch** from `role.children`.
+
+The receiver (`_onAdoptSubscribers`) creates its own role — with no `parentId` — adds every subscriber in the batch as a child, and issues a routed subscribe of its own upstream. That self-subscribe's walk lands at whichever live axon is currently on its path to the topic — most often the peer that just handed it the batch, sometimes an intermediate live sub-axon — and attaches it into the live tree.
+
+The top-K-by-XOR selection (rather than strict partition by "closer to relay than to self") guarantees forward progress on every overflow. If every existing child happens to be nearer the current node than the chosen relay — the common case when subscribers cluster in the topic's own cell — a strict partition would yield an empty batch, leaving the overflow unresolved and driving unbounded child-count growth on subsequent subscribes.
+
+### 5.5 Self-Healing: All-Axon Periodic Re-Subscribe
+
+Every node holding any role — leaf subscriber, sub-axon, or root — re-issues a subscribe on every refresh interval. Self-subscribes unconditionally return `forward`, so the walker never registers the self-subscriber as its own child. The outcomes:
+
+- **Leaf subscriber:** re-subscribe walks to its current relay (or, if that relay is dead, the next live axon on the new path); the child entry's `lastRenewed` is bumped, resetting its TTL.
+- **Sub-axon:** re-subscribe walks upstream; if its implicit parent is dead, the walk naturally routes around the dead node to another live axon, which adds us as one of its children.
+- **Root still closest:** walker has no closer peer, globality confirms, walk ends at self as a no-op.
+- **Root superseded by a newly-joined closer node:** globality forwards us to that node; it becomes the new root with us as its first child; subscribers re-route through the same mechanism on their own refreshes.
+
+No `parentId` is tracked. Dead-parent detection is implicit: if a subscribe lands somewhere new, the node has been re-parented. Parents track children (for fan-out); children don't track parents.
+
+This is the most important property of the NX-17 axonal tree. The design choice to rely entirely on implicit re-routing — rather than explicit parent-aliveness RPCs — means the protocol has no background heartbeat traffic, no gossip, and no cross-node state coordination. A node that dies simply stops responding; its children's routes fail on the next refresh and naturally reconstitute. A root that becomes suboptimal because the network changed around it is gracefully succeeded by whichever newly-joined node is closer to the topicId, as soon as that node's subscribe arrives.
+
+### 5.6 Replay Cache: Recovering Missed Messages
+
+The live fan-out path in §5.3.3 delivers during normal operation. During churn, subscribers whose relay has just died or been reorganised may miss one or more publishes before their refresh re-attaches them. The replay cache closes that gap.
+
+**State.** Every relay (root and sub-axon) keeps a bounded ring-buffer of recent publishes:
+
+```
+role.replayCache: [{ json, publishId, publishTs }, ...]   // oldest → newest
+```
+
+Default size 100 entries. Populated in `_onPublish` at the root (whenever the root fans out a new publish) and in `_onDeliver` at sub-axons (whenever a delivery arrives from upstream). `publishTs` is the publisher's wall-clock `Date.now()` at publish time.
+
+**Every subscribe carries a `lastSeenTs`.** The subscriber's AxonManager tracks `_lastSeenTsByTopic` — the highest `publishTs` it has ever observed for this topic, updated on every received delivery. Every outgoing subscribe (new subscribe or refresh subscribe) includes this value. Missing `lastSeenTs` (brand-new subscriber) means "replay whatever you have."
+
+**On receive, the axon replays any newer entries in one batched direct message.** `_maybeSendReplay` filters `role.replayCache` to entries with `publishTs > lastSeenTs` and sends them all in a single `pubsub:replay-batch` direct message:
+
+```
+pubsub:replay-batch: { topicId, messages: [{json, publishId, publishTs}, ...] }
+```
+
+Combining all missed messages into one send matters at scale: at the default cache size of 100, a subscriber that missed a full cache's worth of messages receives them in a single direct message rather than 100 separate ones.
+
+**The subscriber processes the batch through the normal delivery pipeline.** `_onReplayBatch` iterates, dedups each message by publishId, updates the subscriber's `_lastSeenTsByTopic` and `_receivedPublishIds`, and fires the application delivery callback for each new publishId. If the subscriber's refresh happens to land at an axon that has already forwarded some of the messages (because the subscriber was briefly connected via multiple paths during reorganisation), the dedup silently drops the duplicates.
+
+**What the cache does not provide.** The replay cache is bounded, in-memory, and held only at whichever relays happen to cache a particular publish. A message that predates every live relay's cache window is genuinely lost. The cache is not a durable log, not authenticated, not consistency-preserving across divergent paths, and not a push primitive — every replay is strictly pulled by a subscriber's subscribe message.
+
+Within those constraints, the replay cache produces a measurable end-to-end reliability improvement: under continuous 1% churn per 5 ticks, subscribers recover ~80% of all published messages through 30% cumulative network churn, compared to ~50% immediate delivery. See §6.9 for the full measurement and comparison to the pre-replay baseline.
+
+### 5.7 What NX-17 Pub/Sub Deliberately Omits
+
+- **No K-closest replication.** Earlier iterations (NX-15 with K=5) stored subscriptions at each of the K nodes closest to hash(topic) for redundancy. K-closest had a structural drift problem under churn — publisher's and subscribers' K-closest computations would diverge, and the K replicas shared a single-cell failure domain. See Appendix A.3 for the full analysis.
+- **No gossip.** Every message flows along parent-child tree edges or in response to an explicit subscribe. No background broadcast, no membership diffusion.
+- **No parent-aliveness RPC.** Sub-axons don't ping their parents. If an implicit parent dies, the sub-axon discovers this through the next re-subscribe's re-routing.
+- **No cryptographic subscriber authentication.** Payloads are opaque; the protocol doesn't verify who the publisher is. That's a layer above pub/sub.
+
+These choices keep the protocol lean and auditable. Each node's state is entirely local: a per-topic role map, a bounded replay cache per role, a bounded publishId LRU. No node needs to know the membership of any other node's tree.
+
+---
+
+
+## Chapter 6: Performance Characteristics
+
+All benchmarks use 25,000 nodes uniformly distributed across the globe, with 500 lookups per measurement cell. The Neuromorphic DHT (NX-10) receives 4 warmup sessions (5,000 training lookups) before measurement. Pub/sub tests use 2,000 subscribers per group. Node removal is honest -- no protocol reads a dead node's internal state; neighbors discover failures when they attempt to route through stale connections.
+
+**On variance:** all numbers reported in this document are means over 500 lookups per cell, themselves aggregated over multiple benchmark runs. Individual run-to-run variation typically falls within ±5% for routing latencies and ±1% for success rates. Where a result is within noise of another, we say so explicitly. Otherwise, the reported means are stable indicators of protocol behaviour.
+
+### 6.1 Point-to-Point Routing (Web-Limited, 50 connections)
+
+| Metric | K-DHT | G-DHT-b | NX-10 |
+|--------|-------|---------|-------|
+| Global hops | 3.45 | 4.62 | 3.43 |
+| Global latency | 355 ms | 272 ms | 261 ms |
+| 500 km latency | 362 ms | 124 ms | 67 ms |
+| 2,000 km latency | 348 ms | 157 ms | 90 ms |
+| 5,000 km latency | 349 ms | 196 ms | 147 ms |
+| 10% dest latency | 241 ms | 107 ms | 40 ms |
+| NA to Asia latency | 342 ms | 294 ms | 249 ms |
+| Success rate | 100% | 100% | 100% |
+
+Under web-realistic connection limits (50 peers per node), the Neuromorphic DHT achieves **26% lower global latency** than Kademlia and **4% lower** than G-DHT-b. The regional advantage is dramatic: at 500 km, NX-10 routes in 67 ms vs. Kademlia's 362 ms -- an **81% reduction**. For concentrated workloads (10% destinations), NX-10 achieves 40 ms vs. Kademlia's 241 ms through hop caching and LTP reinforcement of popular routes.
+
+```
+Latency by Distance (Web-Limited, 25K nodes):
+
+           500km   2000km   5000km   Global   NA→AS
+K-DHT:     362     348      349      355      342
+G-DHT-b:   124     157      196      272      294
+NX-10:      67      90      147      261      249
+```
+
+### 6.2 Point-to-Point Routing (Uncapped, No Connection Limit)
+
+The web-limited results above assume each node can maintain at most 50 peer connections -- a browser-realistic constraint. To understand whether the Neuromorphic advantage is an artifact of constrained resources, we also measured all three protocols with the connection cap removed. In this mode, Kademlia and G-DHT are free to fill every XOR bucket to its full `k=20` allocation (producing hundreds of peers per node), and NX-10 is allowed a synaptome of up to 256 connections.
+
+| Metric | K-DHT | G-DHT-b | NX-10 |
+|--------|-------|---------|-------|
+| Global hops | 2.99 | 4.37 | 2.75 |
+| Global latency | 299 ms | 269 ms | **191 ms** |
+| 500 km latency | 297 ms | 117 ms | **46 ms** |
+| 1,000 km latency | 292 ms | 128 ms | **58 ms** |
+| 2,000 km latency | 294 ms | 148 ms | **71 ms** |
+| 5,000 km latency | 295 ms | 185 ms | **109 ms** |
+| 10% dest latency | 154 ms | 92 ms | **31 ms** |
+| 10% → 10% latency | 159 ms | 91 ms | **31 ms** |
+| NA to Asia latency | 293 ms | 279 ms | **212 ms** |
+| 5% churn latency | 316 ms | 273 ms | **206 ms** |
+| 5% churn success | 100% | 100% | **100%** |
+
+The uncapped results confirm that the Neuromorphic advantage is structural, not circumstantial:
+
+**Kademlia barely improves.** Global latency drops only from 355 ms to 299 ms (-16%), and regional latency is essentially unchanged (500 km: 362→297 ms). Giving Kademlia an unlimited connection budget does not fix XOR's geographic blindness -- the protocol still routes through distant peers because that's what its metric demands. Hop count drops from 3.45 to 2.99 (one hop saved), but each hop still costs as much as before.
+
+**G-DHT-b gains modestly.** Global latency improves from 272→269 ms, regional from 124→117 ms at 500 km. The three-layer bootstrap already provided geographic locality under the cap; removing the cap lets the buckets fill more deeply but the protocol has no learning mechanism to exploit the extra capacity.
+
+**NX-10 gains the most.** Global latency drops from 261→191 ms (-27%), and regional from 67→46 ms at 500 km (-31%). The adaptive mechanisms -- hop caching, lateral spread, LTP reinforcement, triadic closure -- all scale with available synaptome slots. More capacity means more room to cache discovered routes, more diverse exploration, and more stable long-range connections. The concentrated-workload metrics (10% dest at 31 ms, 10%→10% at 31 ms) drop to near-direct delivery, indicating the learning machinery has converged on optimal routes for popular traffic patterns.
+
+#### The Gap Widens, Not Closes
+
+The comparison that matters most is how the NX-10 advantage changes when the playing field is levelled:
+
+| Metric | Web-limited (NX-10 vs K-DHT) | Uncapped (NX-10 vs K-DHT) | Gap change |
+|--------|------------------------------|---------------------------|-----------|
+| Global | 1.36× faster | **1.57× faster** | Widens |
+| 500 km | 5.4× faster | **6.5× faster** | Widens |
+| 1,000 km | 5.1× faster | **5.0× faster** | Stable |
+| 10% dest | 6.0× faster | **5.0× faster** | Narrows slightly |
+| 10%→10% | 7.6× faster | **5.1× faster** | Narrows (K-DHT improves) |
+
+The widening of the global and 500 km gaps under uncapped operation is the clearest evidence that NX-10's benefits come from *algorithmic* innovation rather than from working around a constraint that hurts its competitors. When every protocol is given as much capacity as it wants, NX-10 makes better use of it.
+
+One caveat: under concentrated-workload scenarios (10% dest, 10%→10%), Kademlia's uncapped improvement is proportionally larger than NX-10's, because Kademlia starts so far behind -- it now has enough connections that popular destinations are frequently one hop away by chance. The NX-10 advantage is still 5× but has compressed from 7.6×. This tells us that Kademlia's weakness under web-limit is partly a coverage problem (with unlimited connections, random coverage sometimes hits the popular 10% set directly), not purely a metric-blindness problem.
+
+### 6.3 Pub/Sub Broadcast (2,000 subscribers)
+
+| Metric | K-DHT (flat) | G-DHT-b (flat) | NX-10 (axonal) |
+|--------|-------------|----------------|----------------|
+| Relay latency | 418 ms | 303 ms | 233 ms |
+| Broadcast latency | 359 ms | 276 ms | 260 ms |
+| Max fan-out per node | 1,999 | 1,999 | 42 |
+| Tree depth | 0 | 0 | 5 |
+| Avg subscribers/node | 1,999 | 1,999 | 10.8 |
+
+The axonal tree reduces max fan-out from 1,999 to 42 -- a **48x reduction** in per-node work -- while achieving the lowest broadcast and relay latency. Without the tree, the relay node must individually look up and deliver to every subscriber. With the tree, work is distributed across ~185 forwarding nodes (2000 / 10.8 avg subs per node), each handling a manageable subset.
+
+```
+Fan-out per Relay Node:
+
+K-DHT (flat):      ████████████████████████████████████ 1,999
+G-DHT-b (flat):    ████████████████████████████████████ 1,999
+NX-10 (axonal):    █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    42
+                   0         500       1000      1500     2000
+```
+
+### 6.4 Churn Resilience
+
+| Metric | K-DHT | G-DHT-b | NX-10 |
+|--------|-------|---------|-------|
+| 5% churn hops | 3.64 | 4.88 | 4.27 |
+| 5% churn latency | 384 ms | 300 ms | 253 ms |
+| 5% churn success | 99.8% | 100% | **100%** |
+| 25% churn success | 99.6% | 100% | **100%** |
+
+Under honest node removal (no proactive healing -- dead nodes simply disappear), all protocols maintain near-perfect churn resilience at 25,000 nodes. NX-10 achieves **100% success at both 5% and 25% churn** while maintaining the lowest churn latency (253 ms). The dead-synapse eviction mechanism discovers and replaces failed connections during routing, while iterative fallback ensures every lookup eventually finds the target even through damaged routing tables.
+
+At extreme churn (25% per round, 5 rounds -- 76% of original nodes replaced), NX-10 maintains 100% success through the combination of:
+- Realistic iterative bootstrap join for new nodes
+- Dead-synapse eviction + 2-hop replacement during routing
+- Churn-triggered temperature reheat for accelerated exploration
+- Iterative fallback as a safety net when greedy routing stalls
+
+### 6.5 Slice World Test (Network Partition)
+
+The Slice World test partitions the network into Eastern and Western hemispheres, connected only through a single node in Hawaii. This tests routing through an extreme bottleneck.
+
+| Protocol | Success | Key mechanism |
+|----------|---------|---------------|
+| K-DHT | 52% | Cannot find bridge -- terminates after 2 no-progress rounds |
+| G-DHT-b | 52% | Same limitation as Kademlia |
+| NX-3 (no fallback) | 99.4% | Incoming synapses expose bridge connections |
+| NX-10 | **100%** | Iterative fallback + incoming synapses guarantee bridge discovery |
+
+This test demonstrates the critical importance of the incoming synapse reverse index (52% → 99.4%) and iterative fallback (99.4% → 100%) for routing through network bottlenecks.
+
+### 6.6 NX-13: Optimized Configuration
+
+NX-13 is NX-10 with tunable parameters, enabling systematic exploration of the configuration space. Through 20+ iterations of parameter optimization at 25,000 nodes, the following improvements were identified:
+
+| Parameter | NX-10 default | NX-13 optimized | Effect |
+|-----------|---------------|-----------------|--------|
+| Markov window | 16 | 32 | −6 ms global (wider pattern detection) |
+| Markov hot threshold | 3 | 2 | Faster hot-destination learning |
+| Highway slots | 12 | 16 | Improved cross-continent routing |
+| Dendritic capacity | 32 | 64 | −52 ms broadcast with 2000 subscribers |
+| Dendritic TTL | 10 | 20 | More stable pub/sub tree |
+
+**Routing results (NX-13 optimized vs NX-10):**
+
+| Metric | NX-10 | NX-13 | Improvement |
+|--------|-------|-------|-------------|
+| Global latency | 261 ms | 251 ms | −4% |
+| 10% src latency | 250 ms | 241 ms | −4% |
+| NA→AS latency | 246 ms | 244 ms | −1% |
+| Churn success | 100% | 100% | maintained |
+
+**Rule ablation (NX-13, disabling one rule at a time):**
+
+| Rule disabled | Global latency Δ | Key finding |
+|---------------|-------------------|-------------|
+| Markov pre-learning | +20 ms | Largest single-rule impact on latency |
+| Lateral spread | +19 ms | Critical for geographic shortcut propagation |
+| Triadic closure | +15 ms | Important for path compression |
+| Hop caching | +12 ms | Primarily helps regional routing (+8 ms at 500 km) |
+| Two-tier highway | +8 ms | More impactful at larger scale |
+| LTP reinforcement | +7 ms | Primarily helps regional routing |
+
+No single rule is responsible for NX-10's performance -- each contributes measurably, and the learning mechanisms work synergistically. The protocol is near a local optimum: 20+ iterations of parameter tuning found only ~10 ms of improvement, confirming the default configuration is well-tuned.
+
+### 6.7 Geographic Prefix Ablation
+
+The Neuromorphic DHT inherits its node-identity format from the Geographic DHT: the top `geoBits` of the 64-bit node ID encode a Hilbert-curve S2 cell (default 8 bits ≈ 256 cells globally), and the bottom `64-geoBits` bits are uniformly random. This embeds physical locality directly into XOR distance, so geographically-nearby nodes tend to be ID-nearby as well.
+
+An obvious question is how much of NX's performance actually depends on this geographic biasing versus the synaptome's learning mechanisms. To answer it, the entire benchmark was re-run with `geoBits = 0` (pure random 64-bit IDs, no geographic structure) and compared against the `geoBits = 8` default.
+
+#### 7.7.1 Lookup Performance (25,000 nodes, 5% churn)
+
+| Metric | NX-10 geo=8 | NX-10 geo=0 | Δ | NX-15 geo=8 | NX-15 geo=0 | Δ |
+|--------|-------------|-------------|------|-------------|-------------|------|
+| **Hops** | | | | | | |
+| Global | 3.37 | 3.33 | same | 3.52 | 3.47 | same |
+| 2000 km regional | 2.54 | 3.41 | **+34%** | 2.69 | 3.54 | **+32%** |
+| NA → Asia | 4.15 | 3.54 | **−15%** | 4.12 | 3.64 | **−12%** |
+| **Latency (ms)** | | | | | | |
+| Global | 255 | 265 | +4% | 255 | 281 | +10% |
+| 2000 km regional | 89 | 226 | **+154%** | 96 | 222 | **+131%** |
+| NA → Asia | 255 | 250 | same | 251 | 254 | same |
+
+The pattern is clear and symmetric between NX-10 and NX-15 (which share the same routing logic):
+
+- **Regional workloads depend heavily on the geographic prefix.** At 2000 km the latency penalty from `geoBits = 0` is roughly 2×. The geographic prefix is what lets the first few XOR hops stay within the caller's region; without it, every lookup-starting position is equidistant from every destination, and physical-distance penalties dominate.
+- **Cross-continental workloads benefit slightly from `geoBits = 0`.** Geographic clustering forces intermediate hops to stay local, which wastes hops when the ultimate target is continents away; random IDs allow more direct long-jumps.
+- **Random global workloads are essentially unchanged.** The synaptome's learning and the XOR routing structure together deliver equivalent performance with or without the geographic prefix, demonstrating that the prefix is a *performance optimization for locality*, not a correctness requirement.
+
+#### 7.7.2 Pub/Sub Steady-State and Broadcast
+
+| Metric | NX-10 geo=8 | NX-10 geo=0 | Δ | NX-15 geo=8 | NX-15 geo=0 | Δ |
+|--------|-------------|-------------|------|-------------|-------------|------|
+| Inherited pub/sub: →relay hops | 4.10 | 3.70 | −10% | 3.50 | 3.70 | +6% |
+| Inherited pub/sub: bcast latency | 286 ms | 410 ms | **+43%** | 249 ms | 379 ms | **+52%** |
+| Membership pub/sub: delivered % (steady state) | n/a | n/a | — | **100%** | **100%** | ✓ |
+
+- **Dendritic pub/sub broadcast latency is roughly 50% worse without the geographic prefix.** The NX-10 dendritic tree groups subscribers by S2 cell to recruit local forwarders; random IDs eliminate that clustering and the tree loses its locality advantage.
+- **Membership pub/sub steady-state delivery is identical (100%) at both settings.** The K-closest replication protocol operates purely over XOR distance to `hash(topic)` and has no dependency on ID structure. The protocol is *correct* regardless of `geoBits`.
+
+#### 7.7.3 Pub/Sub Churn Recovery: A Non-Monotonic Relationship
+
+The churn-recovery numbers reveal the most interesting finding in the ablation. The relationship between the geographic prefix and churn resilience is **non-monotonic**: the prefix helps at low churn but actively hurts at high churn.
+
+| Churn rate | NX-15 geo=8 (immediate / recovered) | NX-15 geo=0 (immediate / recovered) |
+|------------|-------------------------------------|--------------------------------------|
+| 5%  (1,250 / 25,000 killed) | 97.1% / **96.9%** | 94.9% / **83.2%** |
+| 25% (6,250 / 25,000 killed) | 38.1% / **38.1%** | 67.7% / **66.9%** |
+
+Two opposing dynamics are competing:
+
+**Low churn (5%): clustering helps.** With `geoBits = 8`, a topic's K-closest replicas are concentrated in a single ~97-node S2 cell. Uniformly-random 5% kill removes ~5 nodes from that cell on average, leaving ~92. The publisher's routing table is trained via synaptic LTP to reach that cell (common destinations are reinforced), so the publisher's `findKClosest` and the subscribers' `findKClosest` both converge on a similar surviving subset. Churn damage is well-tolerated because *both parties have routing coverage of the same region*, and that region is mostly intact. Random IDs (`geoBits = 0`) at 5% churn spread the K-closest across the entire network, so the publisher's and subscribers' computations diverge more after any node death -- a wider K-closest target set means less precise convergence, and the 14-percentage-point recovery gap reflects that diffusion cost.
+
+**High churn (25%): clustering hurts.** With `geoBits = 8`, uniformly-random 25% kill removes ~24 nodes from each 97-node cell. That's a *majority-level hit* to the geographic cell that holds every one of a topic's K-closest replicas. The publisher's routing table into that cell decays simultaneously (the same cell is damaged for both purposes), and `findKClosest` can no longer reach enough surviving replicas to deliver to the majority of subscribers -- hence the 38% ceiling. With `geoBits = 0` at 25% churn, the K-closest replicas are scattered across the entire ID space, and 25% death is a scattered, isolated loss. Surviving replicas remain individually reachable even if some paths are damaged, and the publisher's broad-coverage routing table still reaches many of them.
+
+The crossover point between these regimes depends on churn rate relative to cell population. For 25,000 nodes with `geoBits = 8` (256 cells, ~97 nodes per cell), the crossover sits somewhere between 5% and 25%. Below ~10% churn, geographic clustering wins; above, random IDs win.
+
+#### 7.7.4 Interpretation
+
+The geographic prefix is a performance lever with a context-dependent sign:
+
+| Workload | `geoBits = 0` vs `geoBits = 8` |
+|----------|-------------------------------|
+| Regional lookups | ~2× slower without prefix |
+| Cross-continental lookups | ~15% faster without prefix |
+| Random global lookups | essentially equal |
+| Dendritic pub/sub broadcast | ~50% slower without prefix |
+| Membership pub/sub steady-state | identical (100%) |
+| Membership pub/sub at 5% churn (recovered) | 14 pp worse without prefix |
+| Membership pub/sub at 25% churn (recovered) | **29 pp better without prefix** |
+
+The ablation reveals two claims that matter for understanding the protocol:
+
+First, **the NX series does not require geographic biasing to function**; the synaptome alone carries lookup correctness. Membership pub/sub in particular is *provably equivalent* across `geoBits` settings in steady state. This matters for deployments where geographic IDs are unavailable or undesirable (privacy-sensitive applications, pseudonymous overlays).
+
+Second, **the choice of `geoBits` should be tuned to the expected churn profile**. Networks with low-to-moderate churn (<10%) should use `geoBits = 8` for the locality benefits. Networks expecting high churn (>20%) -- either because node lifetimes are short or because the deployment is adversarial -- should consider `geoBits = 0` specifically for its pub/sub resilience, even though that sacrifices regional lookup performance. Intermediate values (e.g., `geoBits = 4`, ~16 cells) would split the difference but have not been separately characterised here.
+
+For the default configuration (typical browser-deployment churn assumed to be <10%), `geoBits = 8` remains the right choice. But the ablation demonstrates that the design has a real performance knob hiding in what previously appeared to be a hardcoded constant.
+
+### 6.8 Membership Pub/Sub: From K-closest Replication to a Pure Axonal Tree
+
+The original NX-10 axonal tree (Appendix A.2) was a *one-shot* broadcast: a relay holds a static subscriber list and fans out via DHT routing for every publish. That design is enough to drive the §6.3 benchmark, but it doesn't scale to a live overlay where subscribers join and leave continuously and each topic needs to persist independently. The NX-15 → NX-17 line of work tackles that gap: a **distributed pub/sub membership protocol** in which topics have independent, self-healing axonal trees grown dynamically by routing.
+
+**NX-15** added a generic `AxonManager` component on top of NX-10. It introduced K-closest replication: every subscribe STOREs the subscription at each of the K nodes closest to `hash(topic)`, and publishers hit any one of those K replicas for full delivery. K=5 gave nominal resilience, but the K-closest path had a structural cost we did not initially see — publisher and subscribers computed `findKClosest` from different positions in the network, so under churn their top-K sets drifted apart. The immediate-delivery cliff at 25% churn (~38% recovered in some runs) turned out to be that drift, not a primitive routing problem.
+
+**NX-16** (documented in `documents/dead-ends/`) attempted to fix the drift by masking out the geographic prefix in the K-closest distance metric so replicas would spread uniformly across cells. The selection metric ignored the prefix; the synaptome expansion still pointed toward full-XOR cells; and the routing gradient never aligned with the selection criterion. Publisher and subscribers converged on different local top-K sets and delivery collapsed to ~40% even at zero churn. The fundamental lesson: **the distance metric used to select candidates must match the gradient used to expand them.**
+
+**NX-17** takes a cleaner route. Two changes:
+
+1. **Publisher-prefix topic IDs.** A topic's address is constructed as `publisher.cell_prefix (8 bits) || hash_56(topic_name)`, embedded in topic names via the `@XX/domain/event` convention. Both publisher and subscribers derive the same ID deterministically, so full-XOR routing converges. The topic's root lives in the publisher's own cell — typically close to subscribers, well-reinforced by the publisher's ordinary lookup traffic.
+2. **K-closest replication disabled.** Subscribe is a `routeMessage(topicId, 'pubsub:subscribe')` that walks greedily toward the topic ID. The first live axon on the path intercepts and adds the subscriber to its children; if no axon exists, the terminal node opens a role and becomes root. Capacity-driven sub-axon recruitment grows the tree toward subscribers as they arrive. Single root per topic — no replication, no gossip.
+
+Four targeted fixes developed during empirical testing make this pure-axonal design work in practice:
+
+- **Terminal globality check.** Greedy `_greedyNextHopToward` reaches *local* optima: different starting points yield different "closest" nodes. Without a check, two subscribers elect different roots for the same topic. The fix: when `routeMessage` believes it has reached a terminal, it performs one `findKClosest(targetId, 1)` call; if a globally-closer live peer exists (found via 2-hop expansion), the message is forwarded there. A visited-set protects against pathological ping-pong.
+
+- **Root-only consumption of routed publishes.** Sub-axons on the publisher's path must *forward* publishes instead of intercepting, so the walk always reaches the actual root. Root's fan-out cascades through all its children (including sub-axons) via the normal `pubsub:deliver` sendDirect + re-fan chain.
+
+- **External-peer batch adoption on overflow.** When an axon hits `maxDirectSubs`, it picks a **synaptome peer** (not an existing child) as a new sub-axon, partitions its current children by picking the top-K XOR-closest to the chosen peer, and ships them as a single `pubsub:adopt-subscribers` batch. The new relay creates its role, adds the batch as children (no parentId — the design deliberately does not track upstream), and issues its own routed subscribe so it attaches into the live tree at whichever live axon its walk lands on. Two invariants protect this against runaway recursion: (a) the batch always includes a guaranteed-nonempty top-K so the parent's child count provably decreases on every overflow; (b) the parent pre-adds the new relay to its own children, so the relay's self-subscribe loopback is idempotent.
+
+- **All-axon periodic re-subscribe.** Every node holding any role — leaf subscriber, sub-axon, or root — re-issues a subscribe on every refresh interval. Self-subscribes unconditionally `return 'forward'` so they never add self as own child. Concrete outcomes: a non-root axon's refresh reaches its current parent (or a new live axon on its path) and gets its child entry renewed; a root still closest to topicId reaches its own terminal and the walk exits as a no-op; a root superseded by a newly-joined closer node hands off via the globality check. No parent-aliveness RPC is needed — the re-subscribe *is* the liveness check.
+
+**Live-simulation results.** Running as a continuous time-series test (one publish per group per tick, 1% of alive non-publisher nodes killed every five ticks, three refresh passes per kill; 25,000 nodes, 79 groups × 32 subscribers):
+
+| Cumulative churn | Delivered % | K-overlap | Axon roles |
+|------------------|-------------|-----------|------------|
+|   0 %            | 100.0 %     | 100 %     |   537      |
+|   5 %            |  98.7 %     |    —      | 1 541      |
+|  10 %            |  91.2 %     |  81 %     | 1 787      |
+|  15 %            |  88.7 %     |  77 %     | 1 989      |
+|  20 %            |  86.5 %     |  62 %     | 2 116      |
+|  25 %            |  70.0 %     |  54 %     | 2 169      |
+|  30 %            |  52.4 %     |  47 %     | 2 189      |
+|  34 %            |  50.8 %     |  42 %     | 2 197      |
+
+Delivery holds above 98 % through 5 % cumulative churn, degrades gracefully to about 87 % by 20 % churn, then bends down to a ~50 % floor as the tree settles into a steady state where new recruitments match losses. No cliff.
+
+For comparison, equivalent single-snapshot pub/sub-with-churn benchmark runs at the same 25 % cumulative kill level produced ~38 % recovered delivery with the earlier K-closest design and ~60 % with the NX-15 + K=5 setup. The live-sim NX-17 protocol matches or exceeds those at 25 % churn (70 %) while using a single root per topic and no replication.
+
+**K-overlap tracks delivered % almost 1:1.** At every measurement point, overlap (the fraction of its top-K that the publisher and a sampled subscriber agree on) predicts the delivery rate closely. This confirms the dominant residual failure mode is subscribers captured at relay nodes no longer delivery-connected to the root — not broken routing itself. A bounded *replay cache* at relays (store the last N publishes, forward on re-subscribe with a last-seen timestamp) is the natural next step; it closes exactly the kind of short-window gap that produces this pattern.
+
+**What NX-17 without replay is:** a minimal, single-root-per-topic pub/sub overlay that self-heals via ordinary re-subscription, preserves publisher-locality through its addressing scheme, scales to at least 25,000 nodes with 79 concurrent topics in the simulator, and delivers reliably through ~20 % uniform churn. It achieves this without gossip, without replication, and without explicit parent tracking. Adding the replay cache described next pushes reliable delivery meaningfully higher under heavy churn.
+
+### 6.9 The Replay Cache: Recovering Missed Messages on Re-Subscribe
+
+The K-overlap / delivery correlation in §6.8 identified the dominant residual loss mechanism: subscribers captured at relay nodes that are temporarily disconnected from the root during churn-induced tree reorganisation. A small amount of state at each relay is enough to close that gap.
+
+**Mechanism.**
+
+Every relay (root or sub-axon) keeps a bounded ring-buffer of recent publishes: `replayCache: [{ json, publishId, publishTs }, …]`. Default size 100 entries. `publishTs` is the publisher's wall-clock `Date.now()` at publish time.
+
+Every outgoing subscribe carries a `lastSeenTs` — the highest `publishTs` the subscriber has observed for this topic. When an axon handles an incoming subscribe that carries `lastSeenTs`, after adding the subscriber to children, it filters its cache to entries with `publishTs > lastSeenTs` and sends them as a **single** `pubsub:replay-batch` direct message:
+
+```
+pubsub:replay-batch: { topicId, messages: [{json, publishId, publishTs}, ...] }
+```
+
+Missing `lastSeenTs` (new subscriber) means replay the entire cache. The receiver processes each message through the normal delivery-callback path, dedup'd by publishId. A fresh subscriber receives the recent history of the topic in one round trip; a subscriber that just missed a publish during refresh recovers it on the next subscribe.
+
+Combining missed messages into one send is important at scale — at the default cache size of 100, a subscriber that has missed a full cycle's worth of messages receives them in one direct message rather than 100.
+
+**Measurement.**
+
+We track two delivery metrics per tick:
+
+- **Immediate delivered %** — fraction of alive subscribers that received *this tick's* publish via the normal fan-out path.
+- **Cumulative delivered %** — fraction of all `(alive subscriber, historical publishId)` pairs where the subscriber's local `receivedPublishIds` set contains the historical publishId. Counts any delivery path: live fan-out, replay batch, or duplicate from multiple relays. Answers the question "did every publish ever eventually reach every subscriber that was alive when it was published?"
+
+**Live-sim results (25 K nodes, 79 groups × 32 subs, 1 % churn every 5 ticks, 200+ ticks):**
+
+| Cumulative churn | Immediate delivery | **Cumulative delivery** | Replay recovery |
+|------------------|--------------------|--------------------------|-----------------|
+|  0 %             | 100.0 %            | **100.0 %**              |   0 pp          |
+|  5 %             |  98.7 %            |  **99.7 %**              | +1.0 pp         |
+| 10 %             |  91.1 %            |  **95.5 %**              | +4.4 pp         |
+| 15 %             |  87.3 %            |  **93.1 %**              | +5.8 pp         |
+| 20 %             |  86.5 %            |  **91.0 %**              | +4.5 pp         |
+| 25 %             |  68.1 %            |  **88.1 %**              | **+20.0 pp**    |
+| 30 %             |  51.8 %            |  **81.3 %**              | **+29.5 pp**    |
+| 33 %             |  51.8 %            |  **80.7 %**              | **+28.9 pp**    |
+
+The replay cache's contribution grows with churn, exactly as predicted. Through ~5 % churn the tree is healthy enough that replay is mostly a no-op (lastSeenTs is current, filter returns empty). From 10 % through 20 % it closes 5–6 pp of the gap. Above 25 %, where immediate delivery cliffs as the live tree fragments, replay alone rescues 20–30 pp. Cumulative delivery stays above 80 % through 33 % cumulative churn — a level at which immediate delivery has fallen to about half.
+
+**Immediate delivery is unchanged** from the replay-free baseline in §6.8. The replay path adds recovery without altering fast-path behaviour.
+
+**What the replay cache is not:**
+
+- Not a durable log. The ring buffer is bounded (100 entries) and held only in memory on whichever relays happen to cache a particular publish. Messages that predate every live relay's cache window are genuinely lost.
+- Not a global broadcast. Every replay message is a direct send to exactly one subscriber, triggered by that subscriber's own subscribe arriving at the relay. There is no push phase.
+- Not authenticated. The protocol assumes message integrity is a concern of the layer above it.
+- Not a consistency primitive. Two subscribers of the same topic may see messages in different orders if they receive via different paths (live vs replay vs partial replay), although per-sender `seq` numbers from the application-level adapter layer can provide in-order delivery per sender.
+
+Within those constraints, the replay cache produces the measurable result that subscribers eventually see nearly every published message under continuous 30 %+ cumulative uniform churn, using ~100 entries × ~7–28 relays per topic of additional memory.
+
+---
+
+## Chapter 7: Analysis and Potential Issues
+
+### 7.1 Forwarder Loss Under Churn
+
+**The issue**: In the axonal tree, if a forwarder dies during a publish cycle, all subscribers in its subtree are temporarily unreachable via the tree path. The parent must fall back to direct DHT lookups for the entire subtree, which can spike its fan-out far above the capacity limit.
+
+**Current status**: Point-to-point routing achieves 100% success at 25% churn through dead-synapse eviction and iterative fallback. The axonal tree has separate healing: dead forwarders are detected during delivery and their subtree is moved to the parent. The tree rebuilds on the next publish cycle.
+
+**Mitigations**:
+- **Current**: Dead forwarders are healed by moving their subtree to the parent; the tree rebuilds on the next tick.
+- **Possible**: Redundant forwarders (each delegation assigns a backup); proactive forwarder health checks before each publish cycle; dynamically increasing capacity under high churn to produce shallower trees.
+
+### 7.2 Tree Rebuild Cost at Scale
+
+**The issue**: The current implementation rebuilds the entire tree from scratch when the subscriber set changes. For 2,000 subscribers this is negligible, but for 50,000+ subscribers, the O(S x F) first-hop calculations per tree level become measurable.
+
+**Mitigations**:
+- **Current**: Rebuild is skipped when the subscriber set is unchanged.
+- **Possible**: Incremental updates via subscription interception -- new subscribers are routed down the existing tree to the nearest node, avoiding a full rebuild.
+
+### 7.3 Gateway Concentration
+
+**The issue**: If the relay's synaptome is poorly distributed (many subscribers in the same ID-space region), one gateway may cover a disproportionate number of subscribers. The recursive delegation handles this, but the resulting tree may be deep and narrow rather than broad and shallow.
+
+**Mitigations**:
+- **Current**: Recursive delegation naturally distributes the load.
+- **Possible**: When a single gateway covers >50% of remaining subscribers, introduce a secondary splitting criterion (e.g., geographic cell prefix) to force broader distribution.
+
+### 7.4 Synaptome-Tree Coupling
+
+**The issue**: The axonal tree's structure depends on the synaptome state at build time. If annealing replaces a synapse that happens to be a forwarder, the tree becomes structurally invalid without knowing it. The TTL-based rebuild eventually catches this, but there is a window of stale tree structure.
+
+**Mitigations**:
+- **Current**: Trees are rebuilt periodically (every time subscribers change or TTL triggers).
+- **Possible**: When a synapse that is also a forwarder is evicted by annealing or decay, immediately mark the tree dirty.
+
+### 7.5 Learning Warmup Period
+
+**The issue**: The Neuromorphic DHT requires a warmup period (4 sessions, ~5,000 lookups) before reaching optimal routing performance. During this period, the synaptome is still being trained and hop counts are higher. A newly joined node will not immediately benefit from the adaptive routing.
+
+**Mitigating factors**: Benchmarks show that even under Bootstrap Init (organic join, no pre-computation), the Neuromorphic DHT achieves 100% lookup success -- the only protocol to do so (K-DHT and G-DHT both drop to 97%). The learning mechanisms compensate for imperfect bootstrap tables during warmup.
+
+**Possible further improvements**: Pre-trained synaptome snapshots shared between nodes; accelerated learning through synthetic warmup lookups during join; the diversified bootstrap (Section 4.16) reduces convergence time by providing annealing with more varied seed connections.
+
+### 7.6 Byzantine Resistance
+
+**The issue**: A malicious node could claim a false geographic position (S2 cell prefix) to position itself strategically in the ID space. It could also manipulate its synaptome reports during iterative fallback to poison other nodes' routing tables.
+
+**Mitigations**:
+- **Not currently addressed**: The system assumes honest nodes.
+- **Possible**: Proof-of-location verification; cryptographic ID binding; reputation systems based on observed routing reliability; requiring multiple independent paths for routing table updates.
+
+### 7.7 Memory and Bandwidth Overhead
+
+**The issue**: Each node maintains ~60 synapses with full metadata (weight, latency, stratum, inertia, useCount). The learning mechanisms (annealing, decay, hop caching) add computational overhead per routing hop. The axonal tree adds per-topic state at forwarder nodes.
+
+**Assessment**: For most applications, this overhead is modest. A synaptome of 60 entries occupies <5 KB. Annealing and decay operations are O(synaptome size) and occur infrequently (annealing probabilistically per hop; decay every 100 lookups). The axonal tree adds ~100 bytes per subscriber per topic at each forwarder. For thousands of subscribers across dozens of topics, this is manageable on modern hardware.
+
+---
+
+## References
+
+### Foundational DHT Papers
+
+1. Stoica, I., Morris, R., Karger, D., Kaashoek, M. F., & Balakrishnan, H. (2001). "Chord: A Scalable Peer-to-peer Lookup Service for Internet Applications." *ACM SIGCOMM Computer Communication Review*, 31(4), 149--160.
+
+2. Maymounkov, P., & Mazieres, D. (2002). "Kademlia: A Peer-to-peer Information System Based on the XOR Metric." In *International Workshop on Peer-to-Peer Systems* (IPTPS), pp. 53--65. Springer.
+
+3. Rowstron, A., & Druschel, P. (2001). "Pastry: Scalable, Decentralized Object Location, and Routing for Large-Scale Peer-to-Peer Systems." In *Middleware 2001*, pp. 329--350. Springer.
+
+4. Ratnasamy, S., Francis, P., Handley, M., Karp, R., & Shenker, S. (2001). "A Scalable Content-Addressable Network." *ACM SIGCOMM Computer Communication Review*, 31(4), 161--172.
+
+5. Zhao, B. Y., Kubiatowicz, J., & Joseph, A. D. (2001). "Tapestry: An Infrastructure for Fault-tolerant Wide-area Location and Routing." Technical Report UCB/CSD-01-1141, UC Berkeley.
+
+### Security, Fault Tolerance, and Extensions
+
+6. Baumgart, I., & Mies, S. (2007). "S/Kademlia: A Practicable Approach Towards Secure Key-Based Routing." In *2007 International Conference on Parallel and Distributed Systems* (ICPADS), pp. 1--8. IEEE.
+
+7. Freedman, M. J., Freudenthal, E., & Mazieres, D. (2004). "Democratizing Content Publication with Coral." In *NSDI '04: 1st USENIX Symposium on Networked Systems Design and Implementation*, pp. 239--252.
+
+8. Lesniewski-Laas, C., & Kaashoek, M. F. (2010). "Whanau: A Sybil-proof Distributed Hash Table." In *NSDI '10: 7th USENIX Symposium on Networked Systems Design and Implementation*. Available at: https://pdos.csail.mit.edu/papers/whanau-nsdi10.pdf
+
+9. Naor, M., & Wieder, U. (2003). "A Simple Fault Tolerant Distributed Hash Table." In *2nd International Workshop on Peer-to-Peer Systems* (IPTPS). Available at: https://www.wisdom.weizmann.ac.il/~naor/PAPERS/iptps.pdf
+
+### Applications
+
+10. Loewenstern, A., & Norberg, A. (2008). "DHT Protocol." BitTorrent Enhancement Proposal 5 (BEP 5). Available at: https://www.bittorrent.org/beps/bep_0005.html
+
+11. Wood, G. (2014). "Ethereum: A Secure Decentralised Generalised Transaction Ledger." Ethereum Yellow Paper (continuously updated). Available at: https://ethereum.github.io/yellowpaper/paper.pdf
+
+12. Benet, J. (2014). "IPFS -- Content Addressed, Versioned, P2P File System." arXiv preprint arXiv:1407.3561. Available at: https://arxiv.org/abs/1407.3561
+
+### Publish/Subscribe
+
+13. Castro, M., Druschel, P., Kermarrec, A.-M., & Rowstron, A. I. T. (2002). "SCRIBE: A Large-Scale and Decentralized Application-Level Multicast Infrastructure." *IEEE Journal on Selected Areas in Communications* (JSAC), 20(8), 1489--1499.
+
+### Geographic, Proximity-Aware, and Recent DHT Work
+
+14. Gummadi, K., Gummadi, R., Gribble, S., Ratnasamy, S., Shenker, S., & Stoica, I. (2003). "The Impact of DHT Routing Geometry on Resilience and Proximity." *ACM SIGCOMM*, pp. 381--394. Available at: https://www.cs.yale.edu/homes/ramki/sigcomm03.pdf
+
+15. Wong, B., Slivkins, A., & Sirer, E. G. (2005). "Meridian: A Lightweight Network Location Service without Virtual Coordinates." *ACM SIGCOMM*. Available at: https://www.cs.cornell.edu/people/egs/papers/meridian-sigcomm05.pdf
+
+16. Google S2 Geometry Library. "S2 Cells." Available at: https://s2geometry.io/devguide/s2cell_hierarchy
+
+17. Hilbert, D. (1891). "Ueber die stetige Abbildung einer Line auf ein Flachenstuck." *Mathematische Annalen*, 38(3), 459--460.
+
+18. Sokoto, S., Krol, M., Stankovic, V., & Riviere, E. (2023). "Next-Generation Distributed Hash Tables." *CoNEXT Student Workshop*. Available at: https://dl.acm.org/doi/10.1145/3630202.3630234
+
+19. "LEAD: A Distributed Learned Hash Table." arXiv preprint arXiv:2508.14239, 2024. Available at: https://arxiv.org/abs/2508.14239
+
+### Neuroscience Analogues
+
+20. Hebb, D. O. (1949). *The Organization of Behavior: A Neuropsychological Theory*. Wiley.
+
+21. Bliss, T. V. P., & Lomo, T. (1973). "Long-lasting Potentiation of Synaptic Transmission in the Dentate Area of the Anaesthetized Rabbit Following Stimulation of the Perforant Path." *The Journal of Physiology*, 232(2), 331--356.
+
+22. Kirkpatrick, S., Gelatt, C. D., & Vecchi, M. P. (1983). "Optimization by Simulated Annealing." *Science*, 220(4598), 671--680.
+
+23. Srinivasa, N., Stepp, N. D., & Cruz-Albrecht, J. (2016). "Multiclass Classification by Adaptive Network of Dendritic Neurons with Binary Synapses Using Structural Plasticity." *Frontiers in Neuroscience*, 10, 113. Available at: https://www.frontiersin.org/articles/10.3389/fnins.2016.00113
+
+### Neuromorphic and Self-Organizing Networks
+
+24. Wang, Y. et al. (2008). "Self-Organizing Peer-to-Peer Social Networks." *Computational Intelligence*, Wiley. Available at: https://www.researchgate.net/publication/220541891_Self-Organizing_Peer-to-Peer_Social_Networks
+
+25. McDaid, L. et al. (2012). "Adaptive Routing Strategies for Large Scale Spiking Neural Network Hardware Implementations." SpringerLink. Available at: https://link.springer.com/chapter/10.1007/978-3-642-21735-7_10
+
+26. "Self-organizing topology control in distributed spatial networks: a structural optimization framework." *Cluster Computing*, 2025. Available at: https://link.springer.com/article/10.1007/s10586-025-05286-0
+
+---
+
+## Appendix A: Protocol Evolution
+
+The main chapters present NX-17 as it exists today. This appendix preserves the evolutionary path that produced it: a brief narrative (§A.1), the rule-by-rule ablation of NX-10 (§A.2), and the original static-tree axonal pub/sub design from NX-10 that was superseded by NX-17's dynamic tree (§A.3).
+
+### A.1 From NX-1 to NX-17: A Brief Evolution
+
+The neuromorphic protocol series developed in seventeen numbered iterations over the course of this research. Each iteration added, removed, or refined a specific mechanism and was empirically tested under the same benchmark suite so its marginal contribution could be measured. The high points:
+
+- **NX-1 through NX-3** — established the core neuromorphic architecture: synaptome (weighted connection map), Activation Potential routing that combines XOR progress / latency / learned weight, two-hop lookahead, incoming synapses and bidirectional routing.
+- **NX-4** — added **iterative fallback**: when greedy AP routing stalls because no synapse makes XOR progress toward the target, exhaustively scan the synaptome (outgoing + incoming) for the closest unvisited peer. This single mechanism raised Slice World (network partition) success from 99.4% to 100% and churn success from ~80% to 100%. The watershed feature of the NX line — every protocol below NX-4 fails under stress, every protocol at or above it succeeds.
+- **NX-5** — incoming synapse promotion (Hebbian learning for the reverse index) + global warmup + stratified bootstrap allocation.
+- **NX-6** — churn-resilience: dead-synapse eviction with 2-hop replacement, churn-triggered temperature reheat, adaptive decay, hop caching with lateral spread, triadic closure.
+- **NX-7 through NX-9** — three pub/sub tree variants: 25% peel-off split, balanced binary split, geographic S2 clustering. None of these shipped as SOTA; all proved out the design space for the NX-10 tree.
+- **NX-10** — the routing-topology forwarding tree: delegates subscribers to the direct synapse that is already their first hop. Achieves 100% success on every point-to-point test and clean 2,000-subscriber broadcast. For several months NX-10 was the published state of the art. §A.2 is its rule-by-rule specification.
+- **NX-11 through NX-13** — diversified bootstrap, configurable rules for systematic ablation. NX-13 demonstrated that the NX-10 design is near a local optimum: 20+ parameter-sweep iterations produced only ~10 ms of improvement.
+- **NX-15** — AxonManager generic pub/sub component with K-closest (K=5) replication. First attempt at a distributed pub/sub *membership* protocol (as opposed to single-shot broadcast). Introduced the split-root-set drift problem under churn.
+- **NX-16** — *masked-distance attempt (dead end).* Tried to decouple the target cell of `findKClosest` from the node-id cell prefix by masking the top 8 bits in the distance metric. This decoupled the selection criterion from the synaptome's expansion gradient, and the routing stopped converging: publisher and subscribers found different "closest" nodes for the same topic and delivery collapsed to ~40% even at zero churn. Kept archived in `documents/dead-ends/` as a cautionary example: *the distance metric used to select candidates must be compatible with the gradient used to expand them*.
+- **NX-17** — replaces K-closest replication with the four-part design described in Chapter 5: publisher-prefix topic IDs, terminal-globality-verified routed subscribe, root-only publish consumption, external-peer batch adoption on overflow, and all-axon periodic re-subscribe. Followed later by the bounded replay cache (§5.6) that closes the missed-message gap during churn. NX-17 is the protocol in production use today.
+
+The "we want cumulative delivery ≥80% at 30% cumulative churn with no gossip and no replication" design constraint is what pushed the architecture from NX-10's static tree through the K-closest experiments through the masked-distance dead end to the final NX-17 design. The rule-by-rule ablation of NX-10 in §A.2 establishes the routing-layer foundation; understanding which mechanisms contribute what fraction of NX-17's performance is impossible without it.
+
+---
+
+### A.2 NX-10 Protocol Specification — Rule-by-Rule Breakdown
 
 NX-10 is the **State of the Art** neuromorphic protocol, achieving 100% lookup success across all test conditions including 25% churn at 25,000 nodes with realistic (non-omniscient) bootstrap. This chapter details each rule in NX-10, why it exists, and what it contributes to performance. Rules are presented in the order they were added through the NX evolution (NX-1W through NX-10), with empirical evidence from ablation testing.
 
-### 5.1 Architectural Foundation
+#### A.2.1 Architectural Foundation
 
 NX-10 inherits from NX-6, which builds on NX-5, NX-4, NX-3, and the original neuromorphic architecture. The full inheritance chain:
 
@@ -817,7 +1439,7 @@ NX-10 → NX-6 → NX-5 → NX-4 → NX-3 → NeuromorphicDHTBase → DHT
 
 NX-10 adds one feature (routing-topology pub/sub tree) to NX-6's complete routing engine. The routing engine itself accumulated through NX-3 to NX-6.
 
-### 5.2 Rule 1: Synaptome-Based Routing with AP Scoring (NX-3 base)
+#### A.2.2 Rule 1: Synaptome-Based Routing with AP Scoring (NX-3 base)
 
 **What**: Each node maintains a **synaptome** — a flat collection of up to 48 weighted connections (synapses) plus 12 highway connections, replacing Kademlia's rigid k-bucket structure. Route selection uses the **Activation Potential** formula:
 
@@ -829,7 +1451,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Reduces global latency from Kademlia's ~364ms to ~250ms (31% reduction) at 25,000 nodes under web-limit. The latency component is the dominant factor — without it, the neuromorphic DHT would route through distant nodes as often as nearby ones.
 
-### 5.3 Rule 2: Two-Hop Lookahead (NX-3 base)
+#### A.2.3 Rule 2: Two-Hop Lookahead (NX-3 base)
 
 **What**: Instead of greedily selecting the single best next hop, evaluate the top 5 candidates (LOOKAHEAD_ALPHA=5) by simulating one additional hop from each. Select the candidate whose two-hop trajectory makes the most progress per unit latency.
 
@@ -837,7 +1459,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Reduces average hop count by approximately 0.3 hops and prevents routing dead-ends that would otherwise require iterative fallback. Most impactful in the web-limited regime where each node has only 50 connections and local minima are more common.
 
-### 5.4 Rule 3: Incoming Synapses and Bidirectional Routing (NX-3 base)
+#### A.2.4 Rule 3: Incoming Synapses and Bidirectional Routing (NX-3 base)
 
 **What**: When node A creates a synapse to node B, B records a lightweight **incoming synapse** entry pointing back to A. During routing, both outgoing synapses and incoming synapses are considered as next-hop candidates.
 
@@ -845,7 +1467,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Critical for narrow-bottleneck routing. In the Slice World test (East/West hemisphere partition with a single Hawaii bridge node), incoming synapses raise success from 52% (Kademlia, no reverse index) to 99.4% (NX-3). The bridge node's incoming synapses expose connections to both hemispheres that its outgoing synaptome alone would miss.
 
-### 5.5 Rule 4: Iterative Fallback (NX-4)
+#### A.2.5 Rule 4: Iterative Fallback (NX-4)
 
 **What**: When greedy AP routing reaches a node where no synapse makes positive XOR progress toward the target, instead of failing, scan all synapses (outgoing + incoming) for the closest unvisited peer to the target, regardless of whether it makes XOR progress. Mark visited nodes to avoid cycles.
 
@@ -853,7 +1475,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: The **watershed feature** of the NX line. Raises Slice World success from 99.4% to 100%. Raises churn success from ~80% to 100%. Every NX protocol below NX-4 fails under stress; every protocol NX-4 and above succeeds. Without iterative fallback, all other learning and repair mechanisms are insufficient.
 
-### 5.6 Rule 5: Incoming Synapse Promotion[^20] (NX-5)
+#### A.2.6 Rule 5: Incoming Synapse Promotion[^20] (NX-5)
 
 **What**: When an incoming synapse is selected as a routing hop multiple times (useCount >= 2), promote it to a full outgoing synapse with weight 0.5. This is Hebbian learning[^20]: connections that carry traffic get cemented.
 
@@ -861,7 +1483,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Enables organic network learning — the routing table evolves based on actual traffic patterns rather than remaining static after bootstrap. Particularly important for nodes that serve as transit points: they accumulate promoted incoming synapses that reflect real routing demand.
 
-### 5.7 Rule 6: Long-Term Potentiation (LTP) Reinforcement[^21] (NX-3 base)
+#### A.2.7 Rule 6: Long-Term Potentiation (LTP) Reinforcement[^21] (NX-3 base)
 
 **What**: After a successful lookup that completes at or below the running average latency, a reinforcement wave propagates backward along the path: each synapse gains +0.2 weight (capped at 1.0) and receives an inertia lock preventing decay for 20 epochs.
 
@@ -869,7 +1491,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Drives latency optimization over time. During warmup, LTP reinforcement converges the synaptome from random bootstrap connections to traffic-optimized ones, reducing global latency by approximately 15-20ms over 2,000 training lookups.
 
-### 5.8 Rule 7: Simulated Annealing[^22] (NX-3 base)
+#### A.2.8 Rule 7: Simulated Annealing[^22] (NX-3 base)
 
 **What**: Each node has a temperature (initially 1.0, cooling by factor 0.9997 per routing hop, minimum 0.05). On each hop, with probability equal to the temperature, replace the weakest non-locked synapse with a random peer from the 2-hop neighborhood in the same stratum range.
 
@@ -877,7 +1499,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Enables continuous adaptation to traffic patterns and network topology changes. Particularly important after churn, where the annealing mechanism discovers replacement connections in strata left empty by dead-synapse eviction.
 
-### 5.9 Rule 8: Adaptive Decay (NX-6 base)
+#### A.2.9 Rule 8: Adaptive Decay (NX-6 base)
 
 **What**: Every 100 lookups, all synapses undergo weight decay. The decay rate is usage-adaptive: heavily-used synapses decay at 0.9998 per interval (effectively immortal), while unused synapses decay at 0.990 (reaching prune threshold in ~300 intervals). Bootstrap synapses receive extra protection. Synapses with active LTP inertia locks skip decay entirely.
 
@@ -885,7 +1507,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Works in concert with annealing and LTP to maintain synaptome quality. Decay creates slots for annealing to fill with new explorations, while LTP-locked synapses resist decay during their proven-useful period.
 
-### 5.10 Rule 9: Hop Caching with Lateral Spread (NX-6 base)
+#### A.2.10 Rule 9: Hop Caching with Lateral Spread (NX-6 base)
 
 **What**: At each intermediate hop during a lookup, introduce the target node to the current node's synaptome (via stratified eviction if full). Additionally, cascade this introduction to up to 6 geographic neighbors at depth 1, and 2 neighbors at depth 2.
 
@@ -893,7 +1515,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: The primary mechanism for learning geographic shortcuts. NS-series ablation testing showed hop caching alone reduces global latency by 16ms (NS-1 298ms to NS-2 282ms). With eviction-enabled caching (NS-5), 10%dest latency drops from 244ms to 148ms as popular destinations get cached across the routing mesh.
 
-### 5.11 Rule 10: Triadic Closure (NX-6 base)
+#### A.2.11 Rule 10: Triadic Closure (NX-6 base)
 
 **What**: When node C repeatedly forwards traffic from origin A toward next-hop D (threshold: 3 transits), C introduces A to D directly via stratified eviction.
 
@@ -901,7 +1523,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Most effective when combined with eviction (NS-6 testing: NS-5 282ms to NS-6 275ms global latency). Without eviction, triadic introductions can't displace existing synapses and are lost (NS-4 testing showed triadic alone was counterproductive).
 
-### 5.12 Rule 11: Dead-Synapse Eviction and Replacement (NX-6)
+#### A.2.12 Rule 11: Dead-Synapse Eviction and Replacement (NX-6)
 
 **What**: When routing discovers a dead peer (alive check fails), immediately delete the dead synapse and search the 2-hop neighborhood for a replacement in the same stratum range. The replacement receives the median weight of existing synapses (not penalized). If the replacement makes forward progress toward the current lookup target, inject it into the active candidate set.
 
@@ -909,7 +1531,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Critical for churn resilience. Combined with iterative fallback (Rule 5), dead-synapse eviction enables 100% lookup success at 25% churn with 25,000 nodes under realistic bootstrap. The replacement injection into active lookups means even the lookup that discovered the dead peer can route through the replacement immediately.
 
-### 5.13 Rule 12: Churn-Triggered Temperature Reheat (NX-6)
+#### A.2.13 Rule 12: Churn-Triggered Temperature Reheat (NX-6)
 
 **What**: When a dead peer is discovered during routing (in either normal candidate collection or iterative fallback scan), spike the discovering node's annealing temperature to T_REHEAT (0.5).
 
@@ -917,7 +1539,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Accelerates post-churn recovery. The temperature naturally cools back down via ANNEAL_COOLING after the repair phase, so the increased exploration is temporary and targeted.
 
-### 5.14 Rule 13: Two-Tier Synaptome (NX-6 base)
+#### A.2.14 Rule 13: Two-Tier Synaptome (NX-6 base)
 
 **What**: The synaptome is split into a local tier (48 synapses) and a highway tier (12 synapses). The highway tier holds high-diversity hub nodes discovered through periodic scanning of the 2-hop neighborhood. Highway synapses receive special decay protection when recently used and are consulted during routing alongside local synapses.
 
@@ -925,7 +1547,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Provides 60 total connections (vs 50 for a single tier), giving NX-10 more routing redundancy. The highway hubs are particularly valuable for cross-region routing where the local tier may lack direct coverage.
 
-### 5.15 Rule 14: Epsilon-Greedy Exploration (NX-3 base)
+#### A.2.15 Rule 14: Epsilon-Greedy Exploration (NX-3 base)
 
 **What**: On the very first hop of each lookup, with 5% probability, select a random synapse instead of the best AP-scored one.
 
@@ -933,7 +1555,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Prevents premature convergence and ensures diverse synapses receive routing traffic for LTP evaluation.
 
-### 5.16 Rule 15: Realistic Bootstrap Join (NX-6 base)
+#### A.2.16 Rule 15: Realistic Bootstrap Join (NX-6 base)
 
 **What**: New nodes join through a sponsor via iterative self-lookup (Phase 1: discover XOR-close peers) followed by inter-cell discovery (Phase 2: lookups with flipped geographic prefix bits to find peers in different S2 cells). Stratum-aware eviction during join displaces over-represented strata to maintain diversity.
 
@@ -941,7 +1563,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Enables 100% churn success under realistic conditions. Previous testing showed that omniscient bootstrap (access to the full sorted node list) artificially inflated churn resilience by 25+ percentage points. Realistic bootstrap via iterative join is honest and still achieves 100% with NX-10's full rule set.
 
-### 5.17 Rule 16: Routing-Topology Pub/Sub Tree[^23] (NX-10)
+#### A.2.17 Rule 16: Routing-Topology Pub/Sub Tree[^23] (NX-10)
 
 **What**: When broadcasting to subscribers, build a forwarding tree that mirrors the routing topology. For each subscriber, determine which direct synapse would be the first hop toward it. Delegate groups of subscribers to those synapses as forwarders. Recursive: forwarders apply the same delegation when they exceed capacity (default: 32 entries per node).
 
@@ -949,7 +1571,7 @@ AP = (XOR_progress / latency) * (1 + WEIGHT_SCALE * weight)
 
 **Contribution**: Reduces max per-node fan-out from 1,999 to ~46 (43x reduction) with 2,000 subscribers. Broadcast latency remains comparable to flat delivery because forwarder hops are direct (1 hop, no lookup overhead). Tree depth emerges naturally from the routing topology (typically 4-5 levels for 2,000 subscribers).
 
-### 5.18 Configuration Summary
+#### A.2.18 Configuration Summary
 
 NX-10 uses 44 configuration parameters inherited from the NX-6 rule chain. The critical parameters and their defaults:
 
@@ -971,7 +1593,7 @@ NX-10 uses 44 configuration parameters inherited from the NX-6 rule chain. The c
 | INTRODUCTION_THRESHOLD | 3 | Triadic closure |
 | AXONAL_CAPACITY | 32 | Pub/sub tree |
 
-### 5.19 Ablation Summary: Which Rules Matter Most
+#### A.2.19 Ablation Summary: Which Rules Matter Most
 
 NS-series testing systematically added features to a minimal core, revealing each rule's marginal contribution:
 
@@ -993,12 +1615,11 @@ The **essential features** in order of impact:
 6. **Two-tier highway + lateral spread + adaptive decay**: −24ms (remaining gap to NX-10)
 
 ---
+### A.3 Axonal Pub/Sub v1 — The Static-Tree Design
 
-## Chapter 6: Axonal Pub/Sub
+*The remainder of this chapter documents the earlier static-tree axonal design in use through NX-10 and NX-15. It is retained here for historical context. NX-17's pub/sub (§6.1–§6.7) replaces it. The static tree was effective for single-shot broadcast but did not solve the full distributed-membership problem.*
 
-The Axonal Pub/Sub system provides scalable group communication atop the Neuromorphic DHT. Named after the axonal arbor[^23] -- the branching output structure of a neuron that delivers signals from one cell body to many downstream targets -- it constructs broadcast trees that mirror the routing topology itself. Unlike earlier DHT-based pub/sub schemes such as SCRIBE[^13], which builds an overlay tree independent of the routing layer, the Axonal Pub/Sub tree emerges from the routing topology itself, achieving near-zero overhead for broadcast distribution.
-
-### 6.1 The Problem
+#### A.3.1 The Problem
 
 In a flat pub/sub model, a publisher sends a message to a relay node, which then individually looks up and delivers to every subscriber. With S subscribers and H average hops per lookup:
 
@@ -1008,7 +1629,7 @@ In a flat pub/sub model, a publisher sends a message to a relay node, which then
 
 With 2,000 subscribers and 3.5 hops per lookup, the relay executes 7,000 routing hops per publish event. This doesn't scale.
 
-### 6.2 The Insight
+#### A.3.2 The Insight
 
 Consider how the relay routes to its 2,000 subscribers. Many of those routes share a common first hop. If the relay's synaptome has ~48 synapses, then on average each synapse is the first hop toward ~42 subscribers. Some synapses cover hundreds:
 
@@ -1037,7 +1658,7 @@ Relay ──lookup──> S202 (via B)    Relay ──direct──> Forwarder B
 
 Key property: A is already a direct synapse of the relay, so relay-to-A is **1 hop with no DHT lookup** -- just a direct message at the round-trip latency between them.
 
-### 6.3 Tree Construction
+#### A.3.3 Tree Construction
 
 The axonal tree is built top-down from the relay root. The process is recursive: any node that exceeds its subscriber capacity delegates to forwarders chosen from its own synaptome.
 
@@ -1118,7 +1739,7 @@ function firstHop(node, targetId):
   Each node handles at most 4 entries.
 ```
 
-### 6.4 Delivery
+#### A.3.4 Delivery
 
 When a publish event occurs, the tree delivers messages recursively:
 
@@ -1150,7 +1771,7 @@ function deliver(treeNode, pathHops, pathLatency, results):
 
 **Why this works**: The forwarder is a direct synapse of its parent, so the "forwarding hop" costs only the round-trip latency between them -- no DHT lookup overhead. The forwarder then initiates DHT lookups for its own subscribers, but from a closer starting point (it was chosen because it's already on the routing path toward those subscribers). The total per-subscriber hop count is approximately the same as a flat lookup, but the work is distributed across the tree.
 
-### 6.5 Subscription Interception
+#### A.3.5 Subscription Interception
 
 When a new node subscribes to a topic, the subscribe message routes through the network toward the relay root. At each hop, if the intermediate node is already part of the axonal tree for that topic, it captures the subscription locally:
 
@@ -1171,7 +1792,7 @@ function handleSubscription(node, topicId, subscriberId):
 
 This means the tree grows organically: new subscribers attach to the nearest tree node on their routing path, not necessarily to the root. This distributes the subscription load and keeps new subscribers close to their delivery point.
 
-### 6.6 Tree Maintenance
+#### A.3.6 Tree Maintenance
 
 **Subscriber time-to-live (TTL)**: Each subscriber entry has a last-active timestamp. Subscribers that are not renewed within TTL ticks (default: 10) are pruned. This handles graceful departure without explicit unsubscribe messages.
 
@@ -1198,415 +1819,9 @@ function healDeadForwarder(branch):
 
 ---
 
-## Chapter 7: Performance Characteristics
-
-All benchmarks use 25,000 nodes uniformly distributed across the globe, with 500 lookups per measurement cell. The Neuromorphic DHT (NX-10) receives 4 warmup sessions (5,000 training lookups) before measurement. Pub/sub tests use 2,000 subscribers per group. Node removal is honest -- no protocol reads a dead node's internal state; neighbors discover failures when they attempt to route through stale connections.
-
-**On variance:** all numbers reported in this document are means over 500 lookups per cell, themselves aggregated over multiple benchmark runs. Individual run-to-run variation typically falls within ±5% for routing latencies and ±1% for success rates. Where a result is within noise of another, we say so explicitly. Otherwise, the reported means are stable indicators of protocol behaviour.
-
-### 7.1 Point-to-Point Routing (Web-Limited, 50 connections)
-
-| Metric | K-DHT | G-DHT-b | NX-10 |
-|--------|-------|---------|-------|
-| Global hops | 3.45 | 4.62 | 3.43 |
-| Global latency | 355 ms | 272 ms | 261 ms |
-| 500 km latency | 362 ms | 124 ms | 67 ms |
-| 2,000 km latency | 348 ms | 157 ms | 90 ms |
-| 5,000 km latency | 349 ms | 196 ms | 147 ms |
-| 10% dest latency | 241 ms | 107 ms | 40 ms |
-| NA to Asia latency | 342 ms | 294 ms | 249 ms |
-| Success rate | 100% | 100% | 100% |
-
-Under web-realistic connection limits (50 peers per node), the Neuromorphic DHT achieves **26% lower global latency** than Kademlia and **4% lower** than G-DHT-b. The regional advantage is dramatic: at 500 km, NX-10 routes in 67 ms vs. Kademlia's 362 ms -- an **81% reduction**. For concentrated workloads (10% destinations), NX-10 achieves 40 ms vs. Kademlia's 241 ms through hop caching and LTP reinforcement of popular routes.
-
-```
-Latency by Distance (Web-Limited, 25K nodes):
-
-           500km   2000km   5000km   Global   NA→AS
-K-DHT:     362     348      349      355      342
-G-DHT-b:   124     157      196      272      294
-NX-10:      67      90      147      261      249
-```
-
-### 7.2 Point-to-Point Routing (Uncapped, No Connection Limit)
-
-The web-limited results above assume each node can maintain at most 50 peer connections -- a browser-realistic constraint. To understand whether the Neuromorphic advantage is an artifact of constrained resources, we also measured all three protocols with the connection cap removed. In this mode, Kademlia and G-DHT are free to fill every XOR bucket to its full `k=20` allocation (producing hundreds of peers per node), and NX-10 is allowed a synaptome of up to 256 connections.
-
-| Metric | K-DHT | G-DHT-b | NX-10 |
-|--------|-------|---------|-------|
-| Global hops | 2.99 | 4.37 | 2.75 |
-| Global latency | 299 ms | 269 ms | **191 ms** |
-| 500 km latency | 297 ms | 117 ms | **46 ms** |
-| 1,000 km latency | 292 ms | 128 ms | **58 ms** |
-| 2,000 km latency | 294 ms | 148 ms | **71 ms** |
-| 5,000 km latency | 295 ms | 185 ms | **109 ms** |
-| 10% dest latency | 154 ms | 92 ms | **31 ms** |
-| 10% → 10% latency | 159 ms | 91 ms | **31 ms** |
-| NA to Asia latency | 293 ms | 279 ms | **212 ms** |
-| 5% churn latency | 316 ms | 273 ms | **206 ms** |
-| 5% churn success | 100% | 100% | **100%** |
-
-The uncapped results confirm that the Neuromorphic advantage is structural, not circumstantial:
-
-**Kademlia barely improves.** Global latency drops only from 355 ms to 299 ms (-16%), and regional latency is essentially unchanged (500 km: 362→297 ms). Giving Kademlia an unlimited connection budget does not fix XOR's geographic blindness -- the protocol still routes through distant peers because that's what its metric demands. Hop count drops from 3.45 to 2.99 (one hop saved), but each hop still costs as much as before.
-
-**G-DHT-b gains modestly.** Global latency improves from 272→269 ms, regional from 124→117 ms at 500 km. The three-layer bootstrap already provided geographic locality under the cap; removing the cap lets the buckets fill more deeply but the protocol has no learning mechanism to exploit the extra capacity.
-
-**NX-10 gains the most.** Global latency drops from 261→191 ms (-27%), and regional from 67→46 ms at 500 km (-31%). The adaptive mechanisms -- hop caching, lateral spread, LTP reinforcement, triadic closure -- all scale with available synaptome slots. More capacity means more room to cache discovered routes, more diverse exploration, and more stable long-range connections. The concentrated-workload metrics (10% dest at 31 ms, 10%→10% at 31 ms) drop to near-direct delivery, indicating the learning machinery has converged on optimal routes for popular traffic patterns.
-
-#### The Gap Widens, Not Closes
-
-The comparison that matters most is how the NX-10 advantage changes when the playing field is levelled:
-
-| Metric | Web-limited (NX-10 vs K-DHT) | Uncapped (NX-10 vs K-DHT) | Gap change |
-|--------|------------------------------|---------------------------|-----------|
-| Global | 1.36× faster | **1.57× faster** | Widens |
-| 500 km | 5.4× faster | **6.5× faster** | Widens |
-| 1,000 km | 5.1× faster | **5.0× faster** | Stable |
-| 10% dest | 6.0× faster | **5.0× faster** | Narrows slightly |
-| 10%→10% | 7.6× faster | **5.1× faster** | Narrows (K-DHT improves) |
-
-The widening of the global and 500 km gaps under uncapped operation is the clearest evidence that NX-10's benefits come from *algorithmic* innovation rather than from working around a constraint that hurts its competitors. When every protocol is given as much capacity as it wants, NX-10 makes better use of it.
-
-One caveat: under concentrated-workload scenarios (10% dest, 10%→10%), Kademlia's uncapped improvement is proportionally larger than NX-10's, because Kademlia starts so far behind -- it now has enough connections that popular destinations are frequently one hop away by chance. The NX-10 advantage is still 5× but has compressed from 7.6×. This tells us that Kademlia's weakness under web-limit is partly a coverage problem (with unlimited connections, random coverage sometimes hits the popular 10% set directly), not purely a metric-blindness problem.
-
-### 7.3 Pub/Sub Broadcast (2,000 subscribers)
-
-| Metric | K-DHT (flat) | G-DHT-b (flat) | NX-10 (axonal) |
-|--------|-------------|----------------|----------------|
-| Relay latency | 418 ms | 303 ms | 233 ms |
-| Broadcast latency | 359 ms | 276 ms | 260 ms |
-| Max fan-out per node | 1,999 | 1,999 | 42 |
-| Tree depth | 0 | 0 | 5 |
-| Avg subscribers/node | 1,999 | 1,999 | 10.8 |
-
-The axonal tree reduces max fan-out from 1,999 to 42 -- a **48x reduction** in per-node work -- while achieving the lowest broadcast and relay latency. Without the tree, the relay node must individually look up and deliver to every subscriber. With the tree, work is distributed across ~185 forwarding nodes (2000 / 10.8 avg subs per node), each handling a manageable subset.
-
-```
-Fan-out per Relay Node:
-
-K-DHT (flat):      ████████████████████████████████████ 1,999
-G-DHT-b (flat):    ████████████████████████████████████ 1,999
-NX-10 (axonal):    █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    42
-                   0         500       1000      1500     2000
-```
-
-### 7.4 Churn Resilience
-
-| Metric | K-DHT | G-DHT-b | NX-10 |
-|--------|-------|---------|-------|
-| 5% churn hops | 3.64 | 4.88 | 4.27 |
-| 5% churn latency | 384 ms | 300 ms | 253 ms |
-| 5% churn success | 99.8% | 100% | **100%** |
-| 25% churn success | 99.6% | 100% | **100%** |
-
-Under honest node removal (no proactive healing -- dead nodes simply disappear), all protocols maintain near-perfect churn resilience at 25,000 nodes. NX-10 achieves **100% success at both 5% and 25% churn** while maintaining the lowest churn latency (253 ms). The dead-synapse eviction mechanism discovers and replaces failed connections during routing, while iterative fallback ensures every lookup eventually finds the target even through damaged routing tables.
-
-At extreme churn (25% per round, 5 rounds -- 76% of original nodes replaced), NX-10 maintains 100% success through the combination of:
-- Realistic iterative bootstrap join for new nodes
-- Dead-synapse eviction + 2-hop replacement during routing
-- Churn-triggered temperature reheat for accelerated exploration
-- Iterative fallback as a safety net when greedy routing stalls
-
-### 7.5 Slice World Test (Network Partition)
-
-The Slice World test partitions the network into Eastern and Western hemispheres, connected only through a single node in Hawaii. This tests routing through an extreme bottleneck.
-
-| Protocol | Success | Key mechanism |
-|----------|---------|---------------|
-| K-DHT | 52% | Cannot find bridge -- terminates after 2 no-progress rounds |
-| G-DHT-b | 52% | Same limitation as Kademlia |
-| NX-3 (no fallback) | 99.4% | Incoming synapses expose bridge connections |
-| NX-10 | **100%** | Iterative fallback + incoming synapses guarantee bridge discovery |
-
-This test demonstrates the critical importance of the incoming synapse reverse index (52% → 99.4%) and iterative fallback (99.4% → 100%) for routing through network bottlenecks.
-
-### 7.6 NX-13: Optimized Configuration
-
-NX-13 is NX-10 with tunable parameters, enabling systematic exploration of the configuration space. Through 20+ iterations of parameter optimization at 25,000 nodes, the following improvements were identified:
-
-| Parameter | NX-10 default | NX-13 optimized | Effect |
-|-----------|---------------|-----------------|--------|
-| Markov window | 16 | 32 | −6 ms global (wider pattern detection) |
-| Markov hot threshold | 3 | 2 | Faster hot-destination learning |
-| Highway slots | 12 | 16 | Improved cross-continent routing |
-| Dendritic capacity | 32 | 64 | −52 ms broadcast with 2000 subscribers |
-| Dendritic TTL | 10 | 20 | More stable pub/sub tree |
-
-**Routing results (NX-13 optimized vs NX-10):**
-
-| Metric | NX-10 | NX-13 | Improvement |
-|--------|-------|-------|-------------|
-| Global latency | 261 ms | 251 ms | −4% |
-| 10% src latency | 250 ms | 241 ms | −4% |
-| NA→AS latency | 246 ms | 244 ms | −1% |
-| Churn success | 100% | 100% | maintained |
-
-**Rule ablation (NX-13, disabling one rule at a time):**
-
-| Rule disabled | Global latency Δ | Key finding |
-|---------------|-------------------|-------------|
-| Markov pre-learning | +20 ms | Largest single-rule impact on latency |
-| Lateral spread | +19 ms | Critical for geographic shortcut propagation |
-| Triadic closure | +15 ms | Important for path compression |
-| Hop caching | +12 ms | Primarily helps regional routing (+8 ms at 500 km) |
-| Two-tier highway | +8 ms | More impactful at larger scale |
-| LTP reinforcement | +7 ms | Primarily helps regional routing |
-
-No single rule is responsible for NX-10's performance -- each contributes measurably, and the learning mechanisms work synergistically. The protocol is near a local optimum: 20+ iterations of parameter tuning found only ~10 ms of improvement, confirming the default configuration is well-tuned.
-
-### 7.7 Geographic Prefix Ablation
-
-The Neuromorphic DHT inherits its node-identity format from the Geographic DHT: the top `geoBits` of the 64-bit node ID encode a Hilbert-curve S2 cell (default 8 bits ≈ 256 cells globally), and the bottom `64-geoBits` bits are uniformly random. This embeds physical locality directly into XOR distance, so geographically-nearby nodes tend to be ID-nearby as well.
-
-An obvious question is how much of NX's performance actually depends on this geographic biasing versus the synaptome's learning mechanisms. To answer it, the entire benchmark was re-run with `geoBits = 0` (pure random 64-bit IDs, no geographic structure) and compared against the `geoBits = 8` default.
-
-#### 7.7.1 Lookup Performance (25,000 nodes, 5% churn)
-
-| Metric | NX-10 geo=8 | NX-10 geo=0 | Δ | NX-15 geo=8 | NX-15 geo=0 | Δ |
-|--------|-------------|-------------|------|-------------|-------------|------|
-| **Hops** | | | | | | |
-| Global | 3.37 | 3.33 | same | 3.52 | 3.47 | same |
-| 2000 km regional | 2.54 | 3.41 | **+34%** | 2.69 | 3.54 | **+32%** |
-| NA → Asia | 4.15 | 3.54 | **−15%** | 4.12 | 3.64 | **−12%** |
-| **Latency (ms)** | | | | | | |
-| Global | 255 | 265 | +4% | 255 | 281 | +10% |
-| 2000 km regional | 89 | 226 | **+154%** | 96 | 222 | **+131%** |
-| NA → Asia | 255 | 250 | same | 251 | 254 | same |
-
-The pattern is clear and symmetric between NX-10 and NX-15 (which share the same routing logic):
-
-- **Regional workloads depend heavily on the geographic prefix.** At 2000 km the latency penalty from `geoBits = 0` is roughly 2×. The geographic prefix is what lets the first few XOR hops stay within the caller's region; without it, every lookup-starting position is equidistant from every destination, and physical-distance penalties dominate.
-- **Cross-continental workloads benefit slightly from `geoBits = 0`.** Geographic clustering forces intermediate hops to stay local, which wastes hops when the ultimate target is continents away; random IDs allow more direct long-jumps.
-- **Random global workloads are essentially unchanged.** The synaptome's learning and the XOR routing structure together deliver equivalent performance with or without the geographic prefix, demonstrating that the prefix is a *performance optimization for locality*, not a correctness requirement.
-
-#### 7.7.2 Pub/Sub Steady-State and Broadcast
-
-| Metric | NX-10 geo=8 | NX-10 geo=0 | Δ | NX-15 geo=8 | NX-15 geo=0 | Δ |
-|--------|-------------|-------------|------|-------------|-------------|------|
-| Inherited pub/sub: →relay hops | 4.10 | 3.70 | −10% | 3.50 | 3.70 | +6% |
-| Inherited pub/sub: bcast latency | 286 ms | 410 ms | **+43%** | 249 ms | 379 ms | **+52%** |
-| Membership pub/sub: delivered % (steady state) | n/a | n/a | — | **100%** | **100%** | ✓ |
-
-- **Dendritic pub/sub broadcast latency is roughly 50% worse without the geographic prefix.** The NX-10 dendritic tree groups subscribers by S2 cell to recruit local forwarders; random IDs eliminate that clustering and the tree loses its locality advantage.
-- **Membership pub/sub steady-state delivery is identical (100%) at both settings.** The K-closest replication protocol operates purely over XOR distance to `hash(topic)` and has no dependency on ID structure. The protocol is *correct* regardless of `geoBits`.
-
-#### 7.7.3 Pub/Sub Churn Recovery: A Non-Monotonic Relationship
-
-The churn-recovery numbers reveal the most interesting finding in the ablation. The relationship between the geographic prefix and churn resilience is **non-monotonic**: the prefix helps at low churn but actively hurts at high churn.
-
-| Churn rate | NX-15 geo=8 (immediate / recovered) | NX-15 geo=0 (immediate / recovered) |
-|------------|-------------------------------------|--------------------------------------|
-| 5%  (1,250 / 25,000 killed) | 97.1% / **96.9%** | 94.9% / **83.2%** |
-| 25% (6,250 / 25,000 killed) | 38.1% / **38.1%** | 67.7% / **66.9%** |
-
-Two opposing dynamics are competing:
-
-**Low churn (5%): clustering helps.** With `geoBits = 8`, a topic's K-closest replicas are concentrated in a single ~97-node S2 cell. Uniformly-random 5% kill removes ~5 nodes from that cell on average, leaving ~92. The publisher's routing table is trained via synaptic LTP to reach that cell (common destinations are reinforced), so the publisher's `findKClosest` and the subscribers' `findKClosest` both converge on a similar surviving subset. Churn damage is well-tolerated because *both parties have routing coverage of the same region*, and that region is mostly intact. Random IDs (`geoBits = 0`) at 5% churn spread the K-closest across the entire network, so the publisher's and subscribers' computations diverge more after any node death -- a wider K-closest target set means less precise convergence, and the 14-percentage-point recovery gap reflects that diffusion cost.
-
-**High churn (25%): clustering hurts.** With `geoBits = 8`, uniformly-random 25% kill removes ~24 nodes from each 97-node cell. That's a *majority-level hit* to the geographic cell that holds every one of a topic's K-closest replicas. The publisher's routing table into that cell decays simultaneously (the same cell is damaged for both purposes), and `findKClosest` can no longer reach enough surviving replicas to deliver to the majority of subscribers -- hence the 38% ceiling. With `geoBits = 0` at 25% churn, the K-closest replicas are scattered across the entire ID space, and 25% death is a scattered, isolated loss. Surviving replicas remain individually reachable even if some paths are damaged, and the publisher's broad-coverage routing table still reaches many of them.
-
-The crossover point between these regimes depends on churn rate relative to cell population. For 25,000 nodes with `geoBits = 8` (256 cells, ~97 nodes per cell), the crossover sits somewhere between 5% and 25%. Below ~10% churn, geographic clustering wins; above, random IDs win.
-
-#### 7.7.4 Interpretation
-
-The geographic prefix is a performance lever with a context-dependent sign:
-
-| Workload | `geoBits = 0` vs `geoBits = 8` |
-|----------|-------------------------------|
-| Regional lookups | ~2× slower without prefix |
-| Cross-continental lookups | ~15% faster without prefix |
-| Random global lookups | essentially equal |
-| Dendritic pub/sub broadcast | ~50% slower without prefix |
-| Membership pub/sub steady-state | identical (100%) |
-| Membership pub/sub at 5% churn (recovered) | 14 pp worse without prefix |
-| Membership pub/sub at 25% churn (recovered) | **29 pp better without prefix** |
-
-The ablation reveals two claims that matter for understanding the protocol:
-
-First, **the NX series does not require geographic biasing to function**; the synaptome alone carries lookup correctness. Membership pub/sub in particular is *provably equivalent* across `geoBits` settings in steady state. This matters for deployments where geographic IDs are unavailable or undesirable (privacy-sensitive applications, pseudonymous overlays).
-
-Second, **the choice of `geoBits` should be tuned to the expected churn profile**. Networks with low-to-moderate churn (<10%) should use `geoBits = 8` for the locality benefits. Networks expecting high churn (>20%) -- either because node lifetimes are short or because the deployment is adversarial -- should consider `geoBits = 0` specifically for its pub/sub resilience, even though that sacrifices regional lookup performance. Intermediate values (e.g., `geoBits = 4`, ~16 cells) would split the difference but have not been separately characterised here.
-
-For the default configuration (typical browser-deployment churn assumed to be <10%), `geoBits = 8` remains the right choice. But the ablation demonstrates that the design has a real performance knob hiding in what previously appeared to be a hardcoded constant.
-
-### 7.8 Membership Pub/Sub: From K-closest Replication to a Pure Axonal Tree
-
-Chapter 6's axonal tree is a *one-shot* broadcast: a relay holds a static subscriber list and fans out via DHT routing for every publish. That design is enough to drive the §7.3 benchmark, but it doesn't scale to a live overlay where subscribers join and leave continuously and each topic needs to persist independently. The NX-15 → NX-17 line of work tackles that gap: a **distributed pub/sub membership protocol** in which topics have independent, self-healing axonal trees grown dynamically by routing.
-
-**NX-15** added a generic `AxonManager` component on top of NX-10. It introduced K-closest replication: every subscribe STOREs the subscription at each of the K nodes closest to `hash(topic)`, and publishers hit any one of those K replicas for full delivery. K=5 gave nominal resilience, but the K-closest path had a structural cost we did not initially see — publisher and subscribers computed `findKClosest` from different positions in the network, so under churn their top-K sets drifted apart. The immediate-delivery cliff at 25% churn (~38% recovered in some runs) turned out to be that drift, not a primitive routing problem.
-
-**NX-16** (documented in `documents/dead-ends/`) attempted to fix the drift by masking out the geographic prefix in the K-closest distance metric so replicas would spread uniformly across cells. The selection metric ignored the prefix; the synaptome expansion still pointed toward full-XOR cells; and the routing gradient never aligned with the selection criterion. Publisher and subscribers converged on different local top-K sets and delivery collapsed to ~40% even at zero churn. The fundamental lesson: **the distance metric used to select candidates must match the gradient used to expand them.**
-
-**NX-17** takes a cleaner route. Two changes:
-
-1. **Publisher-prefix topic IDs.** A topic's address is constructed as `publisher.cell_prefix (8 bits) || hash_56(topic_name)`, embedded in topic names via the `@XX/domain/event` convention. Both publisher and subscribers derive the same ID deterministically, so full-XOR routing converges. The topic's root lives in the publisher's own cell — typically close to subscribers, well-reinforced by the publisher's ordinary lookup traffic.
-2. **K-closest replication disabled.** Subscribe is a `routeMessage(topicId, 'pubsub:subscribe')` that walks greedily toward the topic ID. The first live axon on the path intercepts and adds the subscriber to its children; if no axon exists, the terminal node opens a role and becomes root. Capacity-driven sub-axon recruitment grows the tree toward subscribers as they arrive. Single root per topic — no replication, no gossip.
-
-Four targeted fixes developed during empirical testing make this pure-axonal design work in practice:
-
-- **Terminal globality check.** Greedy `_greedyNextHopToward` reaches *local* optima: different starting points yield different "closest" nodes. Without a check, two subscribers elect different roots for the same topic. The fix: when `routeMessage` believes it has reached a terminal, it performs one `findKClosest(targetId, 1)` call; if a globally-closer live peer exists (found via 2-hop expansion), the message is forwarded there. A visited-set protects against pathological ping-pong.
-
-- **Root-only consumption of routed publishes.** Sub-axons on the publisher's path must *forward* publishes instead of intercepting, so the walk always reaches the actual root. Root's fan-out cascades through all its children (including sub-axons) via the normal `pubsub:deliver` sendDirect + re-fan chain.
-
-- **External-peer batch adoption on overflow.** When an axon hits `maxDirectSubs`, it picks a **synaptome peer** (not an existing child) as a new sub-axon, partitions its current children by picking the top-K XOR-closest to the chosen peer, and ships them as a single `pubsub:adopt-subscribers` batch. The new relay creates its role, adds the batch as children (no parentId — the design deliberately does not track upstream), and issues its own routed subscribe so it attaches into the live tree at whichever live axon its walk lands on. Two invariants protect this against runaway recursion: (a) the batch always includes a guaranteed-nonempty top-K so the parent's child count provably decreases on every overflow; (b) the parent pre-adds the new relay to its own children, so the relay's self-subscribe loopback is idempotent.
-
-- **All-axon periodic re-subscribe.** Every node holding any role — leaf subscriber, sub-axon, or root — re-issues a subscribe on every refresh interval. Self-subscribes unconditionally `return 'forward'` so they never add self as own child. Concrete outcomes: a non-root axon's refresh reaches its current parent (or a new live axon on its path) and gets its child entry renewed; a root still closest to topicId reaches its own terminal and the walk exits as a no-op; a root superseded by a newly-joined closer node hands off via the globality check. No parent-aliveness RPC is needed — the re-subscribe *is* the liveness check.
-
-**Live-simulation results.** Running as a continuous time-series test (one publish per group per tick, 1% of alive non-publisher nodes killed every five ticks, three refresh passes per kill; 25,000 nodes, 79 groups × 32 subscribers):
-
-| Cumulative churn | Delivered % | K-overlap | Axon roles |
-|------------------|-------------|-----------|------------|
-|   0 %            | 100.0 %     | 100 %     |   537      |
-|   5 %            |  98.7 %     |    —      | 1 541      |
-|  10 %            |  91.2 %     |  81 %     | 1 787      |
-|  15 %            |  88.7 %     |  77 %     | 1 989      |
-|  20 %            |  86.5 %     |  62 %     | 2 116      |
-|  25 %            |  70.0 %     |  54 %     | 2 169      |
-|  30 %            |  52.4 %     |  47 %     | 2 189      |
-|  34 %            |  50.8 %     |  42 %     | 2 197      |
-
-Delivery holds above 98 % through 5 % cumulative churn, degrades gracefully to about 87 % by 20 % churn, then bends down to a ~50 % floor as the tree settles into a steady state where new recruitments match losses. No cliff.
-
-For comparison, equivalent single-snapshot pub/sub-with-churn benchmark runs at the same 25 % cumulative kill level produced ~38 % recovered delivery with the earlier K-closest design and ~60 % with the NX-15 + K=5 setup. The live-sim NX-17 protocol matches or exceeds those at 25 % churn (70 %) while using a single root per topic and no replication.
-
-**K-overlap tracks delivered % almost 1:1.** At every measurement point, overlap (the fraction of its top-K that the publisher and a sampled subscriber agree on) predicts the delivery rate closely. This confirms the dominant residual failure mode is subscribers captured at relay nodes no longer delivery-connected to the root — not broken routing itself. A bounded *replay cache* at relays (store the last N publishes, forward on re-subscribe with a last-seen timestamp) is the natural next step; it closes exactly the kind of short-window gap that produces this pattern.
-
-**What NX-17 is:** a minimal, single-root-per-topic pub/sub overlay that self-heals via ordinary re-subscription, preserves publisher-locality through its addressing scheme, scales to at least 25,000 nodes with 79 concurrent topics in the simulator, and delivers reliably through ~20 % uniform churn. It achieves this without gossip, without replication, and without explicit parent tracking. The tradeoff is a wider tree than the theoretical minimum (~7 relays per topic at baseline, ~28 at 25 % churn) — but the tree state is pure local information and recovers cleanly.
-
 ---
 
-## Chapter 8: Analysis and Potential Issues
-
-### 8.1 Forwarder Loss Under Churn
-
-**The issue**: In the axonal tree, if a forwarder dies during a publish cycle, all subscribers in its subtree are temporarily unreachable via the tree path. The parent must fall back to direct DHT lookups for the entire subtree, which can spike its fan-out far above the capacity limit.
-
-**Current status**: Point-to-point routing achieves 100% success at 25% churn through dead-synapse eviction and iterative fallback. The axonal tree has separate healing: dead forwarders are detected during delivery and their subtree is moved to the parent. The tree rebuilds on the next publish cycle.
-
-**Mitigations**:
-- **Current**: Dead forwarders are healed by moving their subtree to the parent; the tree rebuilds on the next tick.
-- **Possible**: Redundant forwarders (each delegation assigns a backup); proactive forwarder health checks before each publish cycle; dynamically increasing capacity under high churn to produce shallower trees.
-
-### 8.2 Tree Rebuild Cost at Scale
-
-**The issue**: The current implementation rebuilds the entire tree from scratch when the subscriber set changes. For 2,000 subscribers this is negligible, but for 50,000+ subscribers, the O(S x F) first-hop calculations per tree level become measurable.
-
-**Mitigations**:
-- **Current**: Rebuild is skipped when the subscriber set is unchanged.
-- **Possible**: Incremental updates via subscription interception -- new subscribers are routed down the existing tree to the nearest node, avoiding a full rebuild.
-
-### 8.3 Gateway Concentration
-
-**The issue**: If the relay's synaptome is poorly distributed (many subscribers in the same ID-space region), one gateway may cover a disproportionate number of subscribers. The recursive delegation handles this, but the resulting tree may be deep and narrow rather than broad and shallow.
-
-**Mitigations**:
-- **Current**: Recursive delegation naturally distributes the load.
-- **Possible**: When a single gateway covers >50% of remaining subscribers, introduce a secondary splitting criterion (e.g., geographic cell prefix) to force broader distribution.
-
-### 8.4 Synaptome-Tree Coupling
-
-**The issue**: The axonal tree's structure depends on the synaptome state at build time. If annealing replaces a synapse that happens to be a forwarder, the tree becomes structurally invalid without knowing it. The TTL-based rebuild eventually catches this, but there is a window of stale tree structure.
-
-**Mitigations**:
-- **Current**: Trees are rebuilt periodically (every time subscribers change or TTL triggers).
-- **Possible**: When a synapse that is also a forwarder is evicted by annealing or decay, immediately mark the tree dirty.
-
-### 8.5 Learning Warmup Period
-
-**The issue**: The Neuromorphic DHT requires a warmup period (4 sessions, ~5,000 lookups) before reaching optimal routing performance. During this period, the synaptome is still being trained and hop counts are higher. A newly joined node will not immediately benefit from the adaptive routing.
-
-**Mitigating factors**: Benchmarks show that even under Bootstrap Init (organic join, no pre-computation), the Neuromorphic DHT achieves 100% lookup success -- the only protocol to do so (K-DHT and G-DHT both drop to 97%). The learning mechanisms compensate for imperfect bootstrap tables during warmup.
-
-**Possible further improvements**: Pre-trained synaptome snapshots shared between nodes; accelerated learning through synthetic warmup lookups during join; the diversified bootstrap (Section 4.16) reduces convergence time by providing annealing with more varied seed connections.
-
-### 8.6 Byzantine Resistance
-
-**The issue**: A malicious node could claim a false geographic position (S2 cell prefix) to position itself strategically in the ID space. It could also manipulate its synaptome reports during iterative fallback to poison other nodes' routing tables.
-
-**Mitigations**:
-- **Not currently addressed**: The system assumes honest nodes.
-- **Possible**: Proof-of-location verification; cryptographic ID binding; reputation systems based on observed routing reliability; requiring multiple independent paths for routing table updates.
-
-### 8.7 Memory and Bandwidth Overhead
-
-**The issue**: Each node maintains ~60 synapses with full metadata (weight, latency, stratum, inertia, useCount). The learning mechanisms (annealing, decay, hop caching) add computational overhead per routing hop. The axonal tree adds per-topic state at forwarder nodes.
-
-**Assessment**: For most applications, this overhead is modest. A synaptome of 60 entries occupies <5 KB. Annealing and decay operations are O(synaptome size) and occur infrequently (annealing probabilistically per hop; decay every 100 lookups). The axonal tree adds ~100 bytes per subscriber per topic at each forwarder. For thousands of subscribers across dozens of topics, this is manageable on modern hardware.
-
----
-
-## References
-
-### Foundational DHT Papers
-
-1. Stoica, I., Morris, R., Karger, D., Kaashoek, M. F., & Balakrishnan, H. (2001). "Chord: A Scalable Peer-to-peer Lookup Service for Internet Applications." *ACM SIGCOMM Computer Communication Review*, 31(4), 149--160.
-
-2. Maymounkov, P., & Mazieres, D. (2002). "Kademlia: A Peer-to-peer Information System Based on the XOR Metric." In *International Workshop on Peer-to-Peer Systems* (IPTPS), pp. 53--65. Springer.
-
-3. Rowstron, A., & Druschel, P. (2001). "Pastry: Scalable, Decentralized Object Location, and Routing for Large-Scale Peer-to-Peer Systems." In *Middleware 2001*, pp. 329--350. Springer.
-
-4. Ratnasamy, S., Francis, P., Handley, M., Karp, R., & Shenker, S. (2001). "A Scalable Content-Addressable Network." *ACM SIGCOMM Computer Communication Review*, 31(4), 161--172.
-
-5. Zhao, B. Y., Kubiatowicz, J., & Joseph, A. D. (2001). "Tapestry: An Infrastructure for Fault-tolerant Wide-area Location and Routing." Technical Report UCB/CSD-01-1141, UC Berkeley.
-
-### Security, Fault Tolerance, and Extensions
-
-6. Baumgart, I., & Mies, S. (2007). "S/Kademlia: A Practicable Approach Towards Secure Key-Based Routing." In *2007 International Conference on Parallel and Distributed Systems* (ICPADS), pp. 1--8. IEEE.
-
-7. Freedman, M. J., Freudenthal, E., & Mazieres, D. (2004). "Democratizing Content Publication with Coral." In *NSDI '04: 1st USENIX Symposium on Networked Systems Design and Implementation*, pp. 239--252.
-
-8. Lesniewski-Laas, C., & Kaashoek, M. F. (2010). "Whanau: A Sybil-proof Distributed Hash Table." In *NSDI '10: 7th USENIX Symposium on Networked Systems Design and Implementation*. Available at: https://pdos.csail.mit.edu/papers/whanau-nsdi10.pdf
-
-9. Naor, M., & Wieder, U. (2003). "A Simple Fault Tolerant Distributed Hash Table." In *2nd International Workshop on Peer-to-Peer Systems* (IPTPS). Available at: https://www.wisdom.weizmann.ac.il/~naor/PAPERS/iptps.pdf
-
-### Applications
-
-10. Loewenstern, A., & Norberg, A. (2008). "DHT Protocol." BitTorrent Enhancement Proposal 5 (BEP 5). Available at: https://www.bittorrent.org/beps/bep_0005.html
-
-11. Wood, G. (2014). "Ethereum: A Secure Decentralised Generalised Transaction Ledger." Ethereum Yellow Paper (continuously updated). Available at: https://ethereum.github.io/yellowpaper/paper.pdf
-
-12. Benet, J. (2014). "IPFS -- Content Addressed, Versioned, P2P File System." arXiv preprint arXiv:1407.3561. Available at: https://arxiv.org/abs/1407.3561
-
-### Publish/Subscribe
-
-13. Castro, M., Druschel, P., Kermarrec, A.-M., & Rowstron, A. I. T. (2002). "SCRIBE: A Large-Scale and Decentralized Application-Level Multicast Infrastructure." *IEEE Journal on Selected Areas in Communications* (JSAC), 20(8), 1489--1499.
-
-### Geographic, Proximity-Aware, and Recent DHT Work
-
-14. Gummadi, K., Gummadi, R., Gribble, S., Ratnasamy, S., Shenker, S., & Stoica, I. (2003). "The Impact of DHT Routing Geometry on Resilience and Proximity." *ACM SIGCOMM*, pp. 381--394. Available at: https://www.cs.yale.edu/homes/ramki/sigcomm03.pdf
-
-15. Wong, B., Slivkins, A., & Sirer, E. G. (2005). "Meridian: A Lightweight Network Location Service without Virtual Coordinates." *ACM SIGCOMM*. Available at: https://www.cs.cornell.edu/people/egs/papers/meridian-sigcomm05.pdf
-
-16. Google S2 Geometry Library. "S2 Cells." Available at: https://s2geometry.io/devguide/s2cell_hierarchy
-
-17. Hilbert, D. (1891). "Ueber die stetige Abbildung einer Line auf ein Flachenstuck." *Mathematische Annalen*, 38(3), 459--460.
-
-18. Sokoto, S., Krol, M., Stankovic, V., & Riviere, E. (2023). "Next-Generation Distributed Hash Tables." *CoNEXT Student Workshop*. Available at: https://dl.acm.org/doi/10.1145/3630202.3630234
-
-19. "LEAD: A Distributed Learned Hash Table." arXiv preprint arXiv:2508.14239, 2024. Available at: https://arxiv.org/abs/2508.14239
-
-### Neuroscience Analogues
-
-20. Hebb, D. O. (1949). *The Organization of Behavior: A Neuropsychological Theory*. Wiley.
-
-21. Bliss, T. V. P., & Lomo, T. (1973). "Long-lasting Potentiation of Synaptic Transmission in the Dentate Area of the Anaesthetized Rabbit Following Stimulation of the Perforant Path." *The Journal of Physiology*, 232(2), 331--356.
-
-22. Kirkpatrick, S., Gelatt, C. D., & Vecchi, M. P. (1983). "Optimization by Simulated Annealing." *Science*, 220(4598), 671--680.
-
-23. Srinivasa, N., Stepp, N. D., & Cruz-Albrecht, J. (2016). "Multiclass Classification by Adaptive Network of Dendritic Neurons with Binary Synapses Using Structural Plasticity." *Frontiers in Neuroscience*, 10, 113. Available at: https://www.frontiersin.org/articles/10.3389/fnins.2016.00113
-
-### Neuromorphic and Self-Organizing Networks
-
-24. Wang, Y. et al. (2008). "Self-Organizing Peer-to-Peer Social Networks." *Computational Intelligence*, Wiley. Available at: https://www.researchgate.net/publication/220541891_Self-Organizing_Peer-to-Peer_Social_Networks
-
-25. McDaid, L. et al. (2012). "Adaptive Routing Strategies for Large Scale Spiking Neural Network Hardware Implementations." SpringerLink. Available at: https://link.springer.com/chapter/10.1007/978-3-642-21735-7_10
-
-26. "Self-organizing topology control in distributed spatial networks: a structural optimization framework." *Cluster Computing*, 2025. Available at: https://link.springer.com/article/10.1007/s10586-025-05286-0
-
----
-
-## Appendix: Production System Specification
+## Appendix B: Production System Specification
 
 This appendix describes a complete production system built on the Neuromorphic DHT with Axonal Pub/Sub. It specifies every component needed to go from a protocol description to a working library and application. An AI or developer should be able to use this section as a blueprint for implementation.
 

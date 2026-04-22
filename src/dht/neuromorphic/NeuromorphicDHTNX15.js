@@ -110,6 +110,7 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
       maxSubscriptionAgeMs: m.maxSubscriptionAgeMs,
       rootGraceMs:          m.rootGraceMs,
       rootSetSize:          m.rootSetSize,
+      replayCacheSize:      m.replayCacheSize,
       // NX-15's override: prefer existing child that is also a high-weight
       // synapse of this node. Must return an existing child; never grows
       // the axon beyond maxDirectSubs.

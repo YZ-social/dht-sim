@@ -349,7 +349,11 @@ export class PubSubAdapter {
       while (buf.length > this.ringBufferSize) buf.shift();
     }
 
-    // Send over the transport.
+    // Send over the transport. Return the transport-assigned publishId
+    // (opaque to the adapter; used by instrumentation that needs to
+    // correlate per-publish delivery across subscribers — see the
+    // Engine.runMembershipPubSubTick cumulative metric).
+    let publishId = null;
     try {
       const json = JSON.stringify({
         action:   'publish',
@@ -358,10 +362,11 @@ export class PubSubAdapter {
         seq,
       });
       const topicId = this._topicIdFor(domain, event);
-      this.transport.pubsubPublish(topicId, json);
+      publishId = this.transport.pubsubPublish(topicId, json) ?? null;
     } catch (err) {
       console.error(`PubSubAdapter: publish failed for ${domain}:${event}`, err);
     }
+    return publishId;
   }
 
   /** Drain queued handlers (forwards to the underlying domain). */

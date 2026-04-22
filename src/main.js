@@ -1278,6 +1278,7 @@ async function onMembershipPubSub() {
       churnPct,
       refreshRounds: doChurn ? refreshRoundsPerKill : 0,
       measureOverlap: wantOverlap,
+      publishedByGroup: session.publishedByGroup,
     });
 
     if (!pubsubActive) break;
@@ -1300,6 +1301,9 @@ async function onMembershipPubSub() {
       treeDepth:         result.treeDepth,
       overlapPct:        result.overlapPct,
       convergePct:       result.convergePct,
+      cumulativePct:     result.cumulativePct,
+      cumReceived:       result.cumReceived,
+      cumExpected:       result.cumExpected,
       didChurn:          doChurn,
     });
 
@@ -1309,8 +1313,10 @@ async function onMembershipPubSub() {
       results.showMembershipSimProgress(history, session.numGroups, session.actualCoverage);
     }
     controls.setStatus(
-      `Tick ${tick} · delivered ${result.deliveredPct.toFixed(1)}% ` +
-      `(${result.delivered}/${result.expected}) · axons ${result.axonRoles} · ` +
+      `Tick ${tick} · deliv ${result.deliveredPct.toFixed(1)}% ` +
+      `(${result.delivered}/${result.expected}) ` +
+      (result.cumulativePct != null ? `· cum ${result.cumulativePct.toFixed(1)}% ` : '') +
+      `· axons ${result.axonRoles} · ` +
       `killed ${cumulativeKilled} (${cumulativeKilledPct.toFixed(1)}%)` +
       (doChurn ? ' · ⚠ churn' : '') +
       (result.overlapPct != null ? ` · K-ov ${result.overlapPct.toFixed(1)}%` : ''),

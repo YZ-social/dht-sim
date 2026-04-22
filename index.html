@@ -868,6 +868,7 @@
         <span class="nx-pl" data-tip="Ticks between consecutive churn events. Each tick publishes once on every group; every N ticks, a churn round is applied and refresh runs.">Ticks per round</span><input type="number" id="x17-pubsubTicksPerChurnRound" class="nx-pv" value="5" min="1" max="100" step="1">
         <span class="nx-pl" data-tip="Number of refresh passes across all live nodes after each churn event. More passes = more healing cycles before the next measurement.">Refresh rounds / kill</span><input type="number" id="x17-pubsubRefreshRoundsPerKill" class="nx-pv" value="3" min="0" max="20" step="1">
         <span class="nx-pl" data-tip="K-overlap is an expensive diagnostic (one findKClosest call per sampled subscriber per group). Set to 1 to measure every tick, or a larger number to reduce overhead.">K-overlap every N</span><input type="number" id="x17-pubsubOverlapEveryN" class="nx-pv" value="10" min="1" max="100" step="1">
+        <span class="nx-pl" data-tip="Bounded ring of recent messages each relay stores, keyed by topic. When a subscriber re-subscribes with a lastSeenTs, the relay replays any cached messages newer than that timestamp in one combined direct send. Larger = more history available for replay but more memory per relay per topic.">Replay cache size</span><input type="number" id="x17-replayCacheSize" class="nx-pv" value="100" min="0" max="10000" step="1">
       </div></div></details>
 
     </div><!-- /nx17-panel -->
@@ -963,6 +964,7 @@
         <div class="stat-row">
           <div class="stat" data-tip="Current tick number."><span class="sl">Tick</span><span class="sv" id="msTick">&#8212;</span></div>
           <div class="stat" data-tip="Fraction of surviving subscribers that received the current tick's publish."><span class="sl">Delivered</span><span class="sv rate" id="msDelivered">&#8212;</span></div>
+          <div class="stat" data-tip="Cumulative delivery — fraction of all publishes so far (across every group) that have reached each alive subscriber either via ordinary fan-out or via subscribe-time replay. Closes the gap when the immediate tick missed a delivery that was recovered on the next refresh."><span class="sl">Cumul</span><span class="sv rate" id="msCumulative">&#8212;</span></div>
           <div class="stat" data-tip="Cumulative fraction of the initial network killed by churn events so far."><span class="sl">Killed</span><span class="sv" id="msKilled">&#8212;</span></div>
           <div class="stat" data-tip="Total axon roles across all topics (root + sub-axon count summed)."><span class="sl">Axons</span><span class="sv" id="msAxons">&#8212;</span></div>
           <div class="stat" data-tip="Largest axon children count this tick."><span class="sl">Max fan-out</span><span class="sv" id="msFanout">&#8212;</span></div>
@@ -1032,7 +1034,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.58.00</div>
+    <div id="legend">Version: 0.59.00</div>
   </div>
 
   </div><!-- /mainRow -->
@@ -1062,8 +1064,11 @@
         Classical protocols (Kademlia, Geographic) use static routing tables.
         <strong>Neuromorphic</strong> protocols learn from traffic — synaptic shortcuts form on heavily-used
         paths and decay on idle ones, letting the routing table adapt over time.
-        The current state of the art is <strong>NX-10</strong>, which matches Kademlia's reliability
-        while delivering 5–7× faster local lookups and near-invariant performance under 25% node churn.
+        The current state of the art is <strong>NX-17</strong>: it matches NX-10's lookup performance
+        (5–7× faster local routing than Kademlia, near-invariant under 25% churn) and adds a
+        <strong>distributed pub/sub membership protocol</strong> with publisher-prefix addressing,
+        self-healing dynamic topic trees, and a bounded replay cache that recovers missed messages
+        for subscribers under heavy churn.
       </p>
 
       <div class="guide-section">
@@ -1089,7 +1094,7 @@
             <tr><td>&#127760; Slice World</td><td>Generates a network partitioned into Eastern and Western hemispheres, connected only through a single node in Hawaii. Tests how well each protocol discovers and uses a narrow bottleneck. Kademlia and G-DHT typically fail at ~52%; NX-10 succeeds 100% via iterative fallback and incoming-synapse reverse routing.</td></tr>
             <tr><td>&#9654; Demo</td><td>Animate one lookup on the globe. The camera follows each hop; arcs shift yellow → orange → deep orange with distance.</td></tr>
             <tr><td>&#10227; Train Network</td><td>Repeat lookup sessions in a loop for <strong>any</strong> protocol. All protocols improve with training: <em>Kademlia and Geographic DHT</em> update their k-buckets with fresher, more recently-seen peers as traffic flows through the network. <em>Neuromorphic protocols</em> additionally run a full learning pass each session (Markov annealing, hop-caching, triadic closure, LTP), producing larger and more sustained hop-count reductions. Press again to stop. Exports a CSV of all sessions.</td></tr>
-            <tr><td>&#x2295; Pub/Sub</td><td>Multi-group pub/sub overlay test. Nodes form <em>concordance groups</em> (one relay + participants, like a Croquet session). A random participant sends a message to its relay; the relay broadcasts back to every participant. Groups overlap — nodes can belong to multiple groups as relay, participant, or both — creating realistic routing-path interference. Runs continuously, recording hops and simulated latency (20 ms/hop) per message cycle. Press again to stop.</td></tr>
+            <tr><td>&#x2295; Pub/Sub</td><td>For older protocols (Kademlia, G-DHT, NX-6…NX-13): multi-group flat-broadcast test. A relay delivers to every participant via one lookup per subscriber. For <strong>NX-15 / NX-17</strong>: runs the live <strong>Membership Pub/Sub simulation</strong> instead — every node in a topic group subscribes through a real PubSubAdapter; the axonal tree grows dynamically; subscribers and axon nodes re-subscribe every tick; optional periodic churn kills a configurable % of non-publisher nodes; a bounded per-relay replay cache recovers messages subscribers missed during tree disruption. Reports immediate delivery %, cumulative delivery %, axon role count, max fan-out, tree depth, and publisher/subscriber K-overlap. Runs continuously; press again to stop.</td></tr>
             <tr><td>&#x21D4; Pair Learning</td><td>Each node is assigned a fixed random target. Every session routes all pairs and records average hops. Measures how quickly the network memorises persistent routes.</td></tr>
             <tr><td>&#x1F321; Hotspot</td><td>Two-phase load test. <em>Highway</em>: tracks which nodes relay the most traffic (Gini / Lorenz curve). <em>Storage</em>: queries content items with a Zipf distribution and measures query-load concentration.</td></tr>
             <tr><td>&#9654;&#9654; Benchmark</td><td>Runs every protocol (or the Fast subset) across many conditions: regional radii, source/dest-restricted, global, continent-crossing, and churn. No Init required.</td></tr>
@@ -1107,6 +1112,7 @@
             <tr><td>Churn</td><td><strong>Rate</strong> — % of nodes replaced per interval. <strong>Int</strong> — number of churn cycles. <strong>L/Int</strong> — lookups measured per cycle.</td></tr>
             <tr><td>Filters</td><td><strong>Region</strong> — restrict lookups to targets within a km radius. <strong>Src</strong> — only the top X% of nodes initiate lookups. <strong>Dest</strong> — only the top X% of nodes are valid targets.</td></tr>
             <tr><td>Pub/Sub</td><td><strong>Group</strong> — participants per concordance group (relay + this many nodes, default 32). <strong>Cover %</strong> — percentage of network nodes that join at least one group (default 10%). More coverage creates more groups with overlapping routing paths.</td></tr>
+            <tr><td>NX-17 Pub/Sub (sidebar, shown when NX-17 is the active protocol)</td><td><strong>Max Subs</strong> / <strong>Min Subs</strong> — axon recruitment capacity hysteresis. <strong>Refresh (ms)</strong> — interval between axon self-subscribes. <strong>Sub TTL</strong> / <strong>Root Grace</strong> — aging timers. <strong>Churn per round (%)</strong> — fraction of alive non-publishers killed at each churn step during the live sim (accepts fractional values like 0.5, 0.3). <strong>Ticks per round</strong> — ticks between churn events. <strong>Refresh rounds / kill</strong> — refreshTick passes across all live nodes after each kill. <strong>K-overlap every N</strong> — diagnostic cadence (1 = every tick, larger = less overhead). <strong>Replay cache size</strong> — bounded per-relay ring of recent publishes used for subscribe-time replay (default 100).</td></tr>
             <tr><td>Hotspot</td><td><strong>Queries</strong> — number of lookups in the highway phase. <strong>Items</strong> — content items in the storage phase. <strong>Zipf</strong> — exponent controlling skew (0 = uniform, 1 = classic internet, 2 = extreme).</td></tr>
             <tr><td>Bench</td><td><strong>Warmup</strong> — training sessions given to neuromorphic protocols before scoring (each session = 500 lookups). <strong>Protocols</strong> — multi-select of which protocols to benchmark. <strong>Tests</strong> — multi-select of which test conditions to run. Both support Select All / Deselect All. Settings are saved between sessions.</td></tr>
           </tbody>
@@ -1115,25 +1121,26 @@
 
       <div class="guide-section">
         <div class="guide-section-title">Protocols</div>
-        <p class="guide-tip">Starred (&#9733;) protocols are <strong>Best in Class</strong> &mdash; the recommended baselines for comparison. NX-10 is the current <strong>State of the Art</strong>.</p>
+        <p class="guide-tip">Starred (&#9733;) protocols are <strong>Best in Class</strong> for their generation. <strong>NX-17</strong> is the current <strong>State of the Art</strong>. Earlier NX versions are kept available for comparison and ablation work.</p>
         <table class="guide-table">
           <thead><tr><th>Protocol</th><th>Key idea</th></tr></thead>
           <tbody>
-            <tr><td><strong>Kademlia &#9733;</strong></td><td>Classical DHT baseline. Random 64-bit IDs; XOR distance metric; O(log N) hops. K-bucket routing table with &alpha; parallel queries per round. Static &mdash; no learning. Performs identically regardless of where messages are destined.</td></tr>
-            <tr><td><strong>G-DHT</strong></td><td>Geographic DHT (original) &mdash; assigns IDs from physical location using an S2 Hilbert-curve prefix. Three-layer bootstrap (k=1 inter-cell + local + random). Nearby nodes share high-order bits so routing paths naturally follow geographic clusters.</td></tr>
-            <tr><td><strong>G-DHT-a</strong></td><td>Geographic IDs + Kademlia stratified allocation under web-limit. Breadth-first bucket fill across all 64 XOR buckets guarantees global reachability without sacrificing geographic locality.</td></tr>
-            <tr><td><strong>G-DHT-b &#9733;</strong></td><td>Stratified core (80% of budget) + random global supplement (20%) for churn resilience. Best classical protocol: 100% success under 10% churn with geographic-aware routing.</td></tr>
-            <tr><td><strong>N-1</strong></td><td>First-generation neuromorphic DHT. Adds a synaptome (learned routing table) with 2-hop AP routing, LTP reinforcement, triadic closure, and decay. No highway layer, no web-limit.</td></tr>
-            <tr><td><strong>N-15W &#9733;</strong></td><td>Browser-realistic neuromorphic with highway synapse preservation. Two-tier synaptome (48 local + 12 highway), adaptive decay, Markov hot-destination learning, simulated annealing, synaptome floor protection.</td></tr>
-            <tr><td><strong>NX-1W &mdash; NX-3</strong></td><td>Research protocols with configurable rule engine. NX-1W exposes every parameter via UI; NX-2W adds broadcast tree delivery; NX-3 introduces three-layer geographic bootstrap for the neuromorphic family.</td></tr>
-            <tr><td><strong>NX-4 &#9733;</strong></td><td><strong>Iterative fallback routing.</strong> When greedy AP routing hits a dead end, the lookup queries the closest unvisited peer Kademlia-style instead of failing. The watershed protocol: every protocol below NX-4 fails under stress (churn, Slice World); every protocol at NX-4 and above succeeds.</td></tr>
-            <tr><td><strong>NX-5 &mdash; NX-9</strong></td><td>Incremental refinements. NX-5 adds stratified bootstrap + incoming synapse promotion. NX-6 adds churn-resilient routing (dead-peer detection triggers temperature reheat and immediate synapse replacement). NX-7/8/9 experiment with different dendritic pub/sub tree strategies.</td></tr>
-            <tr><td><strong>NX-10 &#9733;</strong></td><td><strong>State of the Art.</strong> Routing-topology forwarding tree for pub/sub. When a node exceeds subscriber capacity, it identifies which direct synapse would be the first hop toward the most subscribers and delegates them to that connection as a forwarder. Recursive: forwarders apply the same rule. Tree mirrors actual routing paths &mdash; forwarding hops cost only a direct message (no DHT lookup). 5&ndash;7&times; faster local routing than Kademlia; near-invariant performance under 25% churn; 100% Slice World success.</td></tr>
-            <tr><td><strong>NX-13</strong></td><td>NX-10 with all parameters exposed via a rule engine panel. Use alongside NX-10 for A/B comparison to measure individual rule impact and find optimal configurations.</td></tr>
+            <tr><td><strong>Kademlia &#9733;</strong></td><td>Classical DHT baseline (2002). Random 64-bit IDs; XOR distance metric; O(log N) hops. K-bucket routing table with &alpha; parallel queries per round. Static &mdash; no learning. Performs identically regardless of where messages are destined.</td></tr>
+            <tr><td><strong>G-DHT &#9733;</strong></td><td>Geographic DHT &mdash; assigns IDs from physical location using an S2 Hilbert-curve prefix. Nearby nodes share high-order bits so routing paths follow geographic clusters. <strong>G-DHT-b</strong> variant combines stratified core (80%) with random global supplement (20%) for churn resilience. ~2&times; faster than Kademlia on local lookups; 100% success under 10% churn.</td></tr>
+            <tr><td><strong>NX-17 &#9733;&#9733;</strong></td><td><strong>State of the Art.</strong> Neuromorphic routing layer (synaptome + AP scoring + LTP + annealing + churn-triggered temperature reheat + iterative fallback + two-tier highway) <em>plus</em> a distributed pub/sub membership protocol: publisher-prefix topic addressing (@XX/domain/event), routed subscribe with terminal-globality verification, root-only publish consumption, external-peer batch adoption on overflow, all-axon periodic re-subscribe for self-healing, and a bounded per-relay replay cache with subscriber-side lastSeenTs for missed-message recovery. 5&ndash;7&times; faster local routing than Kademlia; near-invariant under 25% churn; cumulative pub/sub delivery stays above 80% through 30% cumulative network churn without gossip, replication, or parent tracking.</td></tr>
           </tbody>
         </table>
-
-        <p class="guide-tip">The NX series is cumulative: NX-10 extends NX-6 &larr; NX-5 &larr; NX-4 &larr; NX-3 &larr; NX-2W &larr; NX-1W &larr; N-15W &larr; N-1.</p>
+        <p class="guide-tip">
+          <strong>Earlier NX versions (research / comparison):</strong>
+          N-1, N-15W, NX-1W, NX-2W, NX-3 — early neuromorphic designs and research protocols with configurable rule engines.
+          NX-4 — the watershed: iterative fallback raises stress-test success from ~80% to 100%.
+          NX-5/6 — stratified bootstrap, churn-resilient routing.
+          NX-7/8/9 — three alternative dendritic pub/sub tree shapes (peel-off, balanced binary, geographic).
+          NX-10 — former SOTA; routing-topology forwarding tree for pub/sub.
+          NX-13 — NX-10 with all rules exposed for parameter ablation.
+          NX-15 — first distributed pub/sub membership attempt (K=5 replication; superseded by NX-17).
+          See Appendix A of the whitepaper for the full NX-1&rarr;NX-17 evolution, including the NX-16 masked-distance dead end.
+        </p>
       </div>
 
       <div class="guide-footer">
@@ -1191,8 +1198,8 @@
     ngdhtnx9:   'NX-9: Geographic dendritic pub/sub (S2-clustered tree). Groups subscribers by S2 cell, recruits same-cell branch nodes for direct 1-hop delivery. Root→branch: DHT routing; branch→subscriber: direct (no lookup).',
     ngdhtnx10:  '★ State of the Art — NX-10: Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). 100% success on all tests including 25% churn and Slice World. As of v0.50, uses strictly 2-hop honest annealing with no access to the global node map.',
     ngdhtnx13:  'NX-13: NX-10 with fully tunable parameters. Every rule can be enabled/disabled and every parameter adjusted via the panel. Use alongside NX-10 for A/B comparison to measure rule impact and find optimal configurations.',
-    ngdhtnx15:  'NX-15: Membership-protocol pub/sub. Extends NX-10 with real distributed subscribe/unsubscribe/publish — topic anchors elected by hash-proximity, axon trees that grow along routing paths when subscribers exceed a capacity threshold, and hysteresis-based orderly collapse. Every axon refreshes on a timer; silent nodes age out via TTL. Synaptome-weighted recruitment prefers high-weight LTP-trusted peers for axon membership. The one-shot pubsubBroadcast inherited from NX-10 still runs so delivery-physics numbers are reproducible; new benchmarks exercise the membership protocol directly.',
-    ngdhtnx17:  'NX-17: Publisher-prefix pub/sub addressing + pure routed axonal tree. Topic IDs are (publisher 8-bit cell prefix) || hash_56(topic name), embedded in topic names via the "@XX/domain/event" convention; this pins the topic root into the publisher\'s own S2 cell, which is typically close to subscribers and well-routed-to by the publisher. K-closest replication is disabled (rootSetSize=0) — subscribe is a routeMessage toward topicId, the first axon holding the topic on the path intercepts, and when no axon exists the terminal node opens a role and becomes root. Capacity-driven sub-axon recruitment grows the tree toward subscribers. Churn is handled by periodic re-subscription by every subscriber and every axon node; a subscribe whose sendDirect to its parent fails triggers an immediate full re-subscribe via routeMessage. Simpler than K-closest, no gossip, no per-topic redundancy — resilience mechanisms beyond plain re-subscription are deferred until baseline and churn measurements identify which specific failure modes dominate.',
+    ngdhtnx15:  'NX-15: First distributed pub/sub membership attempt — K=5 K-closest replication. Extends NX-10 with real subscribe/unsubscribe/publish: topic anchors elected by hash-proximity at K nodes; publisher hits any one of the K for full delivery. Retained here for comparison with NX-17. Superseded by NX-17 because K-closest had a structural drift problem under churn: publisher and subscribers computed findKClosest from different positions and their top-K sets diverged, and K replicas shared a single-cell failure domain. See Appendix A.3 of the whitepaper for the analysis.',
+    ngdhtnx17:  '★★ State of the Art — NX-17: Neuromorphic routing layer + distributed pub/sub membership. Topic IDs are (publisher 8-bit cell prefix) || hash_56(topic name), embedded via the "@XX/domain/event" convention, pinning topic roots into the publisher\'s own cell. Subscribe is a routed walk with terminal-globality verification. Publish is consumed ONLY at the root; sub-axons forward. When a relay hits capacity, it hands off a batch of subscribers (top-K XOR-closest to the chosen external relay peer, plus the new sub) via a single pubsub:adopt-subscribers direct message; no parentId tracking. Every role self-heals via periodic re-subscribe. A bounded per-relay replay cache (default 100 entries) combined with subscriber-side lastSeenTs recovers messages subscribers missed during tree disruption — all missed messages for a subscriber ship in one pubsub:replay-batch direct send. Measured live: cumulative delivery above 80% through 30% cumulative network churn, with no gossip, no K-way replication, no parent-aliveness RPC. See Chapter 5 of the whitepaper for the full protocol specification.',
   };
   (function () {
     const sel = document.getElementById('dhtProtocol');

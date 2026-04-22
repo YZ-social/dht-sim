@@ -542,6 +542,7 @@ export class Controls {
       refreshIntervalMs:            int('x17-refreshIntervalMs'),
       maxSubscriptionAgeMs:         int('x17-maxSubscriptionAgeMs'),
       rootGraceMs:                  int('x17-rootGraceMs'),
+      replayCacheSize:              int('x17-replayCacheSize'),
       // Live Pub/Sub simulation knobs (used by onMembershipPubSub in main.js).
       // Float on churnPct so 0.5% / 0.1% are accepted.
       pubsubChurnPct:               num('x17-pubsubChurnPct'),

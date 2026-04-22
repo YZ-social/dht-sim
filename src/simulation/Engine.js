@@ -1574,7 +1574,15 @@ export class SimulationEngine {
     }
     const actualCoverage = (covered.size / aliveNodes.length) * 100;
 
-    return { groups, entries, domainFor, actualCoverage, numGroups };
+    // Per-group running totals for the cumulative-delivery metric. Each
+    // successful publish on a group appends the returned publishId;
+    // the tick loop tallies, for each alive subscriber, how many of the
+    // group's total publishIds the subscriber's received-set contains.
+    // Persists across ticks for the life of this session.
+    const publishedByGroup = new Map();   // groupId → Array<publishId>
+    for (const g of groups) publishedByGroup.set(g.id, []);
+
+    return { groups, entries, domainFor, actualCoverage, numGroups, publishedByGroup };
   }
 
   /**
@@ -1596,10 +1604,11 @@ export class SimulationEngine {
    */
   async runMembershipPubSubTick(dht, groups, entries, opts = {}) {
     const {
-      doChurnThisTick = false,
-      churnPct        = 0,          // percent of alive non-publishers to kill
-      refreshRounds   = 0,          // refreshTick passes after churn, before measurement
-      measureOverlap  = false,      // optionally compute pub/sub K-overlap
+      doChurnThisTick    = false,
+      churnPct           = 0,        // percent of alive non-publishers to kill
+      refreshRounds      = 0,        // refreshTick passes after churn, before measurement
+      measureOverlap     = false,    // optionally compute pub/sub K-overlap
+      publishedByGroup   = null,     // map groupId → Array<publishId> across the session
     } = opts;
 
     let killedThisTick = 0;
@@ -1636,7 +1645,10 @@ export class SimulationEngine {
       for (const gid of e.deliveries.keys()) e.deliveries.set(gid, false);
     }
 
-    // Step 4 — publish on every live relay.
+    // Step 4 — publish on every live relay. Record the returned
+    // publishId in publishedByGroup so the cumulative metric below
+    // can check which subscribers have ever received it (including
+    // via future replay).
     for (const group of groups) {
       if (!group.relay.alive) continue;
       const gKey = 'g' + group.id;
@@ -1646,7 +1658,12 @@ export class SimulationEngine {
       const domain = usePrefix
         ? `@${Number((group.relay.id >> 56n) & 0xffn).toString(16).padStart(2, '0')}/bench`
         : 'bench';
-      entry.adapter.publish(domain, gKey, {});
+      const publishId = entry.adapter.publish(domain, gKey, {});
+      if (publishedByGroup && publishId) {
+        let arr = publishedByGroup.get(group.id);
+        if (!arr) { arr = []; publishedByGroup.set(group.id, arr); }
+        arr.push(publishId);
+      }
     }
 
     // Step 5 — measure delivery.
@@ -1706,16 +1723,49 @@ export class SimulationEngine {
       }
     }
 
+    // Cumulative delivery metric — for each alive subscriber, count how
+    // many of the group's total published publishIds this subscriber's
+    // AxonManager has in its _receivedPublishIds set for the topic.
+    // This counts deliveries made via ordinary fan-out AND via replay
+    // on re-subscribe. Subs who miss a live tick but pick the message
+    // up via the next refresh's replay-batch are scored as "received."
+    let cumReceived = 0, cumExpected = 0;
+    if (publishedByGroup) {
+      const { topicIdForPrefixed: tIdFor2 } = await import('../pubsub/PubSubAdapter.js');
+      const usePrefix2 = dht.usesPublisherPrefix === true;
+      const domainOf2 = (group) => usePrefix2
+        ? `@${Number((group.relay.id >> 56n) & 0xffn).toString(16).padStart(2, '0')}/bench`
+        : 'bench';
+      for (const group of groups) {
+        const pubs = publishedByGroup.get(group.id);
+        if (!pubs || pubs.length === 0) continue;
+        const topicId = tIdFor2(domainOf2(group), 'g' + group.id);
+        for (const p of group.participants) {
+          if (!p.alive) continue;
+          const axon = dht.axonFor(p);
+          const received = axon._receivedPublishIds?.get(topicId);
+          for (const pid of pubs) {
+            cumExpected++;
+            if (received && received.has(pid)) cumReceived++;
+          }
+        }
+      }
+    }
+    const cumulativePct = cumExpected === 0 ? null : (cumReceived / cumExpected) * 100;
+
     return {
       delivered,
       expected,
       deliveredPct,
       killedThisTick,
-      axonRoles:  totalRoles,
+      axonRoles:     totalRoles,
       maxFanout,
-      treeDepth:  maxDepth,
+      treeDepth:     maxDepth,
       overlapPct,
       convergePct,
+      cumReceived,
+      cumExpected,
+      cumulativePct,
     };
   }
 

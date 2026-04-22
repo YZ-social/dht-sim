@@ -32,6 +32,7 @@ const DEFAULT_REFRESH_INTERVAL_MS    = 10_000;       // §5.5
 const DEFAULT_MAX_SUBSCRIPTION_AGE_MS = 30_000;      // §5.7 — 3× refresh
 const DEFAULT_ROOT_GRACE_MS          = 60_000;       // §5.7 — 6× refresh
 const DEFAULT_ROOT_SET_SIZE          = 5;            // K in K-closest replication
+const DEFAULT_REPLAY_CACHE_SIZE      = 100;          // per-role bounded ring (§7.8 replay)
 
 // ── AxonManager ────────────────────────────────────────────────────────────
 
@@ -54,6 +55,7 @@ export class AxonManager {
     maxSubscriptionAgeMs = DEFAULT_MAX_SUBSCRIPTION_AGE_MS,
     rootGraceMs          = DEFAULT_ROOT_GRACE_MS,
     rootSetSize          = DEFAULT_ROOT_SET_SIZE,    // K in K-closest replication
+    replayCacheSize      = DEFAULT_REPLAY_CACHE_SIZE, // per-role bounded ring
     pickRecruitPeer      = null,   // protocol-specific override (§5.9)
     pickRelayPeer        = null,   // NX-17+ batch-adoption path override
     shouldRecruitSubAxon = null,   // protocol-specific override
@@ -69,7 +71,23 @@ export class AxonManager {
     this.maxSubscriptionAgeMs  = maxSubscriptionAgeMs;
     this.rootGraceMs           = rootGraceMs;
     this.rootSetSize           = rootSetSize;
+    this.replayCacheSize       = replayCacheSize;
     this._now                  = now;
+
+    // Publisher-side: highest publishTs we have observed for each topic
+    // (populated from _onDeliver and _onReplayBatch). Included as
+    // `lastSeenTs` in every outgoing subscribe so the receiving axon
+    // can replay anything newer from its own cache. First-time
+    // subscribers have no entry → lastSeenTs is omitted, which tells
+    // the receiving axon "replay everything you have."
+    this._lastSeenTsByTopic = new Map();    // topicId → number (ms)
+
+    // Set of publishIds this node has ever received, keyed by topic.
+    // Used to: (a) deduplicate messages on receive and (b) drive the
+    // cumulative-delivery metric in the live membership simulation
+    // (see Engine.runMembershipPubSubTick — count of received publishes
+    // vs total publishes per (sub, topic) across the whole run).
+    this._receivedPublishIds = new Map();   // topicId → Set<publishId>
 
     // Per-node outgoing publishId counter (monotonic, combined with
     // nodeId to be globally unique across the network).
@@ -113,6 +131,7 @@ export class AxonManager {
     dht.onDirectMessage('pubsub:promote-axon',     (p, m) => this._onPromoteAxon(p, m));
     dht.onDirectMessage('pubsub:adopt-subscribers',(p, m) => this._onAdoptSubscribers(p, m));
     dht.onDirectMessage('pubsub:dissolve-hint',    (p, m) => this._onDissolveHint(p, m));
+    dht.onDirectMessage('pubsub:replay-batch',     (p, m) => this._onReplayBatch(p, m));
     // K-closest mode (available when dht.findKClosest exists).
     dht.onDirectMessage('pubsub:subscribe-k',  (p, m) => this._onSubscribeDirect(p, m));
     dht.onDirectMessage('pubsub:publish-k',    (p, m) => this._onPublishDirect(p, m));
@@ -150,6 +169,11 @@ export class AxonManager {
    */
   pubsubPublish(topicId, json) {
     const publishId = `${this.nodeId}:${++this._publishCounter}`;
+    // Publisher's wall-clock timestamp, propagated through the tree and
+    // echoed back to the publisher as `lastSeenTs` in future subscribes
+    // so relays can reconstruct "messages you missed since ts" from
+    // their replay cache.
+    const publishTs = this._now();
     if (this._useKClosestMode()) {
       const roots = this.dht.findKClosest(topicId, this.rootSetSize);
       if (roots.length > 0) {
@@ -162,12 +186,17 @@ export class AxonManager {
         // duplicate fan-out, so the cost is K small sendDirect calls
         // to the K roots (not K× amplification on fan-out).
         for (const target of roots) {
-          this.dht.sendDirect(target, 'pubsub:publish-k', { topicId, json, publishId });
+          this.dht.sendDirect(target, 'pubsub:publish-k', {
+            topicId, json, publishId, publishTs,
+          });
         }
-        return;
+        return publishId;
       }
     }
-    this.dht.routeMessage(topicId, 'pubsub:publish', { topicId, json, publishId });
+    this.dht.routeMessage(topicId, 'pubsub:publish', {
+      topicId, json, publishId, publishTs,
+    });
+    return publishId;
   }
 
   /**
@@ -178,6 +207,7 @@ export class AxonManager {
    */
   pubsubSubscribe(topicId) {
     this.mySubscriptions.set(topicId, { subscribedAt: this._now() });
+    const lastSeenTs = this._lastSeenTsByTopic.get(topicId);
 
     if (this._useKClosestMode()) {
       const roots = this.dht.findKClosest(topicId, this.rootSetSize);
@@ -189,13 +219,14 @@ export class AxonManager {
             peerRoots:    roots,          // gossip the K-set so each root
                                           // knows its peers (used by root
                                           // reconciliation in the future)
+            lastSeenTs,                   // replay cache key; undefined = new
           });
         }
         return;
       }
     }
     this.dht.routeMessage(topicId, 'pubsub:subscribe',
-                          { topicId, subscriberId: this.nodeId });
+                          { topicId, subscriberId: this.nodeId, lastSeenTs });
   }
 
   pubsubUnsubscribe(topicId) {
@@ -239,7 +270,7 @@ export class AxonManager {
    * - Otherwise: forward along the route.
    */
   _onSubscribe(payload, meta) {
-    const { topicId, subscriberId } = payload;
+    const { topicId, subscriberId, lastSeenTs } = payload;
     const role = this.axonRoles.get(topicId);
     const now = this._now();
 
@@ -259,6 +290,10 @@ export class AxonManager {
       //     eventually re-route through the same mechanism.
       if (subscriberId === this.nodeId) return 'forward';
       this._addOrRecruitChild(topicId, role, subscriberId, meta.fromId);
+      // Reply with any cached publishes the subscriber missed since
+      // lastSeenTs. If lastSeenTs is omitted (brand-new subscriber),
+      // replay the whole cache.
+      this._maybeSendReplay(topicId, role, subscriberId, lastSeenTs);
       return 'consumed';
     }
 
@@ -557,7 +592,7 @@ export class AxonManager {
    * sendDirect. Otherwise, forward along the route.
    */
   _onPublish(payload, meta) {
-    const { topicId, json, publishId } = payload;
+    const { topicId, json, publishId, publishTs } = payload;
     const role = this.axonRoles.get(topicId);
     if (!role) return 'forward';
     // Only the ROOT consumes a routed publish and initiates fan-out.
@@ -573,17 +608,50 @@ export class AxonManager {
     if (!role.isRoot) return 'forward';
     if (this._alreadySeenPublish(publishId)) return 'consumed';
 
+    // Add to the replay cache BEFORE fan-out, so even if fan-out partly
+    // fails, the cache reflects everything the root accepted.
+    this._addToReplayCache(role, { json, publishId, publishTs });
+
+    // Also track locally-received for publishId dedup and metric
+    // accounting (the root itself is "receiving" its own publish when
+    // we include self in children).
+    this._recordReceived(topicId, publishId, publishTs);
+
     const deadChildren = [];
     for (const [childId] of role.children) {
       if (childId === this.nodeId) {
-        if (this._deliveryCallback) this._deliveryCallback(topicId, json);
+        if (this._deliveryCallback) this._deliveryCallback(topicId, json, publishId, publishTs);
         continue;
       }
-      const ok = this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json, publishId });
+      const ok = this.dht.sendDirect(childId, 'pubsub:deliver',
+                                      { topicId, json, publishId, publishTs });
       if (!ok) deadChildren.push(childId);
     }
     for (const dead of deadChildren) role.children.delete(dead);
     return 'consumed';
+  }
+
+  /** Append a published message to a role's bounded replay cache. */
+  _addToReplayCache(role, entry) {
+    if (!role.replayCache) role.replayCache = [];
+    role.replayCache.push(entry);
+    while (role.replayCache.length > this.replayCacheSize) role.replayCache.shift();
+  }
+
+  /** Record reception of a publishId + timestamp for this topic. Used
+   *  both for dedup on any future delivery (_alreadySeenPublish is a
+   *  separate mechanism at the per-hop level; this one is per-topic
+   *  and survives beyond the LRU window) and for the cumulative-
+   *  delivery metric read by the engine via _receivedPublishIds. */
+  _recordReceived(topicId, publishId, publishTs) {
+    if (!publishId) return;
+    let set = this._receivedPublishIds.get(topicId);
+    if (!set) { set = new Set(); this._receivedPublishIds.set(topicId, set); }
+    set.add(publishId);
+    if (publishTs) {
+      const prev = this._lastSeenTsByTopic.get(topicId) || 0;
+      if (publishTs > prev) this._lastSeenTsByTopic.set(topicId, publishTs);
+    }
   }
 
   /**
@@ -634,23 +702,36 @@ export class AxonManager {
    * locally + fan down appropriately.
    */
   _onDeliver(payload, meta) {
-    const { topicId, json, publishId } = payload;
+    const { topicId, json, publishId, publishTs } = payload;
     if (this._alreadySeenPublish(publishId)) return;
 
+    // Track per-topic receipt + lastSeenTs regardless of whether we
+    // hold a role. Populates the outgoing `lastSeenTs` for our future
+    // subscribe refreshes, and feeds the cumulative-delivery metric.
+    this._recordReceived(topicId, publishId, publishTs);
+
     const role = this.axonRoles.get(topicId);
-    if (role && !role.isRoot) {
-      // Sub-axon: re-fan to our children. Skip the upstream peer and self.
-      for (const [childId] of role.children) {
-        if (childId === meta.fromId) continue;
-        if (childId === this.nodeId) continue;
-        this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json, publishId });
+    if (role) {
+      // If we hold a role for this topic, cache the message so we can
+      // replay it to any subscriber that arrives (or re-subscribes with
+      // a stale lastSeenTs). Both roots and sub-axons cache.
+      this._addToReplayCache(role, { json, publishId, publishTs });
+
+      if (!role.isRoot) {
+        // Sub-axon: re-fan to our children. Skip the upstream peer and self.
+        for (const [childId] of role.children) {
+          if (childId === meta.fromId) continue;
+          if (childId === this.nodeId) continue;
+          this.dht.sendDirect(childId, 'pubsub:deliver',
+                               { topicId, json, publishId, publishTs });
+        }
       }
     }
 
     // Local delivery to the adapter — always fires, whether or not we
     // have a role for this topic. Matches the app-level "I subscribed
     // to this topic" expectation.
-    if (this._deliveryCallback) this._deliveryCallback(topicId, json);
+    if (this._deliveryCallback) this._deliveryCallback(topicId, json, publishId, publishTs);
   }
 
   /**
@@ -791,7 +872,7 @@ export class AxonManager {
   // terminal-election check (caller already decided we're a root).
 
   _onSubscribeDirect(payload, meta) {
-    const { topicId, subscriberId, peerRoots } = payload;
+    const { topicId, subscriberId, peerRoots, lastSeenTs } = payload;
     const now = this._now();
 
     let role = this.axonRoles.get(topicId);
@@ -818,6 +899,54 @@ export class AxonManager {
     }
 
     this._addOrRecruitChild(topicId, role, subscriberId, subscriberId);
+    this._maybeSendReplay(topicId, role, subscriberId, lastSeenTs);
+  }
+
+  /**
+   * Replay any cached publishes newer than `lastSeenTs` to a subscriber
+   * that just subscribed (or re-subscribed after refresh). Missing
+   * lastSeenTs means the subscriber is brand-new → replay entire cache.
+   *
+   * All missed messages are combined into a single `pubsub:replay-batch`
+   * direct send rather than N individual delivers: at a fan-out like our
+   * tests (1 publish/sec × 100-entry cache), that's the difference
+   * between 1 and 100 sendDirect calls per re-subscribe.
+   */
+  _maybeSendReplay(topicId, role, subscriberId, lastSeenTs) {
+    if (!subscriberId || subscriberId === this.nodeId) return;
+    const cache = role.replayCache;
+    if (!cache || cache.length === 0) return;
+    const missed = (lastSeenTs != null && lastSeenTs > 0)
+      ? cache.filter(m => m.publishTs > lastSeenTs)
+      : cache.slice();
+    if (missed.length === 0) return;
+    this.dht.sendDirect(subscriberId, 'pubsub:replay-batch', {
+      topicId,
+      messages: missed,
+    });
+  }
+
+  /**
+   * DIRECT handler — an axon is replaying messages we missed since our
+   * most recent `lastSeenTs` for this topic. Iterate, dedup by
+   * publishId, and fire the local delivery callback for each.
+   */
+  _onReplayBatch(payload, meta) {
+    const { topicId, messages } = payload;
+    if (!Array.isArray(messages) || messages.length === 0) return;
+    for (const msg of messages) {
+      const { json, publishId, publishTs } = msg;
+      if (this._alreadySeenPublish(publishId)) continue;
+      this._recordReceived(topicId, publishId, publishTs);
+      // If we hold a role for this topic, cache the replay entries too so
+      // we can forward them onward the next time a child re-subscribes
+      // with a stale lastSeenTs. Without this, a subscriber that just
+      // became a sub-axon (adopted) would have an empty cache and
+      // couldn't help its own children catch up.
+      const role = this.axonRoles.get(topicId);
+      if (role) this._addToReplayCache(role, { json, publishId, publishTs });
+      if (this._deliveryCallback) this._deliveryCallback(topicId, json, publishId, publishTs);
+    }
   }
 
   _onUnsubscribeDirect(payload, meta) {
@@ -830,7 +959,7 @@ export class AxonManager {
   }
 
   _onPublishDirect(payload, meta) {
-    const { topicId, json, publishId } = payload;
+    const { topicId, json, publishId, publishTs } = payload;
     if (this._alreadySeenPublish(publishId)) return;
     const role = this.axonRoles.get(topicId);
     if (!role) {
@@ -846,17 +975,22 @@ export class AxonManager {
       // would converge more reliably; we have the primitives for that
       // in NX-6 but haven't wired them in as the K-closest fallback
       // path. Flagged as follow-up work in Phase 3 notes.
-      this.dht.routeMessage(topicId, 'pubsub:publish', { topicId, json, publishId });
+      this.dht.routeMessage(topicId, 'pubsub:publish',
+                             { topicId, json, publishId, publishTs });
       return;
     }
+
+    this._addToReplayCache(role, { json, publishId, publishTs });
+    this._recordReceived(topicId, publishId, publishTs);
 
     const deadChildren = [];
     for (const [childId] of role.children) {
       if (childId === this.nodeId) {
-        if (this._deliveryCallback) this._deliveryCallback(topicId, json);
+        if (this._deliveryCallback) this._deliveryCallback(topicId, json, publishId, publishTs);
         continue;
       }
-      const ok = this.dht.sendDirect(childId, 'pubsub:deliver', { topicId, json, publishId });
+      const ok = this.dht.sendDirect(childId, 'pubsub:deliver',
+                                      { topicId, json, publishId, publishTs });
       if (!ok) deadChildren.push(childId);
     }
     for (const dead of deadChildren) role.children.delete(dead);
@@ -879,36 +1013,34 @@ export class AxonManager {
 
     // 1. Leaf refresh — re-issue each of our own subscribes. In K-closest
     //    mode, the refresh re-STOREs at the current K-closest set so the
-    //    root set tracks any ID-space drift from churn.
+    //    root set tracks any ID-space drift from churn. Every outgoing
+    //    subscribe carries our current `lastSeenTs` for this topic so
+    //    the receiving axon can replay anything newer from its cache.
     for (const topicId of this.mySubscriptions.keys()) {
+      const lastSeenTs = this._lastSeenTsByTopic.get(topicId);
       if (this._useKClosestMode()) {
         const roots = this.dht.findKClosest(topicId, this.rootSetSize);
         for (const peerId of roots) {
           this.dht.sendDirect(peerId, 'pubsub:subscribe-k', {
-            topicId, subscriberId: this.nodeId, peerRoots: roots,
+            topicId, subscriberId: this.nodeId, peerRoots: roots, lastSeenTs,
           });
         }
       } else {
         this.dht.routeMessage(topicId, 'pubsub:subscribe',
-                              { topicId, subscriberId: this.nodeId });
+                              { topicId, subscriberId: this.nodeId, lastSeenTs });
       }
     }
 
     // 2. Axon refresh — every axon role (root and non-root) periodically
     //    re-issues a subscribe toward topicId. See _onSubscribe's self-
-    //    subscribe branch for what happens at each target:
-    //      - Non-root: walker continues to parent (or a new axon on the
-    //        path after churn), which refreshes our child registration.
-    //      - Root: walker has no closer peer, ends at self as a no-op.
-    //        If a closer node has joined, the terminal-globality check
-    //        in routeMessage forwards us there — the superseding node
-    //        becomes the new root with us as its first child.
+    //    subscribe branch for what happens at each target.
     //    An axon with no children has no reason to stay in the tree;
     //    skip the refresh and let the GC step remove it.
     for (const [topicId, role] of this.axonRoles) {
       if (role.children.size === 0) continue;
+      const lastSeenTs = this._lastSeenTsByTopic.get(topicId);
       this.dht.routeMessage(topicId, 'pubsub:subscribe',
-                            { topicId, subscriberId: this.nodeId });
+                            { topicId, subscriberId: this.nodeId, lastSeenTs });
       role.parentLastSent = now;
     }
 

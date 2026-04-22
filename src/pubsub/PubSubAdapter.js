@@ -82,6 +82,59 @@ export function topicIdFor(domain, event) {
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
 }
 
+// ── Geographic-prefix topic IDs (NX-17+ addressing scheme) ──────────────────
+//
+// DHT node IDs are 64-bit with the top 8 bits encoding an S2 Hilbert cell
+// prefix (GEO_BITS=8 default). Because S2 Hilbert indices always start
+// with bit 0, every node GID is in the range [0, 2^63). A hash target
+// whose top bit is 1 lies OUTSIDE the reachable address space — legal
+// for XOR distance math, but wasteful (every node differs from it in the
+// top bit) and semantically undefined.
+//
+// This scheme keeps topic IDs inside the valid node address space by
+// constructing them as (8-bit cell prefix) || (56-bit hash of the topic
+// name), which also pins all K replicas for a given topic into a single
+// specific S2 cell. Both publisher and subscribers compute the same
+// topic ID, so findKClosest (full-XOR, unchanged) converges reliably.
+//
+// The convention for carrying the prefix is a leading '@XX/' (2 hex
+// chars, lowercase) on either the `domain` or the `event` string:
+//
+//   subscribe('@a3/chat', 'room42', cb)       → prefix a3, hash(chat:room42)
+//   subscribe('chat',     '@a3/room42', cb)   → prefix a3, hash(chat:room42)
+//
+// Absent an '@XX/' sentinel, we fall back to the legacy unprefixed
+// 64-bit hash so existing NX-15 code and tests keep working.
+
+const PREFIX_RE = /^@([0-9a-fA-F]{2})\//;
+
+/**
+ * Extract an '@XX/' prefix sentinel from a (domain, event) pair. Returns
+ * { prefix: number|null, domain, event } with the sentinel stripped from
+ * whichever field carried it (domain takes precedence if both).
+ */
+function extractPrefix(domain, event) {
+  const md = domain.match(PREFIX_RE);
+  if (md) return { prefix: parseInt(md[1], 16), domain: domain.slice(md[0].length), event };
+  const me = event.match(PREFIX_RE);
+  if (me) return { prefix: parseInt(me[1], 16), domain, event: event.slice(me[0].length) };
+  return { prefix: null, domain, event };
+}
+
+/**
+ * Construct a topic ID honoring any '@XX/' cell prefix. If a prefix is
+ * present, the returned 16-hex-char ID has XX as its top 2 chars and the
+ * bottom 14 chars from hash_56(domain:event). If no prefix is present,
+ * behaviour matches topicIdFor() exactly.
+ */
+export function topicIdForPrefixed(domain, event) {
+  const { prefix, domain: d, event: e } = extractPrefix(domain, event);
+  if (prefix === null) return topicIdFor(d, e);
+  const full = topicIdFor(d, e);          // 16 hex chars
+  const prefixHex = (prefix & 0xff).toString(16).padStart(2, '0');
+  return prefixHex + full.slice(2);       // replace top 8 bits with prefix
+}
+
 // ── Per-topic reorder buffer ────────────────────────────────────────────────
 
 /**
@@ -338,7 +391,10 @@ export class PubSubAdapter {
   _topicIdFor(domain, event) {
     const key = `${domain}:${event}`;
     let id = this.topicIdCache.get(key);
-    if (!id) { id = topicIdFor(domain, event); this.topicIdCache.set(key, id); }
+    // Always use the prefix-aware constructor — it degenerates to the
+    // legacy topicIdFor() when no '@XX/' sentinel is present, so old
+    // callers (NX-15 benchmarks, tests) are byte-for-byte compatible.
+    if (!id) { id = topicIdForPrefixed(domain, event); this.topicIdCache.set(key, id); }
     return id;
   }
 

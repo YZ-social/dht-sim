@@ -57,6 +57,7 @@
         <option value="ngdhtnx10">NX-10 ★</option>
         <option value="ngdhtnx13">NX-13</option>
         <option value="ngdhtnx15">NX-15</option>
+        <option value="ngdhtnx17">NX-17</option>
       </select>
       <div class="sb-row" style="margin-top:4px;margin-bottom:2px;gap:12px">
         <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
@@ -235,6 +236,7 @@
             <option value="ngdhtnx10"  selected>NX-10  ★</option>
             <option value="ngdhtnx13"  selected>NX-13</option>
             <option value="ngdhtnx15"  selected>NX-15</option>
+            <option value="ngdhtnx17"  selected>NX-17</option>
           </select>
         </div>
         <div class="sb-multisel" data-tip="Select which test conditions to include in the benchmark run. Click to toggle individual items.">
@@ -255,6 +257,7 @@
             <option value="continent" selected>NA→Asia</option>
             <option value="pubsub"    selected>Pub/Sub</option>
             <option value="pubsubm"   selected>Pub/Sub (Membership)</option>
+            <option value="pubsubm-local" selected>Pub/Sub (Membership, Local)</option>
             <option value="pubsubmchurn" selected>Pub/Sub (M+Churn)</option>
             <option value="churn"     selected>5% Churn</option>
           </select>
@@ -846,6 +849,29 @@
 
     </div><!-- /nx15-panel -->
 
+    <div id="nx17-panel" class="sb-sec">
+      <div class="sb-sec-lbl">NX-17 Pub/Sub (Routed Axonal)</div>
+
+      <details class="nx-rule nx-always" open><summary>Axon Tree</summary><div class="nx-rule-body"><div class="nx-params">
+        <span class="nx-pl" data-tip="Recruit a sub-axon when an axon's child count reaches this value.">Max Subs</span><input type="number" id="x17-maxDirectSubs" class="nx-pv" value="20" min="2" max="200" step="1">
+        <span class="nx-pl" data-tip="Dissolve a non-root axon when its child count falls below this value for one refresh interval (hysteresis).">Min Subs</span><input type="number" id="x17-minDirectSubs" class="nx-pv" value="5" min="1" max="50" step="1">
+      </div></div></details>
+
+      <details class="nx-rule nx-always" open><summary>Refresh / TTL</summary><div class="nx-rule-body"><div class="nx-params nx-single">
+        <span class="nx-pl" data-tip="How often each axon, sub-axon and leaf subscriber re-issues its subscribe (ms).">Refresh (ms)</span><input type="number" id="x17-refreshIntervalMs" class="nx-pv" value="10000" min="500" max="600000" step="500">
+        <span class="nx-pl" data-tip="Sub-axon child entry is swept if its lastRenewed is older than this (ms).">Sub TTL (ms)</span><input type="number" id="x17-maxSubscriptionAgeMs" class="nx-pv" value="30000" min="1500" max="1800000" step="500">
+        <span class="nx-pl" data-tip="Empty root persists this long before dissolving (ms).">Root Grace (ms)</span><input type="number" id="x17-rootGraceMs" class="nx-pv" value="60000" min="1000" max="3600000" step="1000">
+      </div></div></details>
+
+      <details class="nx-rule nx-always" open><summary>Live Pub/Sub Simulation</summary><div class="nx-rule-body"><div class="nx-params nx-single">
+        <span class="nx-pl" data-tip="Percent of currently-alive non-publisher nodes to kill at each churn step. Supports fractional values (e.g. 0.5 for 0.5%). 0 disables churn entirely.">Churn per round (%)</span><input type="number" id="x17-pubsubChurnPct" class="nx-pv" value="1" min="0" max="25" step="0.1">
+        <span class="nx-pl" data-tip="Ticks between consecutive churn events. Each tick publishes once on every group; every N ticks, a churn round is applied and refresh runs.">Ticks per round</span><input type="number" id="x17-pubsubTicksPerChurnRound" class="nx-pv" value="5" min="1" max="100" step="1">
+        <span class="nx-pl" data-tip="Number of refresh passes across all live nodes after each churn event. More passes = more healing cycles before the next measurement.">Refresh rounds / kill</span><input type="number" id="x17-pubsubRefreshRoundsPerKill" class="nx-pv" value="3" min="0" max="20" step="1">
+        <span class="nx-pl" data-tip="K-overlap is an expensive diagnostic (one findKClosest call per sampled subscriber per group). Set to 1 to measure every tick, or a larger number to reduce overhead.">K-overlap every N</span><input type="number" id="x17-pubsubOverlapEveryN" class="nx-pv" value="10" min="1" max="100" step="1">
+      </div></div></details>
+
+    </div><!-- /nx17-panel -->
+
   </div><!-- /sidebar -->
 
   <!-- ── Globe fills remaining space ───────────────────────────────────── -->
@@ -933,6 +959,22 @@
         <div class="training-log" id="trainingLog"></div>
       </div>
 
+      <div id="membershipSimResults" style="display:none">
+        <div class="stat-row">
+          <div class="stat" data-tip="Current tick number."><span class="sl">Tick</span><span class="sv" id="msTick">&#8212;</span></div>
+          <div class="stat" data-tip="Fraction of surviving subscribers that received the current tick's publish."><span class="sl">Delivered</span><span class="sv rate" id="msDelivered">&#8212;</span></div>
+          <div class="stat" data-tip="Cumulative fraction of the initial network killed by churn events so far."><span class="sl">Killed</span><span class="sv" id="msKilled">&#8212;</span></div>
+          <div class="stat" data-tip="Total axon roles across all topics (root + sub-axon count summed)."><span class="sl">Axons</span><span class="sv" id="msAxons">&#8212;</span></div>
+          <div class="stat" data-tip="Largest axon children count this tick."><span class="sl">Max fan-out</span><span class="sv" id="msFanout">&#8212;</span></div>
+          <div class="stat" data-tip="Max tree depth observed (1 = flat root only; 2 = root + sub-axons; 3+ = sub-sub-axons)."><span class="sl">Depth</span><span class="sv" id="msDepth">&#8212;</span></div>
+          <div class="stat" data-tip="Publisher/subscriber K-closest agreement — measured every Overlap-every-N ticks (hence may lag)."><span class="sl">K-overlap</span><span class="sv" id="msOverlap">&#8212;</span></div>
+        </div>
+        <div class="chart-strip">
+          <div class="training-chart-box" id="membershipSimChartBox"><canvas id="membershipSimLineChart"></canvas></div>
+        </div>
+        <div class="training-log" id="membershipSimLog"></div>
+      </div>
+
       <div id="pubsubResults" style="display:none">
         <div class="stat-row">
           <div class="stat" data-tip="Number of sessions completed. Each session runs 10 message/broadcast cycles and reports their average."><span class="sl">Sessions</span><span class="sv" id="psMessages">&#8212;</span></div>
@@ -990,7 +1032,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.57.01</div>
+    <div id="legend">Version: 0.58.00</div>
   </div>
 
   </div><!-- /mainRow -->
@@ -1150,6 +1192,7 @@
     ngdhtnx10:  '★ State of the Art — NX-10: Routing-topology forwarding tree. Delegates subscribers to the direct synapse that is the first hop toward them. Tree mirrors routing paths — forwarding hops are free (no DHT lookup). 100% success on all tests including 25% churn and Slice World. As of v0.50, uses strictly 2-hop honest annealing with no access to the global node map.',
     ngdhtnx13:  'NX-13: NX-10 with fully tunable parameters. Every rule can be enabled/disabled and every parameter adjusted via the panel. Use alongside NX-10 for A/B comparison to measure rule impact and find optimal configurations.',
     ngdhtnx15:  'NX-15: Membership-protocol pub/sub. Extends NX-10 with real distributed subscribe/unsubscribe/publish — topic anchors elected by hash-proximity, axon trees that grow along routing paths when subscribers exceed a capacity threshold, and hysteresis-based orderly collapse. Every axon refreshes on a timer; silent nodes age out via TTL. Synaptome-weighted recruitment prefers high-weight LTP-trusted peers for axon membership. The one-shot pubsubBroadcast inherited from NX-10 still runs so delivery-physics numbers are reproducible; new benchmarks exercise the membership protocol directly.',
+    ngdhtnx17:  'NX-17: Publisher-prefix pub/sub addressing + pure routed axonal tree. Topic IDs are (publisher 8-bit cell prefix) || hash_56(topic name), embedded in topic names via the "@XX/domain/event" convention; this pins the topic root into the publisher\'s own S2 cell, which is typically close to subscribers and well-routed-to by the publisher. K-closest replication is disabled (rootSetSize=0) — subscribe is a routeMessage toward topicId, the first axon holding the topic on the path intercepts, and when no axon exists the terminal node opens a role and becomes root. Capacity-driven sub-axon recruitment grows the tree toward subscribers. Churn is handled by periodic re-subscription by every subscriber and every axon node; a subscribe whose sendDirect to its parent fails triggers an immediate full re-subscribe via routeMessage. Simpler than K-closest, no gossip, no per-topic redundancy — resilience mechanisms beyond plain re-subscription are deferred until baseline and churn measurements identify which specific failure modes dominate.',
   };
   (function () {
     const sel = document.getElementById('dhtProtocol');

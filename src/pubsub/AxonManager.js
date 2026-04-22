@@ -55,6 +55,7 @@ export class AxonManager {
     rootGraceMs          = DEFAULT_ROOT_GRACE_MS,
     rootSetSize          = DEFAULT_ROOT_SET_SIZE,    // K in K-closest replication
     pickRecruitPeer      = null,   // protocol-specific override (§5.9)
+    pickRelayPeer        = null,   // NX-17+ batch-adoption path override
     shouldRecruitSubAxon = null,   // protocol-specific override
     now                  = () => Date.now(),
   } = {}) {
@@ -89,6 +90,11 @@ export class AxonManager {
     // selection using its own routing-table state.
     if (pickRecruitPeer)      this.pickRecruitPeer      = pickRecruitPeer;
     if (shouldRecruitSubAxon) this.shouldRecruitSubAxon = shouldRecruitSubAxon;
+    // pickRelayPeer: batch-adoption path (NX-17+). Returns an external
+    // synaptome peer id (hex) to act as a new sub-axon. If the override
+    // returns null or is not provided, the axon falls back to the
+    // legacy single-recruit path (picking from existing children).
+    if (pickRelayPeer)        this.pickRelayPeer        = pickRelayPeer;
 
     /** topicHash -> TopicRole */
     this.axonRoles = new Map();
@@ -104,8 +110,9 @@ export class AxonManager {
     dht.onRoutedMessage('pubsub:unsubscribe',  (p, m) => this._onUnsubscribe(p, m));
     dht.onRoutedMessage('pubsub:publish',      (p, m) => this._onPublish(p, m));
     dht.onDirectMessage('pubsub:deliver',      (p, m) => this._onDeliver(p, m));
-    dht.onDirectMessage('pubsub:promote-axon', (p, m) => this._onPromoteAxon(p, m));
-    dht.onDirectMessage('pubsub:dissolve-hint',(p, m) => this._onDissolveHint(p, m));
+    dht.onDirectMessage('pubsub:promote-axon',     (p, m) => this._onPromoteAxon(p, m));
+    dht.onDirectMessage('pubsub:adopt-subscribers',(p, m) => this._onAdoptSubscribers(p, m));
+    dht.onDirectMessage('pubsub:dissolve-hint',    (p, m) => this._onDissolveHint(p, m));
     // K-closest mode (available when dht.findKClosest exists).
     dht.onDirectMessage('pubsub:subscribe-k',  (p, m) => this._onSubscribeDirect(p, m));
     dht.onDirectMessage('pubsub:publish-k',    (p, m) => this._onPublishDirect(p, m));
@@ -237,13 +244,20 @@ export class AxonManager {
     const now = this._now();
 
     if (role) {
-      // Self-subscribe: a non-root axon refreshing upward invokes its own
-      // handler at hop 0. Don't register ourselves as our own child; let
-      // the message continue toward the parent. A root self-subscribing
-      // is legitimate — it's the terminal with no upstream.
-      if (subscriberId === this.nodeId) {
-        if (!role.isRoot) return 'forward';
-      }
+      // Self-subscribe: every axon role (root AND non-root) periodically
+      // re-issues its own subscribe toward topicId as a self-heal. Never
+      // register the self-subscriber as our own child; let the walker
+      // continue. Outcomes:
+      //   - Non-root: walker continues upstream, reaches the current
+      //     parent (or a new live axon on the path), which refreshes
+      //     our registration as one of its children.
+      //   - Root that is still closest: walker has no closer peer,
+      //     globality check confirms, the walk ends at root as a no-op.
+      //   - Root that has been superseded by a newly-joined closer
+      //     node: globality check forwards us to that node; it becomes
+      //     a new root with us as its first child, and subscribers
+      //     eventually re-route through the same mechanism.
+      if (subscriberId === this.nodeId) return 'forward';
       this._addOrRecruitChild(topicId, role, subscriberId, meta.fromId);
       return 'consumed';
     }
@@ -287,18 +301,92 @@ export class AxonManager {
     if (existing) { existing.lastRenewed = now; return; }
 
     if (this.shouldRecruitSubAxon(role)) {
+      // ── PREFERRED PATH: batch adoption via an external relay peer ──────
+      // (NX-17+). When the DHT provides pickRelayPeer, we pick a peer
+      // from its routing tables (not from our existing children) to
+      // become a new sub-axon, partition the subscribers currently
+      // attached to us by XOR direction toward that peer, and hand off
+      // the "in-direction" subset in a single batch. The receiver
+      // creates a role, adds all of them as children, and issues its
+      // own subscribe upward which attaches it into the live tree.
+      //
+      // Children in this model don't track a parentId — which peer is
+      // currently delivering to them is whoever most-recently sendDirect'd
+      // them a publish. When that peer dies, the next refresh re-subscribe
+      // re-attaches them into the live tree at whichever axon their
+      // routed subscribe lands on.
+      //
+      // TODO (future redundancy pass — not part of this change): when a
+      // subscriber has missed messages because of interim churn, let the
+      // subscribe payload include a "last received timestamp". Relays
+      // and the root can keep a bounded ring of recent publishes and
+      // forward any unseen ones to the re-subscriber. Gives a level of
+      // replay redundancy without requiring multiple-root replication.
+      if (typeof this.pickRelayPeer === 'function') {
+        const relayId = this.pickRelayPeer(role, subscriberId, forwarderId);
+        if (relayId && relayId !== this.nodeId && relayId !== forwarderId
+            && !role.children.has(relayId)) {
+          // Batch is the TOP-K existing children ranked XOR-closest to
+          // the new relay, plus the new subscriber. Using top-K (K =
+          // maxDirectSubs/2) instead of the strict "closer to relay
+          // than to self" partition guarantees that each overflow moves
+          // a meaningful number of children off us even when every
+          // existing child happens to be geographically nearer to us
+          // than to the relay (the common case when subscribers cluster
+          // in the topic's own cell). Without this guarantee, an empty
+          // partition would let role.children keep growing on every
+          // overflow, triggering an uncontrolled cascade of new-relay
+          // recruitments when the relay's self-subscribe loops back.
+          const K = Math.max(1, Math.floor(this.maxDirectSubs / 2));
+          const batch = this._selectChildrenClosestToRelay(role, relayId, K);
+          batch.push(subscriberId);
+          for (const id of batch) role.children.delete(id);
+          // Pre-add the relay as our sub-axon edge BEFORE sending the
+          // adopt message. Reason: the relay's _onAdoptSubscribers
+          // handler issues its own routed subscribe upward; in a high
+          // fraction of cases that subscribe lands right back at us
+          // (we're usually the closest-to-topicId live axon on its
+          // path). Having the relay already in our children makes that
+          // arrival idempotent (just refresh lastRenewed) instead of
+          // looking like a brand-new overflow and recursing into
+          // another relay recruitment.
+          role.children.set(relayId, {
+            createdAt: now, lastRenewed: now, isSubaxon: true,
+          });
+          this.dht.sendDirect(relayId, 'pubsub:adopt-subscribers', {
+            topicId,
+            subscriberIds: batch,
+          });
+          return;
+        }
+      }
+
+      // ── FALLBACK PATH: legacy single-recruit from existing children ────
+      // Used for K-closest mode (NX-15 with rootSetSize > 0) where
+      // pickRelayPeer is not configured, and when pickRelayPeer returns
+      // nothing actionable.
+      const reuseId = this._pickExistingSubAxon(role, subscriberId, forwarderId);
+      if (reuseId) {
+        role.children.get(reuseId).lastRenewed = now;
+        this.dht.sendDirect(reuseId, 'pubsub:promote-axon', {
+          topicId,
+          newSubscriberId: subscriberId,
+          parentId:        this.nodeId,
+        });
+        return;
+      }
+
       const meta = { fromId: forwarderId || subscriberId };
       let recruitId = this.pickRecruitPeer(role, meta, subscriberId);
-      // Override safety: if an override returned self, the forwarder,
-      // or a non-child, fall back to the XOR-closest non-self,
-      // non-forwarder existing child.
       if (!recruitId || recruitId === this.nodeId
           || recruitId === forwarderId
           || !role.children.has(recruitId)) {
         recruitId = this._pickExistingChildForRecruit(role, subscriberId, forwarderId);
       }
       if (recruitId) {
-        role.children.get(recruitId).lastRenewed = now;
+        const child = role.children.get(recruitId);
+        child.lastRenewed = now;
+        child.isSubaxon = true;
         this.dht.sendDirect(recruitId, 'pubsub:promote-axon', {
           topicId,
           newSubscriberId: subscriberId,
@@ -310,7 +398,78 @@ export class AxonManager {
       // empty or contains only us. Just add the subscriber directly —
       // over-capacity is a lesser evil than infinite recursion.
     }
-    role.children.set(subscriberId, { createdAt: now, lastRenewed: now });
+    role.children.set(subscriberId, { createdAt: now, lastRenewed: now, isSubaxon: false });
+  }
+
+  /**
+   * Return the top-K existing children ranked by XOR-closeness to the
+   * relay id, excluding self and the relay itself. Used by the batch-
+   * adoption path to guarantee forward progress on every overflow even
+   * when no strict-partition children exist (i.e., every child is
+   * technically closer to us than to the new relay — which is typical
+   * when subscribers cluster in the topic's own cell and the relay is
+   * an external peer in a different cell).
+   */
+  _selectChildrenClosestToRelay(role, relayId, k) {
+    const relayBig = BigInt('0x' + relayId);
+    const ranked = [];
+    for (const childId of role.children.keys()) {
+      if (childId === this.nodeId) continue;
+      if (childId === relayId)     continue;
+      const cBig = BigInt('0x' + childId);
+      ranked.push({ childId, dist: cBig ^ relayBig });
+    }
+    ranked.sort((a, b) => (a.dist < b.dist ? -1 : a.dist > b.dist ? 1 : 0));
+    return ranked.slice(0, k).map(r => r.childId);
+  }
+
+  /**
+   * [Legacy helper, kept for reference.] Strict partition: return children
+   * whose XOR distance to `relayId` is smaller than their distance to us.
+   * No longer the default overflow path because an empty partition
+   * (common in practice) causes unbounded growth; see the batch logic
+   * in _addOrRecruitChild for what's used instead.
+   */
+  _partitionChildrenForRelay(role, relayId) {
+    const relayBig = BigInt('0x' + relayId);
+    const selfBig  = BigInt('0x' + this.nodeId);
+    const batch    = [];
+    for (const childId of role.children.keys()) {
+      if (childId === this.nodeId) continue;
+      if (childId === relayId)     continue;  // don't ship the relay to itself
+      const cBig = BigInt('0x' + childId);
+      const dRelay = cBig ^ relayBig;
+      const dSelf  = cBig ^ selfBig;
+      if (dRelay < dSelf) batch.push(childId);
+    }
+    return batch;
+  }
+
+  /**
+   * Pick an existing child we've already promoted to sub-axon status, if
+   * any, to route further overflow subscribers through. Excludes self and
+   * the forwarder (loop protection — same reasoning as
+   * _pickExistingChildForRecruit). When multiple sub-axon children exist
+   * (a rare cascade case), returns the one XOR-closest to the new
+   * subscriber for locality.
+   */
+  _pickExistingSubAxon(role, subscriberId, forwarderId) {
+    const selfHex = this.nodeId;
+    const candidates = [];
+    for (const [id, child] of role.children) {
+      if (!child.isSubaxon) continue;
+      if (id === selfHex || id === forwarderId) continue;
+      candidates.push(id);
+    }
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+    const subBig = BigInt('0x' + subscriberId);
+    let best = null, bestDist = null;
+    for (const id of candidates) {
+      const d = BigInt('0x' + id) ^ subBig;
+      if (bestDist === null || d < bestDist) { bestDist = d; best = id; }
+    }
+    return best;
   }
 
   // ── Policy hooks (overridable by subclasses) ───────────────────────
@@ -401,6 +560,17 @@ export class AxonManager {
     const { topicId, json, publishId } = payload;
     const role = this.axonRoles.get(topicId);
     if (!role) return 'forward';
+    // Only the ROOT consumes a routed publish and initiates fan-out.
+    // Sub-axons on the path forward without intercepting: otherwise the
+    // publisher's routeMessage path — which often crosses a sub-axon
+    // before reaching the globally-closest root, especially in the
+    // clustered case where the tree concentrates near the publisher —
+    // would fan out to ONLY that sub-axon's subtree. All other
+    // subscribers (root's direct leaves + other sub-axons' subtrees)
+    // would silently miss. Forwarding at sub-axons lets the walk reach
+    // the root, whose fan-out covers the full tree via the normal
+    // root→children→sub-axon cascade.
+    if (!role.isRoot) return 'forward';
     if (this._alreadySeenPublish(publishId)) return 'consumed';
 
     const deadChildren = [];
@@ -522,6 +692,57 @@ export class AxonManager {
     // maxDirectSubs. The parent in the payload tells us who promoted us,
     // but from the new subscriber's perspective WE are its parent.
     this._addOrRecruitChild(topicId, role, newSubscriberId, meta.fromId);
+  }
+
+  /**
+   * DIRECT handler — an upstream relay is handing off a BATCH of
+   * subscribers to us as a new sub-axon (NX-17+ batch-adoption path).
+   * Payload: { topicId, subscriberIds }.
+   *
+   * We create a sub-axon role for this topic (no parentId — see
+   * _addOrRecruitChild for the no-parent-tracking rationale), add every
+   * subscriber in the batch as a child, then issue a routed subscribe of
+   * our own toward topicId. That subscribe lands at whichever live axon
+   * is currently on our path to the topic — most often the peer that
+   * sent us the batch, but sometimes an intermediate live relay between
+   * us and the root. Either way, we attach into the live tree and start
+   * receiving publishes through the normal root→…→self cascade.
+   */
+  _onAdoptSubscribers(payload, meta) {
+    const { topicId, subscriberIds } = payload;
+    if (!Array.isArray(subscriberIds) || subscriberIds.length === 0) return;
+    const now = this._now();
+
+    let role = this.axonRoles.get(topicId);
+    if (!role) {
+      role = {
+        parentId:       null,              // deliberately NOT tracked
+        isRoot:         false,
+        children:       new Map(),
+        parentLastSent: 0,
+        roleCreatedAt:  now,
+        emptiedAt:      0,
+        lowWaterSince:  0,
+      };
+      this.axonRoles.set(topicId, role);
+    }
+
+    for (const subId of subscriberIds) {
+      if (subId === this.nodeId) continue;  // never add self as own child
+      // Skip children we already have (idempotent adoption in case a
+      // duplicate batch was delivered).
+      if (role.children.has(subId)) {
+        role.children.get(subId).lastRenewed = now;
+        continue;
+      }
+      role.children.set(subId, { createdAt: now, lastRenewed: now, isSubaxon: false });
+    }
+
+    // Attach ourselves into the live tree. The routed subscribe falls
+    // through to whichever live axon is on our path to topicId — may or
+    // may not be the peer that just sent us the batch, per design.
+    this.dht.routeMessage(topicId, 'pubsub:subscribe',
+                          { topicId, subscriberId: this.nodeId });
   }
 
   /**
@@ -673,14 +894,18 @@ export class AxonManager {
       }
     }
 
-    // 2. Axon refresh — a non-root axon must refresh upward so its parent
-    //    does not TTL-drop it. Phase 3a has no recruitment so all axons
-    //    are roots; this block is a no-op here but the plumbing is in
-    //    place for Phase 3b.
+    // 2. Axon refresh — every axon role (root and non-root) periodically
+    //    re-issues a subscribe toward topicId. See _onSubscribe's self-
+    //    subscribe branch for what happens at each target:
+    //      - Non-root: walker continues to parent (or a new axon on the
+    //        path after churn), which refreshes our child registration.
+    //      - Root: walker has no closer peer, ends at self as a no-op.
+    //        If a closer node has joined, the terminal-globality check
+    //        in routeMessage forwards us there — the superseding node
+    //        becomes the new root with us as its first child.
     //    An axon with no children has no reason to stay in the tree;
     //    skip the refresh and let the GC step remove it.
     for (const [topicId, role] of this.axonRoles) {
-      if (role.isRoot) continue;
       if (role.children.size === 0) continue;
       this.dht.routeMessage(topicId, 'pubsub:subscribe',
                             { topicId, subscriberId: this.nodeId });

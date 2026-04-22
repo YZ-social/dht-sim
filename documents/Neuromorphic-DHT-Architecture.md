@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.51.00*
+*Version 0.52.00*
 
 ---
 
@@ -1429,6 +1429,50 @@ First, **the NX series does not require geographic biasing to function**; the sy
 Second, **the choice of `geoBits` should be tuned to the expected churn profile**. Networks with low-to-moderate churn (<10%) should use `geoBits = 8` for the locality benefits. Networks expecting high churn (>20%) -- either because node lifetimes are short or because the deployment is adversarial -- should consider `geoBits = 0` specifically for its pub/sub resilience, even though that sacrifices regional lookup performance. Intermediate values (e.g., `geoBits = 4`, ~16 cells) would split the difference but have not been separately characterised here.
 
 For the default configuration (typical browser-deployment churn assumed to be <10%), `geoBits = 8` remains the right choice. But the ablation demonstrates that the design has a real performance knob hiding in what previously appeared to be a hardcoded constant.
+
+### 7.8 Membership Pub/Sub: From K-closest Replication to a Pure Axonal Tree
+
+Chapter 6's axonal tree is a *one-shot* broadcast: a relay holds a static subscriber list and fans out via DHT routing for every publish. That design is enough to drive the §7.3 benchmark, but it doesn't scale to a live overlay where subscribers join and leave continuously and each topic needs to persist independently. The NX-15 → NX-17 line of work tackles that gap: a **distributed pub/sub membership protocol** in which topics have independent, self-healing axonal trees grown dynamically by routing.
+
+**NX-15** added a generic `AxonManager` component on top of NX-10. It introduced K-closest replication: every subscribe STOREs the subscription at each of the K nodes closest to `hash(topic)`, and publishers hit any one of those K replicas for full delivery. K=5 gave nominal resilience, but the K-closest path had a structural cost we did not initially see — publisher and subscribers computed `findKClosest` from different positions in the network, so under churn their top-K sets drifted apart. The immediate-delivery cliff at 25% churn (~38% recovered in some runs) turned out to be that drift, not a primitive routing problem.
+
+**NX-16** (documented in `documents/dead-ends/`) attempted to fix the drift by masking out the geographic prefix in the K-closest distance metric so replicas would spread uniformly across cells. The selection metric ignored the prefix; the synaptome expansion still pointed toward full-XOR cells; and the routing gradient never aligned with the selection criterion. Publisher and subscribers converged on different local top-K sets and delivery collapsed to ~40% even at zero churn. The fundamental lesson: **the distance metric used to select candidates must match the gradient used to expand them.**
+
+**NX-17** takes a cleaner route. Two changes:
+
+1. **Publisher-prefix topic IDs.** A topic's address is constructed as `publisher.cell_prefix (8 bits) || hash_56(topic_name)`, embedded in topic names via the `@XX/domain/event` convention. Both publisher and subscribers derive the same ID deterministically, so full-XOR routing converges. The topic's root lives in the publisher's own cell — typically close to subscribers, well-reinforced by the publisher's ordinary lookup traffic.
+2. **K-closest replication disabled.** Subscribe is a `routeMessage(topicId, 'pubsub:subscribe')` that walks greedily toward the topic ID. The first live axon on the path intercepts and adds the subscriber to its children; if no axon exists, the terminal node opens a role and becomes root. Capacity-driven sub-axon recruitment grows the tree toward subscribers as they arrive. Single root per topic — no replication, no gossip.
+
+Four targeted fixes developed during empirical testing make this pure-axonal design work in practice:
+
+- **Terminal globality check.** Greedy `_greedyNextHopToward` reaches *local* optima: different starting points yield different "closest" nodes. Without a check, two subscribers elect different roots for the same topic. The fix: when `routeMessage` believes it has reached a terminal, it performs one `findKClosest(targetId, 1)` call; if a globally-closer live peer exists (found via 2-hop expansion), the message is forwarded there. A visited-set protects against pathological ping-pong.
+
+- **Root-only consumption of routed publishes.** Sub-axons on the publisher's path must *forward* publishes instead of intercepting, so the walk always reaches the actual root. Root's fan-out cascades through all its children (including sub-axons) via the normal `pubsub:deliver` sendDirect + re-fan chain.
+
+- **External-peer batch adoption on overflow.** When an axon hits `maxDirectSubs`, it picks a **synaptome peer** (not an existing child) as a new sub-axon, partitions its current children by picking the top-K XOR-closest to the chosen peer, and ships them as a single `pubsub:adopt-subscribers` batch. The new relay creates its role, adds the batch as children (no parentId — the design deliberately does not track upstream), and issues its own routed subscribe so it attaches into the live tree at whichever live axon its walk lands on. Two invariants protect this against runaway recursion: (a) the batch always includes a guaranteed-nonempty top-K so the parent's child count provably decreases on every overflow; (b) the parent pre-adds the new relay to its own children, so the relay's self-subscribe loopback is idempotent.
+
+- **All-axon periodic re-subscribe.** Every node holding any role — leaf subscriber, sub-axon, or root — re-issues a subscribe on every refresh interval. Self-subscribes unconditionally `return 'forward'` so they never add self as own child. Concrete outcomes: a non-root axon's refresh reaches its current parent (or a new live axon on its path) and gets its child entry renewed; a root still closest to topicId reaches its own terminal and the walk exits as a no-op; a root superseded by a newly-joined closer node hands off via the globality check. No parent-aliveness RPC is needed — the re-subscribe *is* the liveness check.
+
+**Live-simulation results.** Running as a continuous time-series test (one publish per group per tick, 1% of alive non-publisher nodes killed every five ticks, three refresh passes per kill; 25,000 nodes, 79 groups × 32 subscribers):
+
+| Cumulative churn | Delivered % | K-overlap | Axon roles |
+|------------------|-------------|-----------|------------|
+|   0 %            | 100.0 %     | 100 %     |   537      |
+|   5 %            |  98.7 %     |    —      | 1 541      |
+|  10 %            |  91.2 %     |  81 %     | 1 787      |
+|  15 %            |  88.7 %     |  77 %     | 1 989      |
+|  20 %            |  86.5 %     |  62 %     | 2 116      |
+|  25 %            |  70.0 %     |  54 %     | 2 169      |
+|  30 %            |  52.4 %     |  47 %     | 2 189      |
+|  34 %            |  50.8 %     |  42 %     | 2 197      |
+
+Delivery holds above 98 % through 5 % cumulative churn, degrades gracefully to about 87 % by 20 % churn, then bends down to a ~50 % floor as the tree settles into a steady state where new recruitments match losses. No cliff.
+
+For comparison, equivalent single-snapshot pub/sub-with-churn benchmark runs at the same 25 % cumulative kill level produced ~38 % recovered delivery with the earlier K-closest design and ~60 % with the NX-15 + K=5 setup. The live-sim NX-17 protocol matches or exceeds those at 25 % churn (70 %) while using a single root per topic and no replication.
+
+**K-overlap tracks delivered % almost 1:1.** At every measurement point, overlap (the fraction of its top-K that the publisher and a sampled subscriber agree on) predicts the delivery rate closely. This confirms the dominant residual failure mode is subscribers captured at relay nodes no longer delivery-connected to the root — not broken routing itself. A bounded *replay cache* at relays (store the last N publishes, forward on re-subscribe with a last-seen timestamp) is the natural next step; it closes exactly the kind of short-window gap that produces this pattern.
+
+**What NX-17 is:** a minimal, single-root-per-topic pub/sub overlay that self-heals via ordinary re-subscription, preserves publisher-locality through its addressing scheme, scales to at least 25,000 nodes with 79 concurrent topics in the simulator, and delivers reliably through ~20 % uniform churn. It achieves this without gossip, without replication, and without explicit parent tracking. The tradeoff is a wider tree than the theoretical minimum (~7 relays per topic at baseline, ~28 at 25 % churn) — but the tree state is pure local information and recovers cleanly.
 
 ---
 

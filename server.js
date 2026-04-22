@@ -13,6 +13,14 @@ const RESEARCH_LOG = join(RESULTS, 'research.log');
 // to pick one up; posting a new one overwrites any unstarted one.
 let pendingExperiment = null;
 
+// Last-reported version + timestamp from the live browser tab. The browser
+// updates this every 3s via its experiment-poll cycle, so `/api/status`
+// can tell Claude both what the browser is currently running and whether
+// it is heartbeating at all. If the heartbeat ages past a few seconds,
+// the tab is closed or stale and any queued experiment will not run.
+let clientVersion   = null;
+let clientHeartbeat = 0;
+
 const app  = express();
 const PORT = 3000;
 
@@ -55,8 +63,18 @@ app.delete('/complete', async (_req, res) => {
 // Claude polls this to check whether a result is waiting.
 // ─────────────────────────────────────────────────────────────────────────────
 app.get('/api/status', (_req, res) => {
-  const ready = existsSync(READY_FLAG);
-  res.json({ ready, pendingExperiment: pendingExperiment !== null });
+  const ready       = existsSync(READY_FLAG);
+  const msSinceBeat = clientHeartbeat ? Date.now() - clientHeartbeat : null;
+  // Tab is "live" if we heard from it within the last 10s (browser
+  // heartbeats every 3s).
+  const clientLive  = msSinceBeat != null && msSinceBeat < 10_000;
+  res.json({
+    ready,
+    pendingExperiment: pendingExperiment !== null,
+    clientVersion:     clientLive ? clientVersion : null,
+    clientLive,
+    msSinceBeat,
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,8 +94,17 @@ app.post('/api/experiment', async (req, res) => {
 });
 
 // GET /api/experiment
-// Browser polls this; returns and clears the pending experiment (if any).
-app.get('/api/experiment', (_req, res) => {
+// Browser polls this every 3s; returns and clears the pending experiment
+// (if any). The browser includes `?v=<version>` from the page's version
+// badge so the server always knows what bundle the live tab is running
+// — Claude can then gate experiments on `clientVersion` matching the
+// on-disk version to catch stale-tab mistakes.
+app.get('/api/experiment', (req, res) => {
+  const v = req.query.v;
+  if (typeof v === 'string' && v.length > 0 && v.length < 32) {
+    clientVersion   = v;
+    clientHeartbeat = Date.now();
+  }
   const exp = pendingExperiment;
   pendingExperiment = null;
   res.json(exp ?? null);

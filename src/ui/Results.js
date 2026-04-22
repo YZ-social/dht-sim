@@ -461,6 +461,224 @@ export class Results {
     this._hideSection('pubsubResults');
   }
 
+  /** Clear membership-sim chart and log (called on new Init or new run). */
+  clearMembershipSim() {
+    const log = this._el('membershipSimLog');
+    if (log) log.innerHTML = '';
+    if (this._charts['membershipSimLineChart']) {
+      this._charts['membershipSimLineChart'].destroy();
+      delete this._charts['membershipSimLineChart'];
+    }
+    this._membershipSimHistory = null;
+    this._membershipSimShown = false;
+    this._hideSection('membershipSimResults');
+  }
+
+  // ── Membership Pub/Sub live simulation ───────────────────────────────────
+
+  /**
+   * Update the live membership-pub/sub panel — shown on the first call,
+   * incrementally updated thereafter. History is an array of tick rows:
+   *   { tick, deliveredPct, cumulativeKilled, cumulativeKilledPct,
+   *     axonRoles, maxFanout, treeDepth, overlapPct, convergePct,
+   *     didChurn, killedThisTick }
+   */
+  showMembershipSimProgress(history, numGroups = 0, coveragePct = 0) {
+    if (!history?.length) return;
+    if (!this._membershipSimShown) {
+      this._showSection('membershipSimResults');
+      this._hideSection('trainingResults');
+      this._hideSection('lookupResults');
+      this._hideSection('churnResults');
+      this._hideSection('demoResults');
+      this._hideSection('benchmarkResults');
+      this._hideSection('pubsubResults');
+      this._hideSection('pairResults');
+      this._hideSection('hotspotResults');
+      this.panel?.classList.remove('bench-wide');
+      this._attachPanelHeader('membershipSimResults', 'Pub/Sub Membership (Live)',
+                              () => this._membershipSimCSV(),
+                              `dht-membership-sim-${Date.now()}.csv`);
+      this._membershipSimShown = true;
+    }
+
+    this._membershipSimHistory = history;
+    this._membershipSimMeta    = { numGroups, coveragePct };
+
+    const s = history[history.length - 1];
+    this._setText('msTick',      s.tick);
+    this._setText('msDelivered', `${s.deliveredPct.toFixed(1)}%`);
+    this._setText('msKilled',    `${s.cumulativeKilled} (${s.cumulativeKilledPct.toFixed(1)}%)`);
+    this._setText('msAxons',     s.axonRoles);
+    this._setText('msFanout',    s.maxFanout);
+    this._setText('msDepth',     s.treeDepth);
+    this._setText('msOverlap',   s.overlapPct != null ? `${s.overlapPct.toFixed(1)}%` : '—');
+
+    // Rolling log — only write rows on CHURN ticks (and the first tick)
+    // so the log stays readable across long runs.
+    if (s.tick === 1 || s.didChurn) {
+      const log = this._el('membershipSimLog');
+      if (log) {
+        const row = document.createElement('div');
+        row.className = 'training-log-row';
+        row.innerHTML =
+          `<span class="tl-session">t${s.tick}</span>` +
+          `<span class="tl-hops">deliv ${s.deliveredPct.toFixed(1)}%</span>` +
+          `<span class="tl-time">axons ${s.axonRoles}</span>` +
+          `<span class="tl-success">kill ${s.cumulativeKilledPct.toFixed(1)}%</span>` +
+          `<span class="tl-meta">` +
+            (s.didChurn ? `⚠ +${s.killedThisTick} this round · ` : '') +
+            (s.overlapPct != null ? `K-ov ${s.overlapPct.toFixed(1)}% · ` : '') +
+            `depth ${s.treeDepth}` +
+          `</span>`;
+        log.appendChild(row);
+        log.scrollTop = log.scrollHeight;
+      }
+    }
+
+    this._drawMembershipSimChart(history);
+  }
+
+  _drawMembershipSimChart(history) {
+    const canvas = this._el('membershipSimLineChart');
+    if (!canvas || typeof Chart === 'undefined' || history.length < 1) return;
+    const small = { size: 10, family: "'JetBrains Mono','Fira Mono','Consolas',monospace" };
+
+    // Bar-style emphasis on churn ticks so churn events are visible.
+    const pointStyles = history.map(h => h.didChurn ? 'rectRot' : 'circle');
+    const pointRadii  = history.map(h => h.didChurn ? 4 : 1);
+
+    const deliveredData  = history.map(h => h.deliveredPct);
+    const killedData     = history.map(h => h.cumulativeKilledPct);
+    const overlapData    = history.map(h => h.overlapPct);
+    const labels         = history.map(h => `t${h.tick}`);
+
+    if (this._charts['membershipSimLineChart']) {
+      const c = this._charts['membershipSimLineChart'];
+      c.data.labels = labels;
+      c.data.datasets[0].data = deliveredData;
+      c.data.datasets[0].pointStyle  = pointStyles;
+      c.data.datasets[0].pointRadius = pointRadii;
+      c.data.datasets[1].data = killedData;
+      c.data.datasets[2].data = overlapData;
+      c.update('none');
+      return;
+    }
+
+    this._charts['membershipSimLineChart'] = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Delivered %',
+            data: deliveredData,
+            borderColor: '#00ff88',
+            backgroundColor: '#00ff8822',
+            yAxisID: 'yPct',
+            tension: 0.25,
+            pointStyle: pointStyles,
+            pointRadius: pointRadii,
+            pointBackgroundColor: '#00ff88',
+            borderWidth: 2,
+          },
+          {
+            label: 'Cumulative Killed %',
+            data: killedData,
+            borderColor: '#ff5566',
+            backgroundColor: '#ff556622',
+            yAxisID: 'yPct',
+            tension: 0.25,
+            pointRadius: 0,
+            borderWidth: 1.5,
+            borderDash: [4, 4],
+          },
+          {
+            label: 'K-overlap %',
+            data: overlapData,
+            borderColor: '#44ddff',
+            backgroundColor: '#44ddff22',
+            yAxisID: 'yPct',
+            tension: 0.25,
+            pointRadius: 0,
+            borderWidth: 1,
+            spanGaps: true,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        animation: false,
+        plugins: {
+          legend: { position: 'bottom', labels: { color: '#bbccee', font: small, boxWidth: 12, padding: 8 } },
+          tooltip: {
+            callbacks: {
+              title: (items) => {
+                const h = history[items[0]?.dataIndex];
+                return `Tick ${h?.tick}${h?.didChurn ? ' ⚠ churn' : ''}`;
+              },
+              afterBody: (items) => {
+                const h = history[items[0]?.dataIndex];
+                if (!h) return '';
+                return [
+                  `axons=${h.axonRoles}, fan-out=${h.maxFanout}, depth=${h.treeDepth}`,
+                  `killed this tick: ${h.killedThisTick}`,
+                ];
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: { color: '#99aacc', font: small, maxTicksLimit: 16 },
+            grid:  { color: '#1a2a44' },
+          },
+          yPct: {
+            type: 'linear', position: 'left',
+            min: 0, max: 100,
+            ticks: { color: '#bbccee', font: small, callback: v => `${v}%` },
+            grid:  { color: '#1a2a4466' },
+          },
+        },
+      },
+    });
+  }
+
+  _membershipSimCSV() {
+    if (!this._membershipSimHistory?.length) return '';
+    const rows = [
+      ['Tick', 'Delivered%', 'Delivered', 'Expected',
+       'KilledThisTick', 'CumulativeKilled', 'CumulativeKilled%',
+       'AxonRoles', 'MaxFanout', 'TreeDepth', 'KOverlap%', 'FullConverge%', 'ChurnThisTick'].join(','),
+    ];
+    for (const h of this._membershipSimHistory) {
+      rows.push([
+        h.tick,
+        h.deliveredPct?.toFixed(2)        ?? '',
+        h.delivered                        ?? '',
+        h.expected                         ?? '',
+        h.killedThisTick                   ?? '',
+        h.cumulativeKilled                 ?? '',
+        h.cumulativeKilledPct?.toFixed(2) ?? '',
+        h.axonRoles                        ?? '',
+        h.maxFanout                        ?? '',
+        h.treeDepth                        ?? '',
+        h.overlapPct  != null ? h.overlapPct.toFixed(2)  : '',
+        h.convergePct != null ? h.convergePct.toFixed(2) : '',
+        h.didChurn ? 'yes' : 'no',
+      ].join(','));
+    }
+    const meta = this._membershipSimMeta || {};
+    rows.push(this._paramsSection(null, [
+      ['Groups',       meta.numGroups ?? ''],
+      ['Coverage %',   meta.coveragePct?.toFixed(1) ?? ''],
+      ['Ticks',        this._membershipSimHistory.length],
+    ]));
+    return rows.join('\r\n');
+  }
+
   /** Clear pair-learning chart and log (called on new Init or new pair run). */
   clearPairLearning() {
     const log = this._el('pairLog');
@@ -1126,6 +1344,7 @@ export class Results {
                          : s.type === 'continent'     ? `cont_${s.src}_${s.dst}`
                          : s.type === 'pubsub'        ? 'pubsub'
                          : s.type === 'pubsubm'       ? 'pubsubm'
+                         : s.type === 'pubsubm-local' ? 'pubsubm-local'
                          : s.type === 'pubsubmchurn'  ? 'pubsubmchurn'
                          : 'global';
     const specLabel = s => s.type === 'regional'     ? `${s.radius} km`
@@ -1136,6 +1355,7 @@ export class Results {
                          : s.type === 'continent'     ? `${contName[s.src]??s.src}→${contName[s.dst]??s.dst}`
                          : s.type === 'pubsub'        ? 'Pub/Sub'
                          : s.type === 'pubsubm'       ? 'Pub/Sub (Membership)'
+                         : s.type === 'pubsubm-local' ? `Pub/Sub (Local ${s.radius ?? 2000}km)`
                          : s.type === 'pubsubmchurn'  ? `Pub/Sub (M+${s.rate}% Churn)`
                          : 'Global';
     const specTip   = s => s.type === 'regional'
@@ -1154,6 +1374,8 @@ export class Results {
       ? `Pub/Sub overlay: nodes form ${s.coverage ?? 10}% coverage concordance groups (1 relay + ${s.groupSize ?? 32} participants each). Left column (→relay) = avg hops from a random participant to its relay. Right column (bcast) = avg hops from the relay back to each participant. Neuromorphic protocols receive 2× the standard warmup budget using actual pub/sub traffic so synaptomes learn relay-centric routes before measurement.`
       : s.type === 'pubsubm'
       ? `Pub/Sub (Membership): NX-15+ distributed pub/sub via the AxonManager membership protocol. Every participant subscribes through its own PubSubAdapter; subscribes route toward hash(topic) and attach at the first axon on the path. Each tick the relay publishes via its adapter and we measure: (1) delivered % — fraction of subscribers that received the publish, (2) axon roles — total axon nodes holding this topic across the network, (3) max subs/axon — largest axon's child count (capacity = maxDirectSubs), (4) tree depth. Only runs on protocols that implement axonFor() (currently NX-15).`
+      : s.type === 'pubsubm-local'
+      ? `Pub/Sub (Local ${s.radius ?? 2000}km): same membership protocol as Pub/Sub (Membership), but participants are the nearest-by-haversine alive nodes within ${s.radius ?? 2000} km of each relay. Measures delivery and routing efficiency when subscribers cluster geographically around the publisher — the common real-world case. Groups with fewer than groupSize neighbours in-range run at reduced size rather than padding with far-away nodes, so the numbers are honest about locality.`
       : s.type === 'pubsubmchurn'
       ? `Pub/Sub (Membership+Churn): drives K-closest pub/sub through a kill-and-heal cycle. Phase 1 measures baseline delivery on a stable tree; phase 2 kills ${s.rate}% of nodes (excluding publishers) and measures IMMEDIATE delivery with no protocol repair yet — this tests raw redundancy from K replication alone; phase 3 drives refresh ticks across surviving axons (TTL sweeps dead children, re-STOREs shift subscriptions to the new K-closest set), then measures RECOVERED delivery. Dead subscribers are excluded from the denominator — the question is whether survivors still get messages.`
       : 'Global: both source and destination chosen uniformly at random from all nodes. Worst-case baseline — no locality or hot-spot bias.';
@@ -1206,10 +1428,13 @@ export class Results {
         html += `<th class="pubsub-bcol" data-tip="Average subscribers per branch node. Lower = better distribution. Flat protocols show group size (all on relay).">Subs/N</th>`;
       } else if (s.type === 'pubsubm') {
         const tip = specTip(s);
-        html += `<th colspan="4" class="pubsubm-col" data-tip="${tip}">Pub/Sub (Membership)</th>`;
+        html += `<th colspan="6" class="pubsubm-col" data-tip="${tip}">Pub/Sub (Membership)</th>`;
+      } else if (s.type === 'pubsubm-local') {
+        const tip = specTip(s);
+        html += `<th colspan="6" class="pubsubm-col" data-tip="${tip}">Pub/Sub (Local ${s.radius ?? 2000}km)</th>`;
       } else if (s.type === 'pubsubmchurn') {
         const tip = specTip(s);
-        html += `<th colspan="4" class="pubsubm-col" data-tip="${tip}">Pub/Sub (M+${s.rate}% Churn)</th>`;
+        html += `<th colspan="11" class="pubsubm-col" data-tip="${tip}">Pub/Sub (M+${s.rate}% Churn)</th>`;
       } else {
         html += `<th colspan="2"${cls} data-tip="${specTip(s)}">${specLabel(s)}</th>`;
       }
@@ -1231,16 +1456,25 @@ export class Results {
         html += `<th class="sub pubsub-bsub">max</th>`;
         html += `<th class="sub pubsub-bsub">lvl</th>`;
         html += `<th class="sub pubsub-bsub">avg</th>`;
-      } else if (s.type === 'pubsubm') {
+      } else if (s.type === 'pubsubm' || s.type === 'pubsubm-local') {
         html += `<th class="sub pubsubm-sub" data-tip="Fraction of subscribers that received each tick's publish. 100% = fully healthy tree.">deliv%</th>`;
         html += `<th class="sub pubsubm-sub" data-tip="Total axon nodes in the network holding this topic. 1 = flat tree (root only); > 1 = sub-axons recruited.">axons</th>`;
         html += `<th class="sub pubsubm-sub" data-tip="Largest direct-child count at any single axon. Capped by maxDirectSubs (default 20).">max/ax</th>`;
         html += `<th class="sub pubsubm-sub" data-tip="Rough tree depth: 1 = flat, 2 = has sub-axons.">depth</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Average overlap between publisher's K-closest set and subscribers' K-closest sets, as % of K. 100% = every publisher/subscriber pair agrees on all K replicas.">K-ov%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Fraction of publisher/subscriber pairs where all K entries match exactly. Should be ~100% at steady state; divergence here predicts delivery misses.">conv%</th>`;
       } else if (s.type === 'pubsubmchurn') {
         html += `<th class="sub pubsubm-sub" data-tip="Delivery % BEFORE any nodes die. Should be ~100% at steady state.">base%</th>`;
         html += `<th class="sub pubsubm-sub" data-tip="Delivery % IMMEDIATELY after killing nodes, before any refresh. Measures raw K-closest redundancy.">imm%</th>`;
         html += `<th class="sub pubsubm-sub" data-tip="Delivery % after refresh ticks run across surviving axons. Measures TTL+refresh recovery.">rec%</th>`;
         html += `<th class="sub pubsubm-sub" data-tip="Number of nodes killed during the run.">killed</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Publisher/subscriber K-closest overlap % BEFORE churn. Should be ~100%.">base-ov%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="K-closest overlap IMMEDIATELY after churn, before refresh. Quantifies how much publisher/subscriber views diverged when nodes died.">imm-ov%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="K-closest overlap AFTER refresh. Shows how much convergence recovered as both sides re-computed K-closest over the refreshed node set.">rec-ov%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Publisher K-set stability IMMEDIATELY after churn: fraction of pre-churn K-set still in publisher's current K-set (capped by the ~75% survival rate at 25% churn).">imm-pubS%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Subscriber K-set stability IMMEDIATELY after churn: same metric from subscribers' viewpoint. Tests the hypothesis that publishers anchor more stable K-sets than subscribers do.">imm-subS%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Publisher K-set stability AFTER refresh.">rec-pubS%</th>`;
+        html += `<th class="sub pubsubm-sub" data-tip="Subscriber K-set stability AFTER refresh.">rec-subS%</th>`;
       } else {
         html += `<th class="sub${sub}">hops</th><th class="sub${sub}">ms</th>`;
       }
@@ -1286,7 +1520,7 @@ export class Results {
         const isChurn     = s.type === 'churn';
         const isContinent = s.type === 'continent';
         const isPubSub    = s.type === 'pubsub';
-        const isPubSubM   = s.type === 'pubsubm';
+        const isPubSubM   = s.type === 'pubsubm' || s.type === 'pubsubm-local';
         const isPubSubMC  = s.type === 'pubsubmchurn';
         const specCls     = isSrc ? ' src-cell' : isDest ? ' dest-cell' : isSrcDest ? ' srcdest-cell' : isChurn ? ' churn-cell' : isContinent ? ' continent-cell' : isPubSub ? ' pubsub-cell' : (isPubSubM || isPubSubMC) ? ' pubsubm-cell' : '';
 
@@ -1325,42 +1559,61 @@ export class Results {
         // Pub/Sub (M+Churn): four cells — baseline%, immediate%, recovered%, killed.
         if (isPubSubMC) {
           if (!cell) {
-            html += `<td class="no-data pubsubm-cell" colspan="4">—</td>`;
+            html += `<td class="no-data pubsubm-cell" colspan="11">—</td>`;
             continue;
           }
           if (cell.unsupported) {
-            html += `<td class="no-data pubsubm-cell" colspan="4" data-tip="protocol does not support membership pub/sub">n/a</td>`;
+            html += `<td class="no-data pubsubm-cell" colspan="11" data-tip="protocol does not support membership pub/sub">n/a</td>`;
             continue;
           }
-          const base = cell.baseline?.mean  != null ? cell.baseline.mean.toFixed(1) + '%'  : '—';
-          const imm  = cell.immediate?.mean != null ? cell.immediate.mean.toFixed(1) + '%' : '—';
-          const rec  = cell.recovered?.mean != null ? cell.recovered.mean.toFixed(1) + '%' : '—';
-          const kill = cell.killedCount     ?? '—';
+          const base   = cell.baseline?.mean  != null ? cell.baseline.mean.toFixed(1) + '%'  : '—';
+          const imm    = cell.immediate?.mean != null ? cell.immediate.mean.toFixed(1) + '%' : '—';
+          const rec    = cell.recovered?.mean != null ? cell.recovered.mean.toFixed(1) + '%' : '—';
+          const kill   = cell.killedCount     ?? '—';
+          const bOv    = cell.baselineOverlap?.overlapPct   != null ? cell.baselineOverlap.overlapPct.toFixed(1)  + '%' : '—';
+          const iOv    = cell.immediateOverlap?.overlapPct  != null ? cell.immediateOverlap.overlapPct.toFixed(1) + '%' : '—';
+          const rOv    = cell.recoveredOverlap?.overlapPct  != null ? cell.recoveredOverlap.overlapPct.toFixed(1) + '%' : '—';
+          const iPubS  = cell.immediateStability?.pubStabilityPct != null ? cell.immediateStability.pubStabilityPct.toFixed(1) + '%' : '—';
+          const iSubS  = cell.immediateStability?.subStabilityPct != null ? cell.immediateStability.subStabilityPct.toFixed(1) + '%' : '—';
+          const rPubS  = cell.recoveredStability?.pubStabilityPct != null ? cell.recoveredStability.pubStabilityPct.toFixed(1) + '%' : '—';
+          const rSubS  = cell.recoveredStability?.subStabilityPct != null ? cell.recoveredStability.subStabilityPct.toFixed(1) + '%' : '—';
           html += `<td class="hops-cell pubsubm-cell">${base}</td>`;
           html += `<td class="hops-cell pubsubm-cell">${imm}</td>`;
           html += `<td class="hops-cell pubsubm-cell">${rec}</td>`;
           html += `<td class="hops-cell pubsubm-cell">${kill}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${bOv}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${iOv}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${rOv}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${iPubS}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${iSubS}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${rPubS}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${rSubS}</td>`;
           continue;
         }
 
-        // Pub/Sub (Membership): four cells — delivered%, axon roles, max/axon, depth.
+        // Pub/Sub (Membership): six cells — delivered%, axon roles, max/axon,
+        // depth, K-overlap%, full-convergence%.
         if (isPubSubM) {
           if (!cell) {
-            html += `<td class="no-data pubsubm-cell" colspan="4">—</td>`;
+            html += `<td class="no-data pubsubm-cell" colspan="6">—</td>`;
             continue;
           }
           if (cell.unsupported) {
-            html += `<td class="no-data pubsubm-cell" colspan="4" data-tip="${cell.reason ?? 'protocol does not support the membership protocol (no axonFor)'}">n/a</td>`;
+            html += `<td class="no-data pubsubm-cell" colspan="6" data-tip="${cell.reason ?? 'protocol does not support the membership protocol (no axonFor)'}">n/a</td>`;
             continue;
           }
           const deliv = cell.deliveredPct?.mean != null ? cell.deliveredPct.mean.toFixed(1) + '%' : '—';
           const roles = cell.axonRoles?.mean    != null ? Math.round(cell.axonRoles.mean) + ''   : '—';
           const maxCh = cell.maxChildren?.mean  != null ? Math.round(cell.maxChildren.mean) + '' : '—';
           const depth = cell.treeDepth          ?? 0;
+          const ovPct = cell.overlap?.overlapPct  != null ? cell.overlap.overlapPct.toFixed(1)  + '%' : '—';
+          const cvPct = cell.overlap?.convergePct != null ? cell.overlap.convergePct.toFixed(1) + '%' : '—';
           html += `<td class="hops-cell pubsubm-cell">${deliv}</td>`;
           html += `<td class="hops-cell pubsubm-cell">${roles}</td>`;
           html += `<td class="hops-cell pubsubm-cell">${maxCh}</td>`;
           html += `<td class="hops-cell pubsubm-cell">${depth}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${ovPct}</td>`;
+          html += `<td class="hops-cell pubsubm-cell">${cvPct}</td>`;
           continue;
         }
 
@@ -1423,6 +1676,7 @@ export class Results {
                             : s.type === 'continent'  ? `${s.src}→${s.dst}`
                             : s.type === 'pubsub'     ? 'pubsub'
                             : s.type === 'pubsubm'    ? 'pubsubm'
+                            : s.type === 'pubsubm-local' ? `pubsubm-local-${s.radius ?? 2000}km`
                             : s.type === 'pubsubmchurn' ? `pubsubm+${s.rate}%churn`
                             : 'global';
     const csvSpecKey   = s => s.type === 'regional'  ? `r${s.radius}`
@@ -1433,6 +1687,7 @@ export class Results {
                             : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
                             : s.type === 'pubsub'     ? 'pubsub'
                             : s.type === 'pubsubm'    ? 'pubsubm'
+                            : s.type === 'pubsubm-local' ? 'pubsubm-local'
                             : s.type === 'pubsubmchurn' ? 'pubsubmchurn'
                             : 'global';
 
@@ -1447,10 +1702,10 @@ export class Results {
       const lbl = csvSpecLabel(s);
       if (s.type === 'pubsub') {
         headerCols.push(`${lbl} →relay hops`, `${lbl} →relay ms`, `${lbl} bcast hops`, `${lbl} bcast ms`, `${lbl} max fan-out`, `${lbl} tree depth`, `${lbl} avg subs/node`);
-      } else if (s.type === 'pubsubm') {
-        headerCols.push(`${lbl} delivered%`, `${lbl} axon roles`, `${lbl} max subs/axon`, `${lbl} tree depth`);
+      } else if (s.type === 'pubsubm' || s.type === 'pubsubm-local') {
+        headerCols.push(`${lbl} delivered%`, `${lbl} axon roles`, `${lbl} max subs/axon`, `${lbl} tree depth`, `${lbl} K-overlap%`, `${lbl} full-converge%`);
       } else if (s.type === 'pubsubmchurn') {
-        headerCols.push(`${lbl} baseline%`, `${lbl} immediate%`, `${lbl} recovered%`, `${lbl} killed`);
+        headerCols.push(`${lbl} baseline%`, `${lbl} immediate%`, `${lbl} recovered%`, `${lbl} killed`, `${lbl} baseline-overlap%`, `${lbl} immediate-overlap%`, `${lbl} recovered-overlap%`, `${lbl} imm pub-K-stab%`, `${lbl} imm sub-K-stab%`, `${lbl} rec pub-K-stab%`, `${lbl} rec sub-K-stab%`);
       } else {
         headerCols.push(`${lbl} hops`, `${lbl} ms`, `${lbl} success%`);
       }
@@ -1473,26 +1728,35 @@ export class Results {
             cell?.treeDepth != null ? cell.treeDepth + '' : '0',
             cell?.avgSubsPerNode?.mean != null ? cell.avgSubsPerNode.mean.toFixed(1) : '',
           );
-        } else if (s.type === 'pubsubm') {
+        } else if (s.type === 'pubsubm' || s.type === 'pubsubm-local') {
           if (cell?.unsupported) {
-            cols.push('n/a', 'n/a', 'n/a', 'n/a');
+            cols.push('n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a');
           } else {
             cols.push(
               cell?.deliveredPct?.mean != null ? cell.deliveredPct.mean.toFixed(1) + '%' : '',
               cell?.axonRoles?.mean    != null ? Math.round(cell.axonRoles.mean) + ''   : '',
               cell?.maxChildren?.mean  != null ? Math.round(cell.maxChildren.mean) + '' : '',
               cell?.treeDepth          != null ? cell.treeDepth + ''                    : '0',
+              cell?.overlap?.overlapPct  != null ? cell.overlap.overlapPct.toFixed(1) + '%' : '',
+              cell?.overlap?.convergePct != null ? cell.overlap.convergePct.toFixed(1) + '%' : '',
             );
           }
         } else if (s.type === 'pubsubmchurn') {
           if (cell?.unsupported) {
-            cols.push('n/a', 'n/a', 'n/a', 'n/a');
+            cols.push('n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a');
           } else {
             cols.push(
               cell?.baseline?.mean  != null ? cell.baseline.mean.toFixed(1) + '%'  : '',
               cell?.immediate?.mean != null ? cell.immediate.mean.toFixed(1) + '%' : '',
               cell?.recovered?.mean != null ? cell.recovered.mean.toFixed(1) + '%' : '',
               cell?.killedCount     != null ? cell.killedCount + ''                 : '',
+              cell?.baselineOverlap?.overlapPct   != null ? cell.baselineOverlap.overlapPct.toFixed(1) + '%'  : '',
+              cell?.immediateOverlap?.overlapPct  != null ? cell.immediateOverlap.overlapPct.toFixed(1) + '%' : '',
+              cell?.recoveredOverlap?.overlapPct  != null ? cell.recoveredOverlap.overlapPct.toFixed(1) + '%' : '',
+              cell?.immediateStability?.pubStabilityPct != null ? cell.immediateStability.pubStabilityPct.toFixed(1) + '%' : '',
+              cell?.immediateStability?.subStabilityPct != null ? cell.immediateStability.subStabilityPct.toFixed(1) + '%' : '',
+              cell?.recoveredStability?.pubStabilityPct != null ? cell.recoveredStability.pubStabilityPct.toFixed(1) + '%' : '',
+              cell?.recoveredStability?.subStabilityPct != null ? cell.recoveredStability.subStabilityPct.toFixed(1) + '%' : '',
             );
           }
         } else {
@@ -1518,11 +1782,11 @@ export class Results {
         extra.push(['Source pool %', params.sourcePct]);
       if (hasType('dest') || hasType('srcdest'))
         extra.push(['Dest pool %', params.destPct]);
-      if (hasType('pubsub') || hasType('pubsubm') || hasType('pubsubmchurn')) {
+      if (hasType('pubsub') || hasType('pubsubm') || hasType('pubsubm-local') || hasType('pubsubmchurn')) {
         extra.push(['Pub/Sub group size',  params.pubsubGroupSize]);
         extra.push(['Pub/Sub coverage %',  params.pubsubCoverage]);
       }
-      if ((hasType('pubsubm') || hasType('pubsubmchurn')) && params.nx15Params) {
+      if ((hasType('pubsubm') || hasType('pubsubm-local') || hasType('pubsubmchurn')) && params.nx15Params) {
         const m = params.nx15Params;
         if (m.rootSetSize          != null) extra.push(['NX-15 rootSetSize (K)',      m.rootSetSize]);
         if (m.maxDirectSubs        != null) extra.push(['NX-15 maxDirectSubs',        m.maxDirectSubs]);
@@ -1738,4 +2002,5 @@ export class Results {
   getHotspotCSV()  { return this._hotspotCSV()    ?? ''; }
   getPairCSV()     { return this._pairCSV()       ?? ''; }
   getTrainingCSV() { return this._trainingCSV()   ?? ''; }
+  getMembershipSimCSV() { return this._membershipSimCSV() ?? ''; }
 }

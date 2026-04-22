@@ -236,6 +236,7 @@ export class Controls {
 
   /** Return all current parameters as a plain object. */
   snapshot() {
+    const _nx17 = this.getNX17Params();
     return {
       protocol: this.dhtProtocol,
       nodeCount: this.nodeCount,
@@ -274,6 +275,13 @@ export class Controls {
       nx2wRules: this.getNX2WRules(),
       nx13Rules: this.getNX13Rules(),
       nx15Params: this.getNX15Params(),
+      nx17Params: _nx17,
+      // Live pub/sub simulation knobs (read from NX-17 panel, applied
+      // for any membership-capable protocol).
+      pubsubChurnPct:             _nx17.pubsubChurnPct,
+      pubsubTicksPerChurnRound:   _nx17.pubsubTicksPerChurnRound,
+      pubsubRefreshRoundsPerKill: _nx17.pubsubRefreshRoundsPerKill,
+      pubsubOverlapEveryN:        _nx17.pubsubOverlapEveryN,
     };
   }
 
@@ -294,6 +302,8 @@ export class Controls {
     if (nx13) nx13.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx13');
     const nx15 = this._el('nx15-panel');
     if (nx15) nx15.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx15');
+    const nx17 = this._el('nx17-panel');
+    if (nx17) nx17.classList.toggle('nx-visible', this.dhtProtocol === 'ngdhtnx17');
   }
 
   /** Read all NX-1W rule parameters from DOM inputs. */
@@ -518,6 +528,26 @@ export class Controls {
       maxSubscriptionAgeMs: int('x15-maxSubscriptionAgeMs'),
       rootGraceMs:          int('x15-rootGraceMs'),
       reorderWindowMs:      int('x15-reorderWindowMs'),
+    };
+  }
+
+  /** Read all NX-17 (routed axonal) parameters + live-sim knobs. */
+  getNX17Params() {
+    const num = id => { const el = this._el(id); return el ? parseFloat(el.value) : undefined; };
+    const int = id => { const el = this._el(id); return el ? parseInt(el.value) : undefined; };
+
+    return {
+      maxDirectSubs:                int('x17-maxDirectSubs'),
+      minDirectSubs:                int('x17-minDirectSubs'),
+      refreshIntervalMs:            int('x17-refreshIntervalMs'),
+      maxSubscriptionAgeMs:         int('x17-maxSubscriptionAgeMs'),
+      rootGraceMs:                  int('x17-rootGraceMs'),
+      // Live Pub/Sub simulation knobs (used by onMembershipPubSub in main.js).
+      // Float on churnPct so 0.5% / 0.1% are accepted.
+      pubsubChurnPct:               num('x17-pubsubChurnPct'),
+      pubsubTicksPerChurnRound:     int('x17-pubsubTicksPerChurnRound'),
+      pubsubRefreshRoundsPerKill:   int('x17-pubsubRefreshRoundsPerKill'),
+      pubsubOverlapEveryN:          int('x17-pubsubOverlapEveryN'),
     };
   }
 

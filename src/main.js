@@ -25,6 +25,7 @@ import { NeuromorphicDHTNX9 }  from './dht/neuromorphic/NeuromorphicDHTNX9.js';
 import { NeuromorphicDHTNX10 } from './dht/neuromorphic/NeuromorphicDHTNX10.js';
 import { NeuromorphicDHTNX13 } from './dht/neuromorphic/NeuromorphicDHTNX13.js';
 import { NeuromorphicDHTNX15 } from './dht/neuromorphic/NeuromorphicDHTNX15.js';
+import { NeuromorphicDHTNX17 } from './dht/neuromorphic/NeuromorphicDHTNX17.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -242,7 +243,7 @@ async function onInit() {
   results.clear();
   results.clearTraining();
   results.clearPubSub();
-  results.clearPairLearning();
+  results.clearPairLearning(); results.clearMembershipSim();
   globe.clearArcs();
   globe.clearConnections();
   globe.clearRegionalBoundary();
@@ -387,7 +388,7 @@ async function onSliceWorld() {
   results.clear();
   results.clearTraining();
   results.clearPubSub();
-  results.clearPairLearning();
+  results.clearPairLearning(); results.clearMembershipSim();
   globe.clearArcs();
   globe.clearConnections();
   globe.clearRegionalBoundary();
@@ -483,7 +484,7 @@ async function onBootstrap() {
   results.clear();
   results.clearTraining();
   results.clearPubSub();
-  results.clearPairLearning();
+  results.clearPairLearning(); results.clearMembershipSim();
   globe.clearArcs();
   globe.clearConnections();
   globe.clearRegionalBoundary();
@@ -1050,6 +1051,14 @@ async function onPubSub() {
     return;
   }
 
+  // Route to the live Membership simulation when the active protocol has
+  // the AxonManager-based membership transport (NX-15 and descendants).
+  // Older neuromorphic protocols (NX-6/9/10/13) still run the original
+  // one-shot inherited pubsubBroadcast below.
+  if (typeof dht.axonFor === 'function') {
+    return onMembershipPubSub();
+  }
+
   const params     = controls.snapshot();
   results.setRunParams(params);
   const aliveNodes = dht.getNodes().filter(n => n.alive);
@@ -1205,6 +1214,125 @@ async function onPubSub() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Membership Pub/Sub — live continuous simulation (NX-15+).
+//
+// Tick-by-tick loop. Each tick publishes once on every relay and measures
+// delivery. Every `ticksPerChurnRound` ticks, a slice of the network is
+// killed, all live nodes run refreshTick (so subs, axons, and roots all
+// re-subscribe), then measurement resumes. The run continues until the
+// user hits Stop. Used to study how the pure axonal tree heals itself
+// under continuous churn.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function onMembershipPubSub() {
+  const params = controls.snapshot();
+  results.setRunParams(params);
+
+  // Default knobs (Phase 2 moves these to UI).
+  const churnPct            = params.pubsubChurnPct            ?? 1.0;
+  const ticksPerChurnRound  = params.pubsubTicksPerChurnRound  ?? 5;
+  const refreshRoundsPerKill = params.pubsubRefreshRoundsPerKill ?? 3;
+  const overlapEveryN       = params.pubsubOverlapEveryN       ?? 10;  // measure K-overlap every N ticks
+
+  controls.setStatus('Building pub/sub groups…', 'info');
+
+  let session;
+  try {
+    session = await engine.setupMembershipSession(dht, {
+      pubsubGroupSize: params.pubsubGroupSize,
+      pubsubCoverage:  params.pubsubCoverage,
+      local:           false,
+    });
+  } catch (err) {
+    controls.setStatus(`Pub/Sub setup failed: ${err.message}`, 'warn');
+    return;
+  }
+
+  pubsubActive = true;
+  controls.setPubSub(true);
+  globe.clearArcs();
+  globe.clearConnections();
+  globe.clearRegionalBoundary();
+  if (session.groups[0]?.relay) globe.panToLatLng(session.groups[0].relay.lat, session.groups[0].relay.lng);
+
+  const initialAliveCount = dht.getNodes().filter(n => n.alive).length;
+  const history = [];
+  let tick = 0;
+  let cumulativeKilled = 0;
+
+  controls.setStatus(
+    `Membership Pub/Sub: ${session.numGroups} groups · ${session.actualCoverage.toFixed(1)}% coverage · ` +
+    `${churnPct}% churn every ${ticksPerChurnRound} ticks`,
+    'info'
+  );
+
+  while (pubsubActive) {
+    tick++;
+    // Churn on scheduled ticks; skip the very first tick so the baseline
+    // measurement reflects the pre-churn steady state.
+    const doChurn = tick > 1 && (tick % ticksPerChurnRound === 0);
+    const wantOverlap = (tick % overlapEveryN) === 0 || tick === 1;
+
+    const result = await engine.runMembershipPubSubTick(dht, session.groups, session.entries, {
+      doChurnThisTick: doChurn,
+      churnPct,
+      refreshRounds: doChurn ? refreshRoundsPerKill : 0,
+      measureOverlap: wantOverlap,
+    });
+
+    if (!pubsubActive) break;
+
+    cumulativeKilled += result.killedThisTick;
+    const cumulativeKilledPct = initialAliveCount > 0
+      ? (cumulativeKilled / initialAliveCount) * 100
+      : 0;
+
+    history.push({
+      tick,
+      deliveredPct:      result.deliveredPct,
+      delivered:         result.delivered,
+      expected:          result.expected,
+      killedThisTick:    result.killedThisTick,
+      cumulativeKilled,
+      cumulativeKilledPct,
+      axonRoles:         result.axonRoles,
+      maxFanout:         result.maxFanout,
+      treeDepth:         result.treeDepth,
+      overlapPct:        result.overlapPct,
+      convergePct:       result.convergePct,
+      didChurn:          doChurn,
+    });
+
+    // For Phase 1: update status line with a compact summary. Phase 3
+    // will wire this up to the live chart + stats table.
+    if (typeof results.showMembershipSimProgress === 'function') {
+      results.showMembershipSimProgress(history, session.numGroups, session.actualCoverage);
+    }
+    controls.setStatus(
+      `Tick ${tick} · delivered ${result.deliveredPct.toFixed(1)}% ` +
+      `(${result.delivered}/${result.expected}) · axons ${result.axonRoles} · ` +
+      `killed ${cumulativeKilled} (${cumulativeKilledPct.toFixed(1)}%)` +
+      (doChurn ? ' · ⚠ churn' : '') +
+      (result.overlapPct != null ? ` · K-ov ${result.overlapPct.toFixed(1)}%` : ''),
+      'info'
+    );
+
+    await yieldUI();
+  }
+
+  pubsubActive = false;
+  controls.setPubSub(false);
+  const finalMsg = `Membership Pub/Sub stopped after ${tick} tick(s); cumulative kill ${cumulativeKilled} (${((cumulativeKilled/initialAliveCount)*100).toFixed(1)}%).`;
+  controls.setStatus(finalMsg, 'success');
+  notify('Membership Pub/Sub stopped', finalMsg);
+  // CSV export (optional — Phase 3 will wire a richer format)
+  if (typeof results.getMembershipSimCSV === 'function') {
+    await pushResult('pubsub-membership', results.getMembershipSimCSV(),
+                     { ticks: tick, killed: cumulativeKilled, churnPct, ticksPerChurnRound });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Pair Learning — fixed one-to-one routing test
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1242,7 +1370,7 @@ async function onPairLearning() {
     return { srcId: src.id, dstId: aliveNodes[dstIdx].id };
   });
 
-  results.clearPairLearning();
+  results.clearPairLearning(); results.clearMembershipSim();
   const history = [];
   let session = 0;
 
@@ -1415,6 +1543,7 @@ async function onBenchmark() {
     { key: 'ngdhtnx10', label: 'NX-10',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
     { key: 'ngdhtnx13', label: 'NX-13',  warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
     { key: 'ngdhtnx15', label: 'NX-15',  warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
+    { key: 'ngdhtnx17', label: 'NX-17',  warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1431,6 +1560,7 @@ async function onBenchmark() {
     { key: 'continent', type: 'continent', src: 'NA', dst: 'AS' },
     { key: 'pubsub',    type: 'pubsub',   groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
     { key: 'pubsubm',   type: 'pubsubm',  groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
+    { key: 'pubsubm-local', type: 'pubsubm-local', groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage, radius: params.pubsubLocalRadius ?? 2000 },
     { key: 'pubsubmchurn', type: 'pubsubmchurn', groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage, rate: params.benchChurnPct },
     { key: 'churn',     type: 'churn',    rate: params.benchChurnPct },
   ];
@@ -1707,6 +1837,17 @@ function createDHT(params) {
         geoBits: params.geoBits,
         rules: params.nx1wRules,
         membership: params.nx15Params,   // UI-tunable pub/sub membership params
+      });
+    case 'ngdhtnx17':
+      return new NeuromorphicDHTNX17({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        geoBits: params.geoBits,
+        rules: params.nx1wRules,
+        // NX-17 ignores rootSetSize (forced to 0 in its constructor) but
+        // honours maxDirectSubs, minDirectSubs, refresh/TTL timers.
+        membership: params.nx17Params ?? params.nx15Params,
       });
     case 'kademlia':
     default:

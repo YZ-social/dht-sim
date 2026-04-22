@@ -1,5 +1,5 @@
 import { randomU64, computeStats, haversine, continentOf, buildXorRoutingTable } from '../utils/geo.js';
-import { PubSubAdapter, topicIdFor } from '../pubsub/PubSubAdapter.js';
+import { PubSubAdapter, topicIdFor, topicIdForPrefixed } from '../pubsub/PubSubAdapter.js';
 
 /**
  * SimulationEngine – orchestrates lookup tests and churn tests on a DHT.
@@ -599,34 +599,80 @@ export class SimulationEngine {
         // publishes via its own adapter; we count deliveries per-group and
         // inspect the resulting axon tree. Only supported on DHTs that
         // expose `axonFor` (NX-15 and descendants).
-        if (spec.type === 'pubsubm') {
+        if (spec.type === 'pubsubm' || spec.type === 'pubsubm-local') {
+          const isLocal = spec.type === 'pubsubm-local';
+          const resultKey = isLocal ? 'pubsubm-local' : 'pubsubm';
+          const label     = isLocal ? 'Pub/Sub (Local)' : 'Pub/Sub (Membership)';
+
           if (typeof dht.axonFor !== 'function') {
-            data[def.key]['pubsubm'] = {
+            data[def.key][resultKey] = {
               unsupported: true,
               reason:      'protocol does not expose axonFor()',
             };
-            onStep(`${tag} · Pub/Sub (Membership) — n/a`);
+            onStep(`${tag} · ${label} — n/a`);
             continue;
           }
 
           const groupSize = spec.groupSize ?? 32;
           const coverage  = spec.coverage  ?? 10;
+          const radiusKm  = spec.radius    ?? 2000;
 
           const aliveNodes  = dht.getNodes().filter(n => n.alive);
           const targetNodes = Math.ceil(aliveNodes.length * coverage / 100);
           const numGroups   = Math.max(1, Math.ceil(targetNodes / groupSize));
-          const shuffled    = [...aliveNodes].sort(() => Math.random() - 0.5);
-          const stride      = Math.max(1, Math.floor(shuffled.length / numGroups));
 
-          const groups = [];
-          for (let i = 0; i < numGroups; i++) {
-            const base         = (i * stride) % shuffled.length;
-            const relay        = shuffled[base];
-            const participants = [];
-            for (let j = 1; j <= groupSize; j++) {
-              participants.push(shuffled[(base + j) % shuffled.length]);
+          // Group construction differs between variants:
+          //   pubsubm        — relays + participants are random, global
+          //                    (stride through a shuffled node list so no
+          //                    geographic locality).
+          //   pubsubm-local  — relays are picked widely apart, and each
+          //                    relay's participants are the `groupSize`
+          //                    closest alive nodes by haversine distance
+          //                    (within `radiusKm`). If a relay has fewer
+          //                    than groupSize neighbours in the radius,
+          //                    the group runs at whatever size it has —
+          //                    we'd rather measure honest locality than
+          //                    pad with far-away nodes.
+          const shuffled    = [...aliveNodes].sort(() => Math.random() - 0.5);
+          const groups      = [];
+          if (!isLocal) {
+            const stride = Math.max(1, Math.floor(shuffled.length / numGroups));
+            for (let i = 0; i < numGroups; i++) {
+              const base         = (i * stride) % shuffled.length;
+              const relay        = shuffled[base];
+              const participants = [];
+              for (let j = 1; j <= groupSize; j++) {
+                participants.push(shuffled[(base + j) % shuffled.length]);
+              }
+              groups.push({ id: i, relay, participants });
             }
-            groups.push({ id: i, relay, participants });
+          } else {
+            // Pick relays widely apart by sampling at stride intervals from
+            // the shuffled list (same as the global variant — spreads them
+            // across latitudes/longitudes roughly uniformly since geoCellId
+            // is not correlated with list position).
+            const stride = Math.max(1, Math.floor(shuffled.length / numGroups));
+            const relays = [];
+            for (let i = 0; i < numGroups; i++) {
+              relays.push(shuffled[(i * stride) % shuffled.length]);
+            }
+            // For each relay, find the `groupSize` closest neighbours by
+            // haversine distance within radiusKm, excluding other relays.
+            const relaySet = new Set(relays.map(r => r.id));
+            for (let i = 0; i < relays.length; i++) {
+              const relay = relays[i];
+              const cand  = [];
+              for (const n of aliveNodes) {
+                if (n === relay || relaySet.has(n.id)) continue;
+                const d = haversine(relay.lat, relay.lng, n.lat, n.lng);
+                if (d <= radiusKm) cand.push({ node: n, d });
+              }
+              cand.sort((a, b) => a.d - b.d);
+              const participants = cand.slice(0, groupSize).map(x => x.node);
+              // Even if participants is empty, push the group so CSV gets
+              // a consistent row count; measureDeliveredPct tolerates it.
+              groups.push({ id: i, relay, participants });
+            }
           }
 
           // Pre-register an AxonManager on every live node. The membership
@@ -652,13 +698,27 @@ export class SimulationEngine {
             return e;
           };
 
+          // Topic naming: protocols that opt into publisher-prefix addressing
+          // (NX-17+) get '@XX/bench' as the domain, where XX is the relay's
+          // 8-bit S2 cell prefix in lowercase hex. The adapter's
+          // topicIdForPrefixed parses the sentinel and pins the topic ID
+          // into the relay's cell. Older protocols (NX-15 and earlier) get plain
+          // 'bench' and fall through to the unprefixed 64-bit hash.
+          const usePrefix    = dht.usesPublisherPrefix === true;
+          const domainFor    = (group) => {
+            if (!usePrefix) return 'bench';
+            const pfxByte = Number((group.relay.id >> 56n) & 0xffn);
+            return `@${pfxByte.toString(16).padStart(2, '0')}/bench`;
+          };
+
           for (const group of groups) {
-            const gKey = 'g' + group.id;
+            const gKey   = 'g' + group.id;
+            const domain = domainFor(group);
             for (const p of group.participants) {
               const entry = getEntry(p);
               entry.deliveries.set(group.id, false);
               // Capture by-group delivery via the subscribe callback.
-              entry.adapter.subscribe('bench', gKey,
+              entry.adapter.subscribe(domain, gKey,
                 () => { entry.deliveries.set(group.id, true); }, 'immediate');
             }
             // Publisher adapter (may be different node than any participant).
@@ -667,7 +727,7 @@ export class SimulationEngine {
 
           // Short warmup — let the tree stabilise before we start counting.
           const warmupTicks = 3;
-          onStart(`${tag} · Pub/Sub (Membership) warmup (${warmupTicks} ticks)…`);
+          onStart(`${tag} · ${label} warmup (${warmupTicks} ticks)…`);
           const runOneTick = () => {
             // Reset per-group delivery bits.
             for (const e of entries.values()) {
@@ -676,13 +736,13 @@ export class SimulationEngine {
             // Publish on each group (synchronous under NX-15 — no await needed).
             for (const group of groups) {
               const gKey = 'g' + group.id;
-              getEntry(group.relay).adapter.publish('bench', gKey, {});
+              getEntry(group.relay).adapter.publish(domainFor(group), gKey, {});
             }
           };
           for (let t = 0; t < warmupTicks; t++) { if (!this.running) break; runOneTick(); }
 
           const measTicks = Math.max(10, Math.ceil(numMessages / (groupSize + 1)));
-          onStart(`${tag} · Pub/Sub (Membership) (${measTicks} ticks)…`);
+          onStart(`${tag} · ${label} (${measTicks} ticks)…`);
 
           const perTickDeliveredPct = [];
           const perTickAxonRoles    = [];
@@ -705,7 +765,7 @@ export class SimulationEngine {
             // Inspect the network's axon roles for each topic.
             let totalRoles = 0, maxChildren = 0, maxDepth = 1;
             for (const group of groups) {
-              const topicId = topicIdFor('bench', 'g' + group.id);
+              const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
               for (const axon of dht._axonsByNode.values()) {
                 const role = axon.axonRoles.get(topicId);
                 if (!role) continue;
@@ -719,16 +779,57 @@ export class SimulationEngine {
             perTickTreeDepth.push(maxDepth);
           }
 
-          data[def.key]['pubsubm'] = {
+          // Per-topic K-closest overlap diagnostic. Measures whether the
+          // publisher and a sample of its subscribers compute the same K
+          // set for each topic. At steady state this should be ~100% (all
+          // K, all pairs) if the addressing scheme produces deterministic
+          // convergence. Divergence here is the proximate cause of
+          // delivery misses seen in pubsubmchurn — measuring it separately
+          // helps explain churn behaviour.
+          const SAMPLE_PER_GROUP = 5;
+          const anyAxon = [...dht._axonsByNode.values()][0];
+          // Use `||` (not `??`) so rootSetSize=0 — which signals routed
+          // mode with no K-replication — still falls through to K=5 for
+          // the diagnostic computation. Overlap / stability stay
+          // meaningful metrics in routed mode too: they answer "do
+          // publisher and subscriber agree on the top-K candidates by
+          // XOR distance to topicId", which predicts delivery regardless
+          // of whether the protocol actually stores at all K of them.
+          const overlapK = anyAxon?.rootSetSize || 5;
+          let totalOverlap = 0, totalSamples = 0, fullConverge = 0;
+          for (const group of groups) {
+            const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
+            const pubK = dht.findKClosest(group.relay, topicId, overlapK).map(n => n.id);
+            const pubSet = new Set(pubK);
+            const sample = group.participants.slice(0, SAMPLE_PER_GROUP);
+            for (const sub of sample) {
+              const subK = dht.findKClosest(sub, topicId, overlapK).map(n => n.id);
+              const ov = subK.filter(id => pubSet.has(id)).length;
+              totalOverlap += ov;
+              totalSamples++;
+              if (ov === overlapK) fullConverge++;
+            }
+          }
+          const overlap = totalSamples === 0
+            ? { overlapPct: null, convergePct: null, samples: 0 }
+            : {
+                overlapPct:  (totalOverlap / (totalSamples * overlapK)) * 100,
+                convergePct: (fullConverge / totalSamples) * 100,
+                samples:     totalSamples,
+              };
+
+          data[def.key][resultKey] = {
             deliveredPct:  computeStats(perTickDeliveredPct),
             axonRoles:     computeStats(perTickAxonRoles),
             maxChildren:   computeStats(perTickMaxChildren),
             treeDepth:     Math.max(...perTickTreeDepth, 1),
+            overlap,
             numGroups,
             groupSize,
             totalTicks:    measTicks,
+            ...(isLocal ? { radiusKm, avgParticipants: groups.reduce((s, g) => s + g.participants.length, 0) / Math.max(1, groups.length) } : {}),
           };
-          onStep(`${tag} · Pub/Sub (Membership) ✓`);
+          onStep(`${tag} · ${label} ✓`);
           continue;
         }
 
@@ -789,12 +890,23 @@ export class SimulationEngine {
             entries.set(node.id, e);
             return e;
           };
+          // Same '@XX/bench' topic-naming logic as the pubsubm handler
+          // above. NX-17+ (dht.usesPublisherPrefix) gets the publisher's
+          // cell prefix baked into every topic ID.
+          const usePrefix = dht.usesPublisherPrefix === true;
+          const domainFor = (group) => {
+            if (!usePrefix) return 'bench';
+            const pfxByte = Number((group.relay.id >> 56n) & 0xffn);
+            return `@${pfxByte.toString(16).padStart(2, '0')}/bench`;
+          };
+
           for (const group of groups) {
-            const gKey = 'g' + group.id;
+            const gKey   = 'g' + group.id;
+            const domain = domainFor(group);
             for (const p of group.participants) {
               const entry = getEntry(p);
               entry.deliveries.set(group.id, false);
-              entry.adapter.subscribe('bench', gKey,
+              entry.adapter.subscribe(domain, gKey,
                 () => { entry.deliveries.set(group.id, true); }, 'immediate');
             }
             getEntry(group.relay);
@@ -808,7 +920,7 @@ export class SimulationEngine {
             for (const group of groups) {
               if (!group.relay.alive) continue;
               const gKey = 'g' + group.id;
-              getEntry(group.relay).adapter.publish('bench', gKey, {});
+              getEntry(group.relay).adapter.publish(domainFor(group), gKey, {});
             }
           };
           const measureDeliveredPct = () => {
@@ -821,6 +933,119 @@ export class SimulationEngine {
               }
             }
             return expected === 0 ? 100 : (delivered / expected) * 100;
+          };
+
+          // ── Per-topic K-closest overlap diagnostic ──────────────────────
+          // For each topic, compute the set the publisher's findKClosest
+          // returns and compare against each subscriber's set. This is the
+          // mechanism that determines whether a publish actually reaches
+          // subscribers: they only match if both parties' K-closest views
+          // overlap. Under churn, divergence between publisher and
+          // subscriber views is the proximate cause of delivery misses.
+          //
+          // Sample up to SAMPLE_PER_GROUP live subscribers per group to
+          // keep the cost bounded at scale. Returns mean overlap as %
+          // of K and the fraction of samples achieving full convergence
+          // (all K match exactly).
+          const SAMPLE_PER_GROUP = 5;
+          const anyAxon = [...dht._axonsByNode.values()][0];
+          // Use `||` (not `??`) so rootSetSize=0 — which signals routed
+          // mode with no K-replication — still falls through to K=5 for
+          // the diagnostic computation. Overlap / stability stay
+          // meaningful metrics in routed mode too: they answer "do
+          // publisher and subscriber agree on the top-K candidates by
+          // XOR distance to topicId", which predicts delivery regardless
+          // of whether the protocol actually stores at all K of them.
+          const overlapK = anyAxon?.rootSetSize || 5;
+          const measureOverlap = () => {
+            let totalOverlap = 0, totalSamples = 0, fullConverge = 0;
+            for (const group of groups) {
+              if (!group.relay.alive) continue;
+              const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
+              const pubK = dht.findKClosest(group.relay, topicId, overlapK).map(n => n.id);
+              const pubSet = new Set(pubK);
+              const liveSubs = group.participants.filter(p => p.alive);
+              const sample = liveSubs.slice(0, SAMPLE_PER_GROUP);
+              for (const sub of sample) {
+                const subK = dht.findKClosest(sub, topicId, overlapK).map(n => n.id);
+                const ov = subK.filter(id => pubSet.has(id)).length;
+                totalOverlap += ov;
+                totalSamples++;
+                if (ov === overlapK) fullConverge++;
+              }
+            }
+            if (totalSamples === 0) return { overlapPct: null, convergePct: null, samples: 0 };
+            return {
+              overlapPct:  (totalOverlap / (totalSamples * overlapK)) * 100,
+              convergePct: (fullConverge / totalSamples) * 100,
+              samples:     totalSamples,
+            };
+          };
+
+          // ── K-set stability diagnostic ─────────────────────────────────
+          // Complementary to overlap: does each caller's OWN K-set drift
+          // between phases? Takes a snapshot of publisher + subscriber
+          // K-sets per topic and later compares against current values.
+          //
+          // This distinguishes "publisher and subscriber diverge" (overlap)
+          // from "each side's view churns internally" (stability). The
+          // NX-17 25%-churn advantage turned out to come WITH *lower*
+          // publisher/subscriber overlap, so the hypothesis is that the
+          // advantage comes from publisher-K-stability instead: publisher's
+          // LTP-trained routing into its own cell means its findKClosest
+          // keeps returning the same, reachable K even after 25% of nodes
+          // die — giving subscribers' pre-churn subscriptions (registered
+          // at publisher's then-K) a higher chance of still matching.
+          const snapshotKSets = () => {
+            // groupId → { pub: Set<id>, subs: Map<subNodeId, Set<id>> }
+            const snap = new Map();
+            for (const group of groups) {
+              if (!group.relay.alive) continue;
+              const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
+              const pub = new Set(dht.findKClosest(group.relay, topicId, overlapK).map(n => n.id));
+              const subs = new Map();
+              const liveSubs = group.participants.filter(p => p.alive);
+              for (const sub of liveSubs.slice(0, SAMPLE_PER_GROUP)) {
+                const s = new Set(dht.findKClosest(sub, topicId, overlapK).map(n => n.id));
+                subs.set(sub.id, s);
+              }
+              snap.set(group.id, { pub, subs });
+            }
+            return snap;
+          };
+
+          // Compare current K-sets against a snapshot. "Stability" for each
+          // caller = (K-set members from snapshot still in current K-set)
+          // divided by K. Dead nodes count as lost (they cannot remain in
+          // top-K because findKClosest filters dead), so stability is capped
+          // by survival rate.
+          const measureStability = (snap) => {
+            let pubTotal = 0, pubCount = 0;
+            let subTotal = 0, subCount = 0;
+            for (const group of groups) {
+              if (!group.relay.alive) continue;
+              const rec = snap.get(group.id);
+              if (!rec) continue;
+              const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
+              const curPub = new Set(dht.findKClosest(group.relay, topicId, overlapK).map(n => n.id));
+              const pubStable = [...rec.pub].filter(id => curPub.has(id)).length;
+              pubTotal += pubStable / overlapK;
+              pubCount++;
+              for (const [subId, subSnap] of rec.subs) {
+                const subNode = dht.nodeMap.get(subId);
+                if (!subNode?.alive) continue;
+                const curSub = new Set(dht.findKClosest(subNode, topicId, overlapK).map(n => n.id));
+                const subStable = [...subSnap].filter(id => curSub.has(id)).length;
+                subTotal += subStable / overlapK;
+                subCount++;
+              }
+            }
+            return {
+              pubStabilityPct: pubCount ? (pubTotal / pubCount) * 100 : null,
+              subStabilityPct: subCount ? (subTotal / subCount) * 100 : null,
+              pubSamples: pubCount,
+              subSamples: subCount,
+            };
           };
 
           // Phase 1: warmup (let tree stabilise).
@@ -836,6 +1061,11 @@ export class SimulationEngine {
             runOneTick();
             baseline.push(measureDeliveredPct());
           }
+          const baselineOverlap = measureOverlap();
+          // Snapshot K-sets RIGHT BEFORE churn so stability is measured
+          // relative to the steady-state views, not polluted by phase-4
+          // rerouting.
+          const kSnapshot = snapshotKSets();
 
           // Phase 3: kill churnRate% of nodes. Exclude relays so publishes
           // can keep firing (we're testing subscriber/axon churn, not
@@ -855,6 +1085,8 @@ export class SimulationEngine {
             runOneTick();
             immediate.push(measureDeliveredPct());
           }
+          const immediateOverlap   = measureOverlap();
+          const immediateStability = measureStability(kSnapshot);
 
           // Phase 5: drive refresh cycles so TTL sweeps + re-STOREs can heal
           // the tree. Multiple rounds let cascading effects settle.
@@ -873,11 +1105,18 @@ export class SimulationEngine {
             runOneTick();
             recovered.push(measureDeliveredPct());
           }
+          const recoveredOverlap   = measureOverlap();
+          const recoveredStability = measureStability(kSnapshot);
 
           data[def.key]['pubsubmchurn'] = {
             baseline:       computeStats(baseline),
             immediate:      computeStats(immediate),
             recovered:      computeStats(recovered),
+            baselineOverlap,
+            immediateOverlap,
+            recoveredOverlap,
+            immediateStability,
+            recoveredStability,
             killedCount:    numKilled,
             totalNodes:     aliveNodes.length,
             churnRate,
@@ -1219,6 +1458,264 @@ export class SimulationEngine {
       lastParticipantNodes,
       messagesPerSession,
       totalBcasts:       allBcastHops.length,
+    };
+  }
+
+  // ── Membership Pub/Sub (live continuous simulation) ─────────────────────
+  //
+  // Supports a Train-Network-style loop: user clicks Pub/Sub, we run
+  // iterative tick-by-tick until they stop. Each tick publishes once on
+  // every group and measures delivered %, optionally killing some
+  // fraction of nodes and running a refresh pass every N ticks.
+  //
+  // setupMembershipSession()         — one-time setup (groups, axons, subs)
+  // runMembershipPubSubTick()        — one measurement tick
+
+  /**
+   * Build groups, pre-register AxonManagers, subscribe every participant.
+   * Publisher-prefix ('@XX/bench') topic naming is used when the DHT
+   * advertises dht.usesPublisherPrefix === true (NX-17+).
+   *
+   * Returns { groups, entries, actualCoverage, domainFor } where
+   * `entries` is a Map<nodeId, {node, adapter, deliveries}> that the tick
+   * loop uses to issue publishes and read delivery bits.
+   */
+  async setupMembershipSession(dht, {
+    pubsubGroupSize = 32,
+    pubsubCoverage  = 10,
+    local           = false,
+    localRadiusKm   = 2000,
+  } = {}) {
+    if (typeof dht.axonFor !== 'function') {
+      throw Error('membership session: protocol does not expose axonFor() (requires NX-15+)');
+    }
+
+    const aliveNodes  = dht.getNodes().filter(n => n.alive);
+    const targetNodes = Math.ceil(aliveNodes.length * pubsubCoverage / 100);
+    const numGroups   = Math.max(1, Math.ceil(targetNodes / pubsubGroupSize));
+    const shuffled    = [...aliveNodes].sort(() => Math.random() - 0.5);
+    const stride      = Math.max(1, Math.floor(shuffled.length / numGroups));
+
+    const groups = [];
+    if (!local) {
+      for (let i = 0; i < numGroups; i++) {
+        const base = (i * stride) % shuffled.length;
+        const relay = shuffled[base];
+        const participants = [];
+        for (let j = 1; j <= pubsubGroupSize; j++) {
+          participants.push(shuffled[(base + j) % shuffled.length]);
+        }
+        groups.push({ id: i, relay, participants });
+      }
+    } else {
+      // Clustered mode: each relay picks geographically-nearest peers.
+      const relays = [];
+      for (let i = 0; i < numGroups; i++) relays.push(shuffled[(i * stride) % shuffled.length]);
+      const relaySet = new Set(relays.map(r => r.id));
+      for (let i = 0; i < relays.length; i++) {
+        const relay = relays[i];
+        const cand  = [];
+        for (const n of aliveNodes) {
+          if (n === relay || relaySet.has(n.id)) continue;
+          const d = haversine(relay.lat, relay.lng, n.lat, n.lng);
+          if (d <= localRadiusKm) cand.push({ node: n, d });
+        }
+        cand.sort((a, b) => a.d - b.d);
+        groups.push({ id: i, relay, participants: cand.slice(0, pubsubGroupSize).map(x => x.node) });
+      }
+    }
+
+    // Pre-register axons on every live node so the routed subscribe can
+    // land anywhere along a path and find a handler.
+    for (const node of aliveNodes) dht.axonFor(node);
+
+    // One adapter per distinct participating node.
+    const entries = new Map();
+    const getEntry = (node) => {
+      let e = entries.get(node.id);
+      if (e) return e;
+      e = { node, adapter: new PubSubAdapter({ transport: dht.axonFor(node) }),
+            deliveries: new Map() };
+      entries.set(node.id, e);
+      return e;
+    };
+
+    const usePrefix = dht.usesPublisherPrefix === true;
+    const domainFor = (group) => {
+      if (!usePrefix) return 'bench';
+      const pfxByte = Number((group.relay.id >> 56n) & 0xffn);
+      return `@${pfxByte.toString(16).padStart(2, '0')}/bench`;
+    };
+
+    for (const group of groups) {
+      const gKey   = 'g' + group.id;
+      const domain = domainFor(group);
+      for (const p of group.participants) {
+        const entry = getEntry(p);
+        entry.deliveries.set(group.id, false);
+        entry.adapter.subscribe(domain, gKey,
+          () => { entry.deliveries.set(group.id, true); }, 'immediate');
+      }
+      getEntry(group.relay);
+    }
+
+    // Short warmup: run a couple of refresh ticks so the tree settles.
+    for (let r = 0; r < 2; r++) {
+      for (const node of aliveNodes) {
+        if (!node.alive) continue;
+        dht.axonFor(node).refreshTick();
+      }
+    }
+
+    const covered = new Set();
+    for (const g of groups) {
+      covered.add(g.relay.id);
+      for (const p of g.participants) covered.add(p.id);
+    }
+    const actualCoverage = (covered.size / aliveNodes.length) * 100;
+
+    return { groups, entries, domainFor, actualCoverage, numGroups };
+  }
+
+  /**
+   * Run one tick of the membership pub/sub simulation.
+   *
+   * Flow:
+   *   1. Optionally kill churnPct% of alive non-publisher nodes.
+   *   2. Optionally run refreshRounds passes of refreshTick across all
+   *      live nodes (subscribers + axons + roots all re-subscribe).
+   *   3. Reset per-group delivery bits.
+   *   4. Publish once on every live relay.
+   *   5. Count delivered / expected across all groups. Dead subscribers
+   *      are excluded from the denominator (we measure survivor
+   *      delivery, not resurrection).
+   *   6. Collect tree-shape metrics (axon-role count, max fan-out,
+   *      max tree depth) and, optionally, publisher/subscriber K-overlap.
+   *
+   * Returns a history row suitable for accumulation.
+   */
+  async runMembershipPubSubTick(dht, groups, entries, opts = {}) {
+    const {
+      doChurnThisTick = false,
+      churnPct        = 0,          // percent of alive non-publishers to kill
+      refreshRounds   = 0,          // refreshTick passes after churn, before measurement
+      measureOverlap  = false,      // optionally compute pub/sub K-overlap
+    } = opts;
+
+    let killedThisTick = 0;
+
+    // Step 1 — churn.
+    if (doChurnThisTick && churnPct > 0) {
+      const aliveNodes   = dht.getNodes().filter(n => n.alive);
+      const publisherIds = new Set(groups.map(g => g.relay.id));
+      const killable     = aliveNodes.filter(n => !publisherIds.has(n.id));
+      killable.sort(() => Math.random() - 0.5);
+      const killTarget = Math.floor(aliveNodes.length * churnPct / 100);
+      const n = Math.min(killTarget, killable.length);
+      for (let i = 0; i < n; i++) killable[i].alive = false;
+      killedThisTick = n;
+    }
+
+    // Step 2 — refreshTick across all live nodes.
+    for (let r = 0; r < refreshRounds; r++) {
+      for (const e of entries.values()) {
+        if (!e.node.alive) continue;
+        dht.axonFor(e.node).refreshTick();
+      }
+      // Also refresh axons on any live node that's not in entries
+      // (intermediate nodes that captured subscribe traffic):
+      for (const node of dht.getNodes()) {
+        if (!node.alive || entries.has(node.id)) continue;
+        dht.axonFor(node).refreshTick();
+      }
+    }
+
+    // Step 3 — reset delivery bits.
+    for (const e of entries.values()) {
+      if (!e.node.alive) continue;
+      for (const gid of e.deliveries.keys()) e.deliveries.set(gid, false);
+    }
+
+    // Step 4 — publish on every live relay.
+    for (const group of groups) {
+      if (!group.relay.alive) continue;
+      const gKey = 'g' + group.id;
+      const entry = entries.get(group.relay.id);
+      if (!entry) continue;
+      const usePrefix = dht.usesPublisherPrefix === true;
+      const domain = usePrefix
+        ? `@${Number((group.relay.id >> 56n) & 0xffn).toString(16).padStart(2, '0')}/bench`
+        : 'bench';
+      entry.adapter.publish(domain, gKey, {});
+    }
+
+    // Step 5 — measure delivery.
+    let delivered = 0, expected = 0;
+    for (const group of groups) {
+      for (const p of group.participants) {
+        if (!p.alive) continue;                 // exclude dead subs
+        expected++;
+        if (entries.get(p.id)?.deliveries.get(group.id)) delivered++;
+      }
+    }
+    const deliveredPct = expected === 0 ? 100 : (delivered / expected) * 100;
+
+    // Step 6 — tree-shape metrics.
+    const { topicIdForPrefixed: tIdFor } = await import('../pubsub/PubSubAdapter.js');
+    let totalRoles = 0, maxFanout = 0, maxDepth = 1;
+    const usePrefix = dht.usesPublisherPrefix === true;
+    const domainOf = (group) => usePrefix
+      ? `@${Number((group.relay.id >> 56n) & 0xffn).toString(16).padStart(2, '0')}/bench`
+      : 'bench';
+    for (const group of groups) {
+      const topicId = tIdFor(domainOf(group), 'g' + group.id);
+      for (const axon of dht._axonsByNode.values()) {
+        const role = axon.axonRoles.get(topicId);
+        if (!role) continue;
+        totalRoles++;
+        if (role.children.size > maxFanout) maxFanout = role.children.size;
+        if (!role.isRoot) maxDepth = Math.max(maxDepth, 2);
+      }
+    }
+
+    // Optional: pub/sub K-overlap (costs extra findKClosest calls).
+    let overlapPct = null;
+    let convergePct = null;
+    if (measureOverlap && typeof dht.findKClosest === 'function') {
+      const anyAxon = [...dht._axonsByNode.values()][0];
+      const K = anyAxon?.rootSetSize || 5;
+      const SAMPLE_PER_GROUP = 3;
+      let total = 0, samples = 0, full = 0;
+      for (const group of groups) {
+        if (!group.relay.alive) continue;
+        const topicId = tIdFor(domainOf(group), 'g' + group.id);
+        const pubK = dht.findKClosest(group.relay, topicId, K).map(n => n.id);
+        const pubSet = new Set(pubK);
+        const liveSubs = group.participants.filter(p => p.alive).slice(0, SAMPLE_PER_GROUP);
+        for (const sub of liveSubs) {
+          const subK = dht.findKClosest(sub, topicId, K).map(n => n.id);
+          const ov = subK.filter(id => pubSet.has(id)).length;
+          total += ov;
+          samples++;
+          if (ov === K) full++;
+        }
+      }
+      if (samples > 0) {
+        overlapPct  = (total / (samples * K)) * 100;
+        convergePct = (full / samples) * 100;
+      }
+    }
+
+    return {
+      delivered,
+      expected,
+      deliveredPct,
+      killedThisTick,
+      axonRoles:  totalRoles,
+      maxFanout,
+      treeDepth:  maxDepth,
+      overlapPct,
+      convergePct,
     };
   }
 

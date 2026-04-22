@@ -115,6 +115,15 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
       // the axon beyond maxDirectSubs.
       pickRecruitPeer: (role, meta, subscriberId) =>
         this._pickRecruitPeer(node, role, meta, subscriberId),
+      // Subclass hook: if the subclass implements _pickRelayPeer, pass it
+      // as AxonManager's pickRelayPeer (activates the batch-adoption
+      // path). NX-17 implements this to return an external synaptome
+      // peer; plain NX-15 leaves it undefined so AxonManager falls
+      // through to the legacy single-recruit path.
+      pickRelayPeer: (typeof this._pickRelayPeer === 'function')
+        ? (role, subscriberId, forwarderId) =>
+            this._pickRelayPeer(node, role, subscriberId, forwarderId)
+        : null,
     });
     this._axonsByNode.set(node, axon);
     return axon;
@@ -335,9 +344,38 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     let previousId = originId;
     let hops = 0;
 
+    // Terminal-globality visited set: if the greedy walk thinks it has
+    // reached a terminal (no synaptome peer strictly closer to the
+    // target), we verify via findKClosest(targetId, 1). If findKClosest
+    // — which reaches through 2-hop expansion and incomingSynapses —
+    // identifies a more globally-close node that current's local view
+    // could not see, we forward the message there. Without this check,
+    // different callers' greedy walks converge on different *local*
+    // terminals, each of which opens its own axon root for the same
+    // topic. That produces multiple roots per topic and publishes miss
+    // any subscriber attached to a sibling root.
+    //
+    // `visitedTerminalCheck` prevents ping-pong if two nodes mutually
+    // prefer each other under findKClosest: once we've forwarded from
+    // current → X, we won't accept X → current as a globality redirect
+    // later in the same walk.
+    const visitedTerminalCheck = new Set();
+
     while (hops < maxHops) {
-      const nextHop = this._greedyNextHopToward(current, targetId);
-      const isTerminal = nextHop === null;
+      let nextHop = this._greedyNextHopToward(current, targetId);
+      let isTerminal = nextHop === null;
+
+      if (isTerminal) {
+        // Verify: is there actually a more-global-closest live peer?
+        const [globalClosest] = this.findKClosest(current, targetId, 1);
+        if (globalClosest
+            && globalClosest.id !== current.id
+            && !visitedTerminalCheck.has(globalClosest.id)) {
+          visitedTerminalCheck.add(current.id);
+          nextHop = globalClosest;
+          isTerminal = false;
+        }
+      }
 
       const result = this._deliverRouted(current, type, payload, {
         fromId:   previousId,

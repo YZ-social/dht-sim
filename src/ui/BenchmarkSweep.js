@@ -31,7 +31,13 @@ export class BenchmarkSweep {
   async _pollExperiment() {
     if (this._running) return;
     try {
-      const r   = await fetch('/api/experiment');
+      // Include the currently-loaded version in every poll so the server
+      // (and Claude, via /api/status) can detect a stale-cache tab before
+      // queueing a benchmark whose output schema depends on new code.
+      const legend = document.getElementById('legend')?.textContent ?? '';
+      const v = (legend.match(/Version:\s*([\w.+-]+)/i)?.[1] || '').slice(0, 31);
+      const qs = v ? `?v=${encodeURIComponent(v)}` : '';
+      const r   = await fetch('/api/experiment' + qs);
       const exp = await r.json();
       if (exp?.runs?.length) {
         console.log(`[Sweep] Picked up experiment from server: "${exp.label}"`);

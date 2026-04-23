@@ -131,6 +131,22 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
   }
 
   /**
+   * Clear per-topic pub/sub state on every AxonManager attached to this
+   * DHT. Leaves synaptic weights, routing tables, and the AxonManager
+   * instances themselves untouched — only the axon trees, subscriptions,
+   * replay caches, and dedup sets are zeroed.
+   *
+   * Used by the benchmark runner to guarantee each pub/sub test starts
+   * from an independent, clean state, while keeping any pub/sub-driven
+   * LTP training baked into the synaptomes.
+   */
+  resetAllAxons() {
+    for (const axon of this._axonsByNode.values()) {
+      axon.resetState();
+    }
+  }
+
+  /**
    * Build the thin wrapper that exposes the four DHT primitives in the shape
    * AxonManager expects, with the node captured in closure.
    */

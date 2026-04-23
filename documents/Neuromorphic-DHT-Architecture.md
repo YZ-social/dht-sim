@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.53.00*
+*Version 0.54.00*
 
 ---
 
@@ -1269,6 +1269,50 @@ The replay cache's contribution grows with churn, exactly as predicted. Through 
 - Not a consistency primitive. Two subscribers of the same topic may see messages in different orders if they receive via different paths (live vs replay vs partial replay), although per-sender `seq` numbers from the application-level adapter layer can provide in-order delivery per sender.
 
 Within those constraints, the replay cache produces the measurable result that subscribers eventually see nearly every published message under continuous 30 %+ cumulative uniform churn, using ~100 entries × ~7–28 relays per topic of additional memory.
+
+### 6.10 Discrete-Churn Recovery Benchmark
+
+The live-simulation results in §6.8 and §6.9 measure continuous low-rate churn in a single long run. That protocol captures the cumulative behaviour faithfully, but it produces point estimates without confidence intervals — every number is a single observation. A complementary benchmark addresses that gap by subjecting a fresh network to a single instantaneous churn event at a defined rate, measuring delivery before and after, and repeating the whole procedure five times per rate to characterise the distribution of outcomes.
+
+**Protocol.** Each replicate builds a fresh 25 000-node network, runs standard lookup warmup plus a short pub/sub priming cycle (subscribe + publish on dummy topics, followed by a full state reset on every AxonManager — synaptic weights trained by the priming survive, but no axon trees, subscriptions, or replay caches carry over), then sets up 79 groups of 32 subscribers each on the real test topics. Measurement proceeds in phases:
+
+1. **Baseline**: 5 ticks of publish + measure, pre-churn.
+2. **Kill**: `rate %` of non-publisher nodes are killed instantaneously.
+3. **Immediate**: 5 ticks of publish + measure, no refresh allowed.
+4. **Recovered (3 rounds)**: every live axon executes `refreshTick()` three times, then 5 more ticks of publish + measure.
+5. **Recovered (10 rounds)**: seven more `refreshTick()` rounds (cumulative 10), then 5 more ticks.
+
+Dead subscribers are excluded from the denominator throughout — the question is "do surviving subscribers still receive publishes?", not "can dead nodes receive publishes?". Publisher and subscriber K-closest views are sampled at each phase; the pub/sub warmup + state reset between experiments ensures each replicate observes an independent trial of the same underlying distribution.
+
+**Results (5 replicates per churn rate, mean ± stddev):**
+
+| Churn | Baseline      | Immediate     | Recovered (3 rounds) | Recovered (10 rounds) |
+|-------|---------------|---------------|----------------------|-----------------------|
+|  5 %  | 99.4 ± 0.6 %  | 86.3 ± 4.0 %  | **90.0 ± 3.5 %**     | 89.4 ± 3.7 %          |
+| 10 %  | 99.4 ± 0.6 %  | 76.3 ± 6.0 %  | **83.2 ± 4.4 %**     | 81.5 ± 5.0 %          |
+| 15 %  | 99.3 ± 0.6 %  | 62.3 ± 3.7 %  | **71.2 ± 2.9 %**     | 70.2 ± 3.8 %          |
+| 25 %  | 99.1 ± 0.8 %  | 51.2 ± 5.3 %  | **62.2 ± 4.1 %**     | 61.2 ± 4.6 %          |
+
+Per-phase K-closest overlap (publisher ↔ sampled subscriber) and K-set stability (drift from a pre-kill snapshot):
+
+| Churn | Baseline overlap | Immediate overlap | Recovered (3r) overlap | Pub K-stab | Sub K-stab |
+|-------|------------------|-------------------|------------------------|------------|------------|
+|  5 %  | 99.8 ± 0.3 %     | 98.2 ± 1.4 %      | 98.2 ± 1.4 %           | 89.2 ± 3.7 % | 89.2 ± 4.1 % |
+| 10 %  | 99.9 ± 0.2 %     | 95.7 ± 1.3 %      | 95.7 ± 1.3 %           | 78.0 ± 4.7 % | 77.7 ± 4.0 % |
+| 15 %  | 99.9 ± 0.1 %     | 91.2 ± 1.7 %      | 91.2 ± 1.7 %           | 67.9 ± 2.6 % | 67.3 ± 0.9 % |
+| 25 %  | 99.6 ± 0.8 %     | 90.7 ± 3.9 %      | 90.7 ± 3.9 %           | 60.1 ± 2.1 % | 56.6 ± 3.8 % |
+
+**Four findings.**
+
+*Baseline is churn-rate independent at 99.3 ± 0.7 %.* The pre-kill delivery rate varies by less than 0.3 points across all four rates, and the replicate stddev is under one point. The priming + reset procedure produces a clean, stable starting state regardless of what churn is coming. This is the right property for a baseline measurement: it separates "how much damage did churn do?" from "how well-formed was the tree before churn?".
+
+*Recovery is real, and it does proportionally more work at higher churn rates.* The refresh-round phase adds 3.7 points at 5 % churn, 6.9 at 10 %, 8.9 at 15 %, and 11.0 at 25 %. When more of the tree is broken, re-subscribe plus replay pull back more deliveries. The mechanism scales with the damage.
+
+*Three refresh rounds is the asymptote.* `Recovered (10 rounds)` is numerically ≤ `Recovered (3 rounds)` at every rate, and the differences (0.6 to 1.7 points) are well within the replicate stddev. K-overlap and K-stability are literally identical between the two measurement points at every rate — not close, identical. The tree has healed as far as it is going to heal by round 3; additional rounds produce tick-level jitter but no further recovery. This rules out the hypothesis that longer refresh windows would recover more delivery.
+
+*K-set stability predicts delivery.* Pub/sub K-stability tracks immediate delivery closely at every rate (89 %/86 % at 5 % churn, 78 %/76 %, 67 %/62 %, 60 %/51 %). Both numbers fall together as more nodes die. This confirms that delivery losses under a single-kill churn event are dominated by K-set drift — the publisher's and subscriber's independent top-K computations diverge as candidate nodes disappear, and that divergence is the proximate cause of missed publishes. The replay cache and re-subscribe path close part of the gap, but the underlying floor is set by how much the K-set has drifted.
+
+**Relationship to the live-simulation results.** The §6.8 / §6.9 live-sim numbers (continuous 1 % churn every 5 ticks, cumulative delivery measured over hundreds of ticks) and this discrete-kill benchmark are complementary views of the same protocol. The live-sim is closer to a production workload — trickle churn, continuous publishes, long history — and its *cumulative delivery* metric captures the replay cache's eventual-delivery guarantee. The discrete-kill benchmark is closer to a fault-injection stress test — one big event, measured immediately and after bounded recovery — and its replicate statistics capture the distribution of outcomes rather than a single point. The two tests disagree in magnitude (immediate delivery at 25 % cumulative churn in the live-sim is ~70 %; at 25 % single-kill churn here it is ~51 %) because they are asking genuinely different questions. Both are representative of different operational regimes.
 
 ---
 

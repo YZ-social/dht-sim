@@ -350,7 +350,13 @@ export class Globe {
       this._instancedMesh.dispose();
       this._instancedMesh = null;
     }
+    if (this._instancedHitMesh) {
+      this.hitGroup.remove(this._instancedHitMesh);
+      this._instancedHitMesh.dispose();
+      this._instancedHitMesh = null;
+    }
     this._instancedIndex = null;  // nodeId → instance index
+    this._instancedReverse = null; // instance index → nodeId
 
     const r = nodeRadius(nodes.length);
 
@@ -392,25 +398,43 @@ export class Globe {
   }
 
   /** Instanced rendering — one draw call for all nodes.
-   *  Used for >INSTANCED_THRESHOLD nodes.  Per-node color via instance
-   *  color attribute; click raycasting via InstancedMesh built-in support. */
+   *  Used for >INSTANCED_THRESHOLD nodes.  Per-node colour via the
+   *  InstancedMesh's `instanceColor` property (three.js binds that
+   *  buffer to the shader's `attribute vec3 instanceColor;` when
+   *  `mesh.instanceColor !== null`, enabling the USE_INSTANCING_COLOR
+   *  define so `vColor.xyz *= instanceColor.xyz;` runs per-vertex).
+   *  Click raycasting via a matching invisible hit InstancedMesh with
+   *  4×-larger spheres (same strategy as the individual-mesh path). */
   _setNodesInstanced(nodes, r) {
     const geo = new THREE.SphereGeometry(r, 5, 5);
+
+    // Material. `color` is white so the per-instance colour (applied via
+    // `mesh.instanceColor` below, which triggers USE_INSTANCING_COLOR in
+    // three.js's shader) fully determines the body hue. We use a LOW
+    // emissive intensity with a white tint so the instance colour is
+    // not washed out — this approximates the "yellow glow" of the
+    // individual-mesh path while keeping the stock phong shader.
     const mat = new THREE.MeshPhongMaterial({
-      color: 0xffffff,
-      emissive: 0xffffff,
-      emissiveIntensity: 0.7,
+      color:             0xffffff,
+      emissive:          0xffffff,
+      emissiveIntensity: 0.15,
     });
 
     const count = nodes.length;
     const mesh = new THREE.InstancedMesh(geo, mat, count);
     mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
 
-    // Per-instance color
-    const colors = new Float32Array(count * 3);
-    const dummy  = new THREE.Object3D();
-    const color  = new THREE.Color();
-    const indexMap = new Map();  // nodeId → instance index
+    // Allocate the per-instance colour buffer directly on the mesh.
+    // Setting `mesh.instanceColor` (as opposed to a geometry attribute)
+    // is what triggers USE_INSTANCING_COLOR in three.js's WebGLProgram
+    // and binds the buffer to the shader's `instanceColor` attribute.
+    const instColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
+    mesh.instanceColor = instColor;
+
+    const dummy = new THREE.Object3D();
+    const color = new THREE.Color();
+    const indexMap   = new Map();         // nodeId → instance index
+    const reverseMap = new Array(count);  // instance index → nodeId
 
     for (let i = 0; i < count; i++) {
       const n = nodes[i];
@@ -420,24 +444,41 @@ export class Globe {
       dummy.updateMatrix();
       mesh.setMatrixAt(i, dummy.matrix);
 
-      const col = n.alive ? C.nodeAlive : C.nodeDead;
-      color.setHex(col);
-      colors[i * 3]     = color.r;
-      colors[i * 3 + 1] = color.g;
-      colors[i * 3 + 2] = color.b;
+      color.setHex(n.alive ? C.nodeAlive : C.nodeDead);
+      instColor.setXYZ(i, color.r, color.g, color.b);
 
       indexMap.set(n.id, i);
+      reverseMap[i] = n.id;
       this._nodeDataMap.set(n.id, { lat: n.lat, lng: n.lng, alive: n.alive });
     }
 
-    geo.setAttribute('instanceColor', new THREE.InstancedBufferAttribute(colors, 3));
-    mat.vertexColors = true;
-    mat.needsUpdate = true;
-
+    instColor.needsUpdate = true;
     mesh.instanceMatrix.needsUpdate = true;
     this.nodeGroup.add(mesh);
-    this._instancedMesh  = mesh;
-    this._instancedIndex = indexMap;
+    this._instancedMesh    = mesh;
+    this._instancedIndex   = indexMap;
+    this._instancedReverse = reverseMap;
+
+    // ── Invisible hit mesh: 4×-larger spheres for reliable click picking ──
+    // Raycasting against the tiny (r≈0.0018 at 50K nodes) visible spheres
+    // misses most clicks, so we mirror the individual-mesh path and add
+    // an invisible InstancedMesh with the same positions but a 4× radius.
+    // Reuses the same indexMap / reverseMap so a hit's instanceId maps
+    // directly back to a nodeId.
+    const hitGeo = new THREE.SphereGeometry(r * 4, 5, 5);
+    const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+    const hitMesh = new THREE.InstancedMesh(hitGeo, hitMat, count);
+    hitMesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    for (let i = 0; i < count; i++) {
+      const n = nodes[i];
+      const { x, y, z } = latLngToXYZ(n.lat, n.lng, GLOBE_RADIUS * 1.009);
+      dummy.position.set(x, y, z);
+      dummy.updateMatrix();
+      hitMesh.setMatrixAt(i, dummy.matrix);
+    }
+    hitMesh.instanceMatrix.needsUpdate = true;
+    this.hitGroup.add(hitMesh);
+    this._instancedHitMesh = hitMesh;
   }
 
   updateNodeState(nodeId, alive) {
@@ -459,7 +500,7 @@ export class Globe {
       if (idx === undefined) return;
       const col = alive ? C.nodeAlive : C.nodeDead;
       const color = new THREE.Color(col);
-      const attr = this._instancedMesh.geometry.getAttribute('instanceColor');
+      const attr = this._instancedMesh.instanceColor;
       attr.setXYZ(idx, color.r, color.g, color.b);
       attr.needsUpdate = true;
     }
@@ -498,6 +539,7 @@ export class Globe {
       selMesh.material.emissive.setHex(C.nodeSelected);
       selMesh.material.emissiveIntensity = 1.0;
     }
+    this._setInstancedColor(nodeId, C.nodeSelected);
 
     // Unit vector for the source node
     const ra = this._v3(src.lat, src.lng, 1).normalize();
@@ -560,12 +602,13 @@ export class Globe {
         tgtMesh.material.emissive.setHex(C.connNodeHighlight);
         tgtMesh.material.emissiveIntensity = 0.9;
       }
+      this._setInstancedColor(tid, C.connNodeHighlight);
     }
   }
 
   clearConnections() {
     this.connGroup.clear();
-    // Restore colours for previously highlighted nodes
+    // Restore colours for previously highlighted individual-mesh nodes.
     this._nodeObjects.forEach((mesh, id) => {
       const data = this._nodeDataMap.get(id);
       if (!data) return;
@@ -574,7 +617,33 @@ export class Globe {
       mesh.material.emissive.setHex(col);
       mesh.material.emissiveIntensity = 0.7;
     });
+    // Restore instance colours for previously highlighted instanced nodes.
+    // We rebuild from the authoritative alive/dead state in _nodeDataMap
+    // since the per-instance highlight state isn't stored separately.
+    if (this._instancedMesh && this._instancedIndex) {
+      const attr = this._instancedMesh.instanceColor;
+      const c = new THREE.Color();
+      for (const [id, idx] of this._instancedIndex) {
+        const data = this._nodeDataMap.get(id);
+        if (!data) continue;
+        c.setHex(data.alive ? C.nodeAlive : C.nodeDead);
+        attr.setXYZ(idx, c.r, c.g, c.b);
+      }
+      attr.needsUpdate = true;
+    }
     this._selectedId = null;
+  }
+
+  /** Helper: set a single instance's colour by nodeId. No-op if not in
+   *  instanced mode or the nodeId isn't in the map. */
+  _setInstancedColor(nodeId, hex) {
+    if (!this._instancedMesh || !this._instancedIndex) return;
+    const idx = this._instancedIndex.get(nodeId);
+    if (idx === undefined) return;
+    const attr = this._instancedMesh.instanceColor;
+    const c = new THREE.Color(hex);
+    attr.setXYZ(idx, c.r, c.g, c.b);
+    attr.needsUpdate = true;
   }
 
   // ── Raycasting (node clicks) ──────────────────────────────────────────────
@@ -589,7 +658,7 @@ export class Globe {
   }
 
   _handleClick(event) {
-    if (this._nodeObjects.size === 0) return;
+    if (this._nodeObjects.size === 0 && !this._instancedHitMesh) return;
 
     const rect = this.canvas.getBoundingClientRect();
     const ndc  = new THREE.Vector2(
@@ -598,20 +667,53 @@ export class Globe {
     );
 
     this._raycaster.setFromCamera(ndc, this.camera);
-    // Slightly inflate the ray threshold for easier picking of small spheres
-    // Raycast against invisible (4× larger) hit spheres for reliable picking
-    const hitList = [...this._hitObjects.values()];
-    const hits = this._raycaster.intersectObjects(hitList, false);
 
-    // Only accept hits on the visible (front) face of the globe.
-    // A node is front-facing when its world position has a positive dot product
+    // Camera direction used for the front-face filter: a node is
+    // front-facing when its world position has a positive dot product
     // with the camera direction — works regardless of camera orientation.
     const cameraDir = this.camera.position.clone().normalize();
-    const frontHits = hits.filter(h => h.object.position.dot(cameraDir) > 0);
 
-    if (frontHits.length > 0) {
-      const nodeId = frontHits[0].object.userData.nodeId;
-      // Emit a custom event so main.js can fetch routing table data
+    // Collect all front-face hits from both modes, tagged with distance.
+    // We pick the nearest overall so a click on an overlapping region
+    // picks the closest node regardless of which rendering path holds it.
+    const candidates = [];   // { nodeId, distance }
+
+    // Individual mode: raycast against invisible (4×-larger) hit spheres.
+    if (this._hitObjects.size) {
+      const hitList = [...this._hitObjects.values()];
+      const hits    = this._raycaster.intersectObjects(hitList, false);
+      for (const h of hits) {
+        if (h.object.position.dot(cameraDir) > 0) {
+          candidates.push({ nodeId: h.object.userData.nodeId, distance: h.distance });
+        }
+      }
+    }
+
+    // Instanced mode: raycast against the invisible hit InstancedMesh.
+    // Each hit carries an `instanceId` that maps back to a nodeId via
+    // the reverse index built in _setNodesInstanced. For front-face
+    // filtering we reconstruct the instance's world position from its
+    // matrix (cheap — just pull the translation components).
+    if (this._instancedHitMesh && this._instancedReverse) {
+      const hits = this._raycaster.intersectObject(this._instancedHitMesh, false);
+      const m = new THREE.Matrix4();
+      const p = new THREE.Vector3();
+      for (const h of hits) {
+        if (h.instanceId == null) continue;
+        this._instancedHitMesh.getMatrixAt(h.instanceId, m);
+        p.setFromMatrixPosition(m);
+        if (p.dot(cameraDir) > 0) {
+          const nodeId = this._instancedReverse[h.instanceId];
+          if (nodeId !== undefined) {
+            candidates.push({ nodeId, distance: h.distance });
+          }
+        }
+      }
+    }
+
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => a.distance - b.distance);
+      const nodeId = candidates[0].nodeId;
       this.canvas.dispatchEvent(new CustomEvent('nodeclicked', { detail: { nodeId } }));
     } else {
       // Click on empty space (or back of globe) → clear selection
@@ -697,7 +799,7 @@ export class Globe {
     if (this._instancedMesh && this._instancedIndex) {
       const idx = this._instancedIndex.get(nodeId);
       if (idx === undefined) return;
-      const attr = this._instancedMesh.geometry.getAttribute('instanceColor');
+      const attr = this._instancedMesh.instanceColor;
       const normalColor = new THREE.Color(data.alive ? C.nodeAlive : C.nodeDead);
       const flashColor  = new THREE.Color(0xff7700);
       for (let i = 0; i < times; i++) {
@@ -869,11 +971,16 @@ export class Globe {
 
     const setHighlight = (id, color, intensity, scale) => {
       const mesh = this._nodeObjects.get(id);
-      if (!mesh) return;
-      mesh.material.color.setHex(color);
-      mesh.material.emissive.setHex(color);
-      mesh.material.emissiveIntensity = intensity;
-      mesh.scale.setScalar(scale);
+      if (mesh) {
+        mesh.material.color.setHex(color);
+        mesh.material.emissive.setHex(color);
+        mesh.material.emissiveIntensity = intensity;
+        mesh.scale.setScalar(scale);
+      }
+      // Instanced mode: recolour only (per-instance scale would require
+      // per-instance matrix updates — the colour change alone is enough
+      // to identify the relay / participant visually).
+      this._setInstancedColor(id, color);
       this._pubsubHighlighted.add(id);
     };
 
@@ -886,14 +993,17 @@ export class Globe {
   /** Restore all pub/sub-highlighted nodes to their normal alive colour. */
   clearPubSubHighlights() {
     for (const id of this._pubsubHighlighted) {
-      const mesh = this._nodeObjects.get(id);
       const data = this._nodeDataMap.get(id);
-      if (!mesh || !data) continue;
+      if (!data) continue;
       const col = data.alive ? C.nodeAlive : C.nodeDead;
-      mesh.material.color.setHex(col);
-      mesh.material.emissive.setHex(col);
-      mesh.material.emissiveIntensity = 0.7;
-      mesh.scale.setScalar(1);
+      const mesh = this._nodeObjects.get(id);
+      if (mesh) {
+        mesh.material.color.setHex(col);
+        mesh.material.emissive.setHex(col);
+        mesh.material.emissiveIntensity = 0.7;
+        mesh.scale.setScalar(1);
+      }
+      this._setInstancedColor(id, col);
     }
     this._pubsubHighlighted.clear();
   }

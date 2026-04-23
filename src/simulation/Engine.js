@@ -74,6 +74,100 @@ export class SimulationEngine {
     };
   }
 
+  /**
+   * Prime the synaptomes of an NX-15+ DHT with pub/sub-style traffic,
+   * then wipe all axon state. Subscribe + publish trains the synaptic
+   * weights along the routed-subscribe and routed-publish paths — the
+   * same paths a real membership test will exercise — but the axon
+   * trees, subscriptions, replay caches, and dedup sets are cleared
+   * before the test starts so each measurement sees a clean topology
+   * over a realistically trained routing table.
+   *
+   * Intended to be called once per DHT, before the first pub/sub test
+   * runs. `ensurePubsubPrimed()` below wraps this with a one-shot flag
+   * so repeated invocations are harmless no-ops.
+   *
+   * @param {object} dht — must expose axonFor() and resetAllAxons()
+   */
+  async _primePubsubRouting(dht) {
+    if (typeof dht.axonFor !== 'function') return;
+    if (typeof dht.resetAllAxons !== 'function') return;
+
+    const alive = dht.getNodes().filter(n => n.alive);
+    if (alive.length < 32) return;
+
+    const NUM_TOPICS     = 8;
+    const SAMPLE_SIZE    = Math.min(800, Math.max(64, Math.floor(alive.length * 0.03)));
+    const PUBLISH_TICKS  = 3;
+
+    // Pick random publishers and a larger subscriber pool.
+    const shuffled    = [...alive].sort(() => Math.random() - 0.5);
+    const publishers  = shuffled.slice(0, NUM_TOPICS);
+    const subscribers = shuffled.slice(NUM_TOPICS, NUM_TOPICS + SAMPLE_SIZE);
+
+    // Match the topic-naming convention used by the real pub/sub tests
+    // so routed subscribes/publishes exercise the same code path (prefix
+    // handling, topic-id computation, etc.).
+    const usePrefix = dht.usesPublisherPrefix === true;
+    const domainFor = (pub) => {
+      if (!usePrefix) return 'prime';
+      const pfxByte = Number((pub.id >> 56n) & 0xffn);
+      return `@${pfxByte.toString(16).padStart(2, '0')}/prime`;
+    };
+
+    // Eager-register AxonManagers across the whole live set so routed
+    // subscribes terminate at a handler-installed node.
+    for (const n of alive) dht.axonFor(n);
+
+    const adapters = new Map();
+    const adapterFor = (node) => {
+      let a = adapters.get(node.id);
+      if (!a) {
+        a = new PubSubAdapter({ transport: dht.axonFor(node) });
+        adapters.set(node.id, a);
+      }
+      return a;
+    };
+
+    // Every subscriber subscribes to every topic — 8 × SAMPLE_SIZE routed
+    // subscribes total. Cheap but broad enough to train a representative
+    // cross-section of the synaptome.
+    for (const pub of publishers) {
+      if (!this.running) break;
+      const domain = domainFor(pub);
+      for (const sub of subscribers) {
+        adapterFor(sub).subscribe(domain, 'prime', () => {}, 'immediate');
+      }
+      adapterFor(pub);   // ensure publisher has an adapter
+    }
+
+    // Fire publishes so fan-out paths receive training too.
+    for (let t = 0; t < PUBLISH_TICKS; t++) {
+      if (!this.running) break;
+      for (const pub of publishers) {
+        adapterFor(pub).publish(domainFor(pub), 'prime', {});
+      }
+    }
+
+    // Wipe pub/sub state — only the LTP training in the synaptomes
+    // survives this call.
+    dht.resetAllAxons();
+  }
+
+  /**
+   * Run `_primePubsubRouting` at most once per DHT, then reset state
+   * on subsequent calls. Safe to call from every pub/sub test block.
+   */
+  async _ensurePubsubPrimed(dht) {
+    if (typeof dht.resetAllAxons !== 'function') return;
+    if (!dht._pubsubPrimed) {
+      await this._primePubsubRouting(dht);
+      dht._pubsubPrimed = true;
+    } else {
+      dht.resetAllAxons();
+    }
+  }
+
   // ── Lookup Test ──────────────────────────────────────────────────────────
 
   /**
@@ -613,6 +707,12 @@ export class SimulationEngine {
             continue;
           }
 
+          // Prime synaptomes once (first pub/sub test on this DHT) and
+          // reset AxonManager state so the tree we're about to measure
+          // is not contaminated by any previous pub/sub test.
+          onStart(`${tag} · ${label} · priming pub/sub routing…`);
+          await this._ensurePubsubPrimed(dht);
+
           const groupSize = spec.groupSize ?? 32;
           const coverage  = spec.coverage  ?? 10;
           const radiusKm  = spec.radius    ?? 2000;
@@ -856,6 +956,12 @@ export class SimulationEngine {
             continue;
           }
 
+          // Prime synaptomes once (first pub/sub test on this DHT) and
+          // reset AxonManager state so baseline/immediate/recovered
+          // measurements reflect this test only.
+          onStart(`${tag} · Pub/Sub+Churn · priming pub/sub routing…`);
+          await this._ensurePubsubPrimed(dht);
+
           const groupSize = spec.groupSize ?? 32;
           const coverage  = spec.coverage  ?? 10;
           const churnRate = spec.rate      ?? 25;
@@ -1088,17 +1194,19 @@ export class SimulationEngine {
           const immediateOverlap   = measureOverlap();
           const immediateStability = measureStability(kSnapshot);
 
-          // Phase 5: drive refresh cycles so TTL sweeps + re-STOREs can heal
-          // the tree. Multiple rounds let cascading effects settle.
-          for (let r = 0; r < 3; r++) {
-            for (const node of aliveNodes) {
-              if (!node.alive) continue;
-              const axon = dht.axonFor(node);
-              axon.refreshTick();
+          // Phase 5a: first refresh burst (3 rounds). Measures how fast
+          // the tree heals under a light cycle count.
+          const runRefreshRounds = (rounds) => {
+            for (let r = 0; r < rounds; r++) {
+              for (const node of aliveNodes) {
+                if (!node.alive) continue;
+                dht.axonFor(node).refreshTick();
+              }
             }
-          }
+          };
+          runRefreshRounds(3);
 
-          // Phase 6: post-recovery measurement.
+          // Phase 6a: post-recovery measurement after 3 rounds.
           const recovered = [];
           for (let t = 0; t < 5; t++) {
             if (!this.running) break;
@@ -1108,15 +1216,34 @@ export class SimulationEngine {
           const recoveredOverlap   = measureOverlap();
           const recoveredStability = measureStability(kSnapshot);
 
+          // Phase 5b: run 7 more refresh rounds (cumulative 10). Lets us
+          // see whether 3 rounds had converged or whether additional
+          // refresh cycles continue to heal the tree. Reported as
+          // `recoveredDeep` alongside the 3-round `recovered` number.
+          runRefreshRounds(7);
+
+          // Phase 6b: deep-recovery measurement.
+          const recoveredDeep = [];
+          for (let t = 0; t < 5; t++) {
+            if (!this.running) break;
+            runOneTick();
+            recoveredDeep.push(measureDeliveredPct());
+          }
+          const recoveredDeepOverlap   = measureOverlap();
+          const recoveredDeepStability = measureStability(kSnapshot);
+
           data[def.key]['pubsubmchurn'] = {
             baseline:       computeStats(baseline),
             immediate:      computeStats(immediate),
             recovered:      computeStats(recovered),
+            recoveredDeep:  computeStats(recoveredDeep),
             baselineOverlap,
             immediateOverlap,
             recoveredOverlap,
+            recoveredDeepOverlap,
             immediateStability,
             recoveredStability,
+            recoveredDeepStability,
             killedCount:    numKilled,
             totalNodes:     aliveNodes.length,
             churnRate,

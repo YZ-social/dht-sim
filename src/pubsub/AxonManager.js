@@ -154,6 +154,33 @@ export class AxonManager {
     if (this._timer) { clearInterval(this._timer); this._timer = null; }
   }
 
+  /**
+   * Clear all pub/sub runtime state so this AxonManager appears fresh
+   * to the next test or test phase, while preserving:
+   *   - DHT handler registrations (onRoutedMessage/onDirectMessage)
+   *   - Configuration (maxDirectSubs, refreshIntervalMs, …)
+   *   - Policy overrides (pickRecruitPeer, pickRelayPeer, …)
+   *
+   * Clears per-topic trees, subscriptions, replay caches, dedup sets,
+   * and publishId counters. Synaptic weights and routing-table state
+   * live at the NeuronNode/DHT level and are NOT touched — so any
+   * pub/sub-driven LTP training survives across a reset.
+   *
+   * Intended for test infrastructure (Engine.runBenchmark runs several
+   * pub/sub tests back-to-back and needs each to start independent).
+   * Production nodes should use graceful unsubscribe + TTL sweep
+   * instead of calling this.
+   */
+  resetState() {
+    this.axonRoles.clear();
+    this.mySubscriptions.clear();
+    this._lastSeenTsByTopic.clear();
+    this._receivedPublishIds.clear();
+    this._seenPublishes.clear();
+    this._deliveryCallback = null;
+    this._publishCounter = 0;
+  }
+
   // ── PubSubAdapter transport contract ────────────────────────────────
 
   /**

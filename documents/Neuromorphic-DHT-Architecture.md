@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.54.00*
+*Version 0.55.00*
 
 ---
 
@@ -1313,6 +1313,40 @@ Per-phase K-closest overlap (publisher ↔ sampled subscriber) and K-set stabili
 *K-set stability predicts delivery.* Pub/sub K-stability tracks immediate delivery closely at every rate (89 %/86 % at 5 % churn, 78 %/76 %, 67 %/62 %, 60 %/51 %). Both numbers fall together as more nodes die. This confirms that delivery losses under a single-kill churn event are dominated by K-set drift — the publisher's and subscriber's independent top-K computations diverge as candidate nodes disappear, and that divergence is the proximate cause of missed publishes. The replay cache and re-subscribe path close part of the gap, but the underlying floor is set by how much the K-set has drifted.
 
 **Relationship to the live-simulation results.** The §6.8 / §6.9 live-sim numbers (continuous 1 % churn every 5 ticks, cumulative delivery measured over hundreds of ticks) and this discrete-kill benchmark are complementary views of the same protocol. The live-sim is closer to a production workload — trickle churn, continuous publishes, long history — and its *cumulative delivery* metric captures the replay cache's eventual-delivery guarantee. The discrete-kill benchmark is closer to a fault-injection stress test — one big event, measured immediately and after bounded recovery — and its replicate statistics capture the distribution of outcomes rather than a single point. The two tests disagree in magnitude (immediate delivery at 25 % cumulative churn in the live-sim is ~70 %; at 25 % single-kill churn here it is ~51 %) because they are asking genuinely different questions. Both are representative of different operational regimes.
+
+### 6.11 Training and Initialisation: Where Routing Quality Really Comes From
+
+The preceding sections measured NX-17 starting from **omniscient initialisation** — every node is seeded with its theoretically-optimal K-closest neighbour set at construction time. This is useful for isolating protocol behaviour from bootstrap variance, but it is not realistic: a production network joins node by node via sponsor introduction, and the resulting synaptome is whatever sponsor-chains happen to discover. This section characterises how much that matters and what training can and cannot fix.
+
+**Experimental setup.** Six NX variants, six separate experiments each, at 25 000 nodes. Each experiment builds a fresh network, applies a warmup phase, and measures random global, regional-500 km, and regional-2000 km lookups. Two starting-point configurations are compared:
+
+- **Omniscient + 5 000 warmup lookups.** Each node seeded with its optimal K-closest neighbours; a short warmup lets LTP settle synaptic weights.
+- **Bootstrap + 50 000 warmup lookups.** Each node joins via a random sponsor, followed by a full refresh pass, then ten times the warmup lookups of the omniscient case — enough to run LTP, annealing, decay, and dead-peer eviction to saturation.
+
+The bootstrap + heavy-warmup condition is the realistic production scenario. The omniscient + light-warmup condition is the theoretical performance ceiling. The gap between them quantifies how much training can recover from a realistic cold start.
+
+**Results (global lookups, 25 000 nodes):**
+
+| Protocol | Omniscient hops | Bootstrap+100 hops | Δ hops | Δ % | Omniscient ms | Bootstrap+100 ms | Δ ms | Success @ bootstrap |
+|----------|-----------------|--------------------|---------|------|----------------|-------------------|-------|----------------------|
+| N-1      | 2.22            | 5.10               | +2.88   | +130 % | 229           | 263               | +34   | **60.2 %**           |
+| NX-3     | 3.64            | 4.33               | +0.69   | +19 %  | 253           | 246               | −7    | **73.0 %**           |
+| NX-6     | 3.61            | 4.43               | +0.82   | +23 %  | 246           | 244               | −2    | 100 %                |
+| NX-10    | 3.67            | 4.29               | +0.62   | +17 %  | 265           | 239               | −26   | 100 %                |
+| NX-15    | 3.47            | 4.30               | +0.83   | +24 %  | 245           | 238               | −7    | 100 %                |
+| **NX-17**| **3.67**        | **4.28**           | **+0.61** | **+17 %** | **267**     | **235**           | **−31** | **100 %**           |
+
+**Three findings.**
+
+*A shared asymptote, not a regression.* Every NX variant from NX-6 onward lands in a tight 4.28–4.43 hop range under the bootstrap + heavy-warmup condition, regardless of omniscient start point (which varies from 3.47 to 3.67 across versions). Training dynamics settle the synaptome toward a **traffic-driven asymptote** near ~4.3 hops, and that asymptote is essentially independent of initial conditions. Earlier protocols are materially worse: N-1 drops to 60 % lookup success under bootstrap, and NX-3 to 73 %. The reliability floor is established at **NX-6**, whose dead-peer eviction and iterative-fallback mechanisms (§4, Rule 5) make the bootstrap-trained network correct at 100 %. From NX-6 forward, the shared 4.3-hop asymptote is a design property of the family, not a recent regression.
+
+*NX-17 has the smallest omniscient→bootstrap hop gap and the fastest bootstrap-trained latency.* At +17 % hop gap, NX-17 is tied with NX-10 for minimum regression relative to omniscient, and below NX-6 (+23 %) and NX-15 (+24 %). Its bootstrap-trained global latency (235 ms) is 31 ms faster than its omniscient baseline (267 ms) and the fastest of any variant measured. The hop count rises slightly, but per-hop compute drops more — the pruned, traffic-driven synaptome evaluates greedy candidates faster than the densely-diverse omniscient one.
+
+*Training in NX is compute-optimising, not path-shortening.* The synaptome size cap (default 50) is the binding constraint. Training redistributes weight within the existing 50-edge set, prunes low-utility edges, and promotes well-used ones. It does not discover new shorter edges that sponsor-chains missed at join time. This is why training cannot close the gap: the set of reachable one-hop neighbours is essentially frozen at the moment of synaptome construction. LTP, annealing, and decay reweight, and the 2-hop-local annealing pool constrains the exploration radius; they do not re-sponsor.
+
+**Implications.** The real lever for bootstrap routing quality is the **initial synaptome construction**, not the training algorithm. NX-15's diversified bootstrap (80 % stratified + 20 % random) gives the lowest omniscient baseline (3.47 hops), because the random supplement adds short global edges the stratified core misses. A production deployment can improve NX-17's bootstrap-trained hop count by improving the sponsor-selection and initial-refresh phases of the join protocol, or by introducing **global-pool annealing** during training (periodically replace the lowest-vitality synapse with a globally-sampled candidate rather than a 2-hop sample). Neither change is currently in NX-17; both are straightforward extensions if the gap to omniscient becomes a priority.
+
+For most deployments the gap is not a priority. Bootstrap-trained NX-17 routes at 4.3 hops / 235 ms / 100 % success — competitive with or better than every prior NX variant. The "theoretical minimum" of 3.67 hops is unreachable without omniscient node discovery, which is not a property real distributed systems can assume.
 
 ---
 

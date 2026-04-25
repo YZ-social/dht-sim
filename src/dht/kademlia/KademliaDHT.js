@@ -93,48 +93,43 @@ export class KademliaNode extends DHTNode {
     const idx = this.bucketIndex(node.id);
     if (idx < 0 || idx >= this.bits) return;
 
-    // Already in this bucket — no-op (doesn't cost a new connection)
+    // Already in this bucket — no-op
     if (this.buckets[idx].nodes.some(n => n.id === node.id)) return;
 
-    // Under the global cap — add freely (per-bucket k-limit still applies)
-    if (!isFinite(this.maxConnections) || this._totalConns < this.maxConnections) {
-      if (this.buckets[idx].add(node)) {
-        this._totalConns++;
-        // Register reverse: node now knows we have a route TO it.
-        if (node.incomingPeers && !node.incomingPeers.has(this.id)) {
-          node.incomingPeers.set(this.id, this);
-        }
-      }
-      return;
-    }
+    // Per-bucket K-cap still applies (classic Kademlia: a full bucket rejects
+    // new entries unless the LRU is dead — here we treat a full bucket as a
+    // soft reject, matching real-world Kademlia behaviour).
+    if (this.buckets[idx].size >= this.k) return;
 
-    // At the cap — only add if this bucket is empty (preserves XOR-stratum
-    // coverage, which is critical for routability).  Evict the last entry
-    // from the largest bucket to make room.
-    if (this.buckets[idx].size === 0) {
+    // Gate on the physical-transport layer: both sides must have a free
+    // connection slot, otherwise the WebRTC link can't be established and
+    // we cannot route through this peer. Refused by either side → skip.
+    if (!this.tryConnect(node)) {
+      // Preserve XOR-stratum coverage: if THIS bucket is empty and we're at
+      // cap, try evicting from our largest bucket to make room (keeps the
+      // reachability invariant — every populated stratum has a route).
+      if (this.buckets[idx].size !== 0) return;
       let maxB = -1, maxSize = 0;
       for (let b = 0; b < this.bits; b++) {
-        if (this.buckets[b].size > maxSize) {
-          maxSize = this.buckets[b].size;
-          maxB = b;
-        }
+        if (this.buckets[b].size > maxSize) { maxSize = this.buckets[b].size; maxB = b; }
       }
-      if (maxB >= 0 && maxSize > 1) {
-        // Evict the last (most recently added, least established) entry
-        const evicted = this.buckets[maxB].nodes.pop();
-        this._totalConns--;
-        // Clean up evicted node's incoming reference
-        if (evicted?.incomingPeers) evicted.incomingPeers.delete(this.id);
-        if (this.buckets[idx].add(node)) {
-          this._totalConns++;
-          if (node.incomingPeers && !node.incomingPeers.has(this.id)) {
-            node.incomingPeers.set(this.id, this);
-          }
-        }
+      if (maxB < 0 || maxSize <= 1) return;
+      const evicted = this.buckets[maxB].nodes.pop();
+      this._totalConns--;
+      if (evicted?.incomingPeers) evicted.incomingPeers.delete(this.id);
+      this.disconnect(evicted);
+      if (!this.tryConnect(node)) return;  // peer still refused (its own cap) — give up
+    }
+
+    // Physical link established (both sides); finalize bucket insertion.
+    if (this.buckets[idx].add(node)) {
+      this._totalConns++;
+      // Reverse index kept for legacy read paths (findClosest reads it).
+      // The authoritative transport record is `this.connections` / `node.connections`.
+      if (node.incomingPeers && !node.incomingPeers.has(this.id)) {
+        node.incomingPeers.set(this.id, this);
       }
     }
-    // Otherwise: at cap and bucket is non-empty — silently drop (matches
-    // real-world Kademlia behaviour of ignoring new peers when bucket is full).
   }
 
   removeFromBucket(nodeId) {
@@ -146,6 +141,9 @@ export class KademliaNode extends DHTNode {
     this._totalConns -= (before - this.buckets[idx].size);
     // Also remove from incoming peers if present
     this.incomingPeers.delete(nodeId);
+    // Drop the physical connection (both sides). Safe even if the peer is
+    // already dead — DHTNode.disconnect tolerates a missing `connections` set.
+    this.connections.delete(nodeId);
   }
 
   /**
@@ -295,7 +293,12 @@ export class KademliaDHT extends DHT {
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     // Propagate global connection cap to every node
     for (const node of sorted) node.maxConnections = maxConnections;
-    for (const node of sorted) {
+
+    // Shuffle processing order so no sort-order position gets systematic
+    // first-pick advantage under tight caps.
+    const processingOrder = [...sorted].sort(() => Math.random() - 0.5);
+
+    for (const node of processingOrder) {
       for (const peer of buildXorRoutingTable(node.id, sorted, k, maxConnections)) {
         node.addToBucket(peer);
         // Bidirectional: also make peer aware of node (reverse edge).

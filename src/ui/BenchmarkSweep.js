@@ -193,6 +193,8 @@ export class BenchmarkSweep {
     setNum('churnRate',           run.benchChurnPct);
     setChk('webLimit',            run.webLimit);
     setChk('benchBootstrap',      run.benchBootstrap);
+    setNum('highwayPct',          run.highwayPct);
+    setNum('maxConnections',      run.maxConnections);
     setMultiSelect('benchProtocols', run.protocols, 'dht-bench-protocols');
     setMultiSelect('benchTests',     run.tests,     'dht-bench-tests');
 

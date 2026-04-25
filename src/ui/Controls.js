@@ -226,6 +226,8 @@ export class Controls {
   get bidirectional()    { return this._el('bidirectional')?.checked ?? true; }
   get webLimit()         { return this._el('webLimit')?.checked ?? false; }
   get benchBootstrap()   { return this._el('benchBootstrap')?.checked ?? false; }
+  get highwayPct()       { return Number(this._el('highwayPct')?.value ?? 0); }
+  get maxConnections()   { return Number(this._el('maxConnections')?.value ?? 100); }
   get showAnimation() { return this._el('showAnimation')?.checked ?? true; }
   get autoRotate()  { return this._el('autoRotate')?.checked ?? false; }
   get pubsubGroupSize() { return Math.max(4, parseInt(this._el('pubsubGroupSize')?.value ?? 32)); }
@@ -271,6 +273,8 @@ export class Controls {
       bidirectional:   this.bidirectional,
       webLimit:         this.webLimit,
       benchBootstrap:   this.benchBootstrap,
+      highwayPct:       this.highwayPct,
+      maxConnections:   this.maxConnections,
       nx1wRules: this.getNX1WRules(),
       nx2wRules: this.getNX2WRules(),
       nx13Rules: this.getNX13Rules(),

@@ -92,7 +92,7 @@ Omitting a field leaves the current UI value unchanged.
 
 ## Protocol Keys
 - `kademlia` — Kademlia DHT
-- `geo` — Geographic DHT (prefix width set by G-DHT Bits parameter, default 8)
+- `geob` — Geographic DHT (SOTA G-DHT — stratified inter-cell + intra-cell + random global). Earlier variants (`geo`, `geoa`) are retired for benchmarking but remain in code for backward-compat reading of old CSVs.
 - `ngdht10w` — Neuromorphic DHT v10 (best performer)
 - `ngdht`, `ngdht2`…`ngdht13w` — other neuromorphic variants
 - `ngdhtnx1w` — NX-1W configurable research protocol

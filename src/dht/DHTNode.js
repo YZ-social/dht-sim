@@ -7,6 +7,7 @@
  * send/receive at the same interface without touching this class.
  */
 import { geoCellId } from '../utils/s2.js';
+import { clz64 }     from '../utils/geo.js';
 
 /**
  * Number of bits used for the S2 geographic cell stored on every node.
@@ -36,11 +37,153 @@ export class DHTNode {
      */
     this.s2Cell = geoCellId(lat, lng, GEO_CELL_BITS);
 
+    /**
+     * Physical-transport connection budget.
+     *
+     * The real bottleneck for WebRTC-based P2P is the number of simultaneous
+     * RTCPeerConnections a browser can hold (~50–100 before degrading,
+     * Chromium hard-caps at 500). That budget is bilateral and symmetric:
+     * a "connection" consumes one slot on each side regardless of which
+     * party initiated it.
+     *
+     * `connections` is the set of peer IDs with a live physical link to me.
+     * It's a superset of whatever routing structure (bucket / synaptome /
+     * reverse-index) references a given peer — the transport must exist
+     * before any routing table can use it.
+     *
+     * `tryConnect(other)` is the gate: both sides must have capacity,
+     * otherwise the connection is refused. Routing code treats a refused
+     * connection as "this peer is unavailable" and moves on to its next
+     * candidate.
+     */
+    this.connections    = new Set();     // bigint peerIds with a live link
+    this.maxConnections = Infinity;      // set by DHT.buildRoutingTables
+
     // Injected by the DHT implementation
     this.routingTable = null;
 
     // Injected by the Network layer
     this._network = null;
+  }
+
+  /**
+   * Attempt to establish a bilateral physical link to `other`.
+   *
+   * Returns true if the link was already present or was newly established
+   * (both sides now have each other in their `connections` set).
+   * Returns false if either side is at capacity AND neither can free a
+   * slot via the swap policy.
+   *
+   * Under a bilateral cap, naïve first-come-first-served refusal blocks
+   * every learning/growth mechanism: new routes, dead-peer replacement,
+   * incoming promotion, pub/sub child recruitment, and annealing all
+   * stop the moment caps saturate. To let the graph keep growing, we
+   * let a full node evict its LEAST-VALUABLE existing peer in favour
+   * of the incoming candidate — if and only if the candidate genuinely
+   * improves structural coverage (fills an under-represented XOR stratum).
+   *
+   * The default value function (stratum coverage) is protocol-agnostic.
+   * Subclasses can override `_chooseVictim` to incorporate richer signals
+   * (LTP weight for N-DHT, bucket recency for Kademlia, etc.).
+   *
+   * @param {DHTNode} other
+   */
+  tryConnect(other) {
+    if (other === this) return false;
+    if (this.connections.has(other.id)) return true;
+
+    const myFull    = this.connections.size  >= this.maxConnections;
+    const theirFull = other.connections.size >= other.maxConnections;
+
+    // Fast path: both sides have room.
+    if (!myFull && !theirFull) {
+      this.connections.add(other.id);
+      other.connections.add(this.id);
+      return true;
+    }
+
+    // My side full — attempt a value-based swap to free a slot.
+    if (myFull && !this._trySwapIn(other)) return false;
+
+    // Other side full — they run the same policy from their perspective.
+    if (theirFull && !other._trySwapIn(this)) return false;
+
+    this.connections.add(other.id);
+    other.connections.add(this.id);
+    return true;
+  }
+
+  /**
+   * Try to evict a less-valuable existing peer in favour of `candidate`.
+   * Default policy: find the most over-represented XOR stratum (ignoring
+   * `candidate`'s stratum); only swap if the candidate's stratum is
+   * strictly less-represented. This is a conservative Pareto improvement
+   * — we never swap if it would worsen stratum coverage.
+   *
+   * Returns true if a slot was freed (caller can then add `candidate`),
+   * false if no swap improves coverage.
+   *
+   * @param {DHTNode} candidate
+   */
+  _trySwapIn(candidate) {
+    const candidateStratum = Math.min(63, clz64(this.id ^ candidate.id));
+    const counts = new Array(64).fill(0);
+    for (const pid of this.connections) {
+      const s = Math.min(63, clz64(this.id ^ pid));
+      counts[s]++;
+    }
+    // Find the most over-represented stratum OTHER than the candidate's.
+    let evictStratum = -1;
+    let maxCount    = 0;
+    for (let s = 0; s < 64; s++) {
+      if (s === candidateStratum) continue;
+      if (counts[s] > maxCount) { maxCount = counts[s]; evictStratum = s; }
+    }
+    // Only swap if the candidate fills a stratum with strictly fewer peers
+    // than the evict-source. This is the "net structural improvement"
+    // guard: it prevents thrashing (evicting and re-adding similar peers).
+    if (maxCount <= counts[candidateStratum] + 1) return false;
+
+    const victimId = this._chooseVictim(evictStratum);
+    if (victimId == null) return false;
+
+    // Free the slot on both sides. The victim's routing-table entry (if
+    // any) becomes stale; future traffic through the victim will simply
+    // find no live path and trigger protocol-specific cleanup (e.g.
+    // dead-peer eviction in N-DHT).
+    this.connections.delete(victimId);
+    const victimNode = this._network?.nodes?.get(victimId);
+    if (victimNode) victimNode.connections.delete(this.id);
+    return true;
+  }
+
+  /**
+   * Choose a specific peer to evict from a given stratum.
+   *
+   * Base implementation: first peer found in the target stratum. Subclasses
+   * can override to prefer low-LTP-weight peers (N-DHT) or
+   * least-recently-used peers (Kademlia bucket tail).
+   *
+   * @param {number} stratum
+   * @returns {bigint|null} peerId to evict, or null if no peer is in this stratum
+   */
+  _chooseVictim(stratum) {
+    for (const pid of this.connections) {
+      const s = Math.min(63, clz64(this.id ^ pid));
+      if (s === stratum) return pid;
+    }
+    return null;
+  }
+
+  /**
+   * Tear down the physical link to `other` (both sides).
+   * Called when a routing table drops the peer and no other structure
+   * still wants it; also called automatically during dead-peer eviction.
+   */
+  disconnect(other) {
+    if (!other) return;
+    this.connections.delete(other.id);
+    other.connections?.delete(this.id);
   }
 
   /**

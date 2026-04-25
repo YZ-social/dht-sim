@@ -8,6 +8,36 @@
  *   - Push results to the Results panel and path visualisations to the globe.
  */
 
+// ── Heartbeat indicator ─────────────────────────────────────────────────────
+// A small colour-pulsing dot next to the app title tells the user the app is
+// alive AND what it is doing. The pulse is JS-driven (setInterval toggles a
+// CSS class) — deliberately not a compositor-layer @keyframes — so that a
+// blocked main thread causes a VISIBLE freeze of the pulse. If the light
+// stops blinking, JS is stuck.
+//
+// States: 'idle' | 'init' | 'benchmark' | 'training' | 'pubsub' | 'sweep' | 'error'.
+// Colour comes from CSS rules keyed on the data-state attribute; pulse rate
+// (how often we toggle the `.beat` class) comes from this timer.
+export function setAppState(state) {
+  const el = document.getElementById('heartbeat');
+  if (el) el.setAttribute('data-state', state);
+}
+
+// Kick off the JS-driven pulse as soon as this module loads. A 400 ms
+// interval gives a visible "tick" around 2.5 Hz — fast enough to make a
+// freeze obvious, slow enough not to waste frames. Timer callbacks queue
+// when JS is blocked, so a recovering main thread will fire a burst of
+// queued toggles and then resume regular cadence.
+(() => {
+  let on = false;
+  setInterval(() => {
+    const el = document.getElementById('heartbeat');
+    if (!el) return;
+    on = !on;
+    el.classList.toggle('beat', on);
+  }, 400);
+})();
+
 import { Globe }              from './globe/Globe.js';
 import { KademliaDHT }        from './dht/kademlia/KademliaDHT.js';
 import { GeographicDHT, GeographicDHTa, GeographicDHTb } from './dht/geographic/GeographicDHT.js';
@@ -233,6 +263,7 @@ async function onInit() {
   trainingActive = false;
   controls.setTraining(false);
   pubsubActive = false;
+  setAppState('init');
   controls.setPubSub(false);
   pairActive = false;
   controls.setPairLearning(false);
@@ -287,7 +318,8 @@ async function onInit() {
 
   dht.buildRoutingTables({
     bidirectional:  params.bidirectional,
-    maxConnections: params.webLimit ? 50 : Infinity,
+    maxConnections: params.webLimit ? (params.maxConnections ?? 100) : Infinity,
+    highwayPct:     params.highwayPct ?? 0,
   });
 
   controls.setProgress(1);
@@ -308,6 +340,7 @@ async function onInit() {
   );
   controls.updateNodeCount(nodes.length);
   controls.setRunning(false);
+  setAppState('idle');
   controls.setProgress(0);
   sweep.notifyInitComplete();
 }
@@ -378,6 +411,7 @@ async function onSliceWorld() {
   trainingActive = false;
   controls.setTraining(false);
   pubsubActive = false;
+  setAppState('idle');
   controls.setPubSub(false);
   pairActive = false;
   controls.setPairLearning(false);
@@ -431,7 +465,8 @@ async function onSliceWorld() {
   // ── Build full routing tables, then prune cross-hemisphere links ───────────
   dht.buildRoutingTables({
     bidirectional:  params.bidirectional,
-    maxConnections: params.webLimit ? 50 : Infinity,
+    maxConnections: params.webLimit ? (params.maxConnections ?? 100) : Infinity,
+    highwayPct:     params.highwayPct ?? 0,
   });
 
   controls.setStatus('Pruning cross-hemisphere connections (Hawaii bridge only)…', 'info');
@@ -462,6 +497,7 @@ async function onSliceWorld() {
   );
   controls.updateNodeCount(nodes.length);
   controls.setRunning(false);
+  setAppState('idle');
   controls.setProgress(0);
   sweep.notifyInitComplete();
 }
@@ -474,6 +510,7 @@ async function onBootstrap() {
   trainingActive = false;
   controls.setTraining(false);
   pubsubActive = false;
+  setAppState('idle');
   controls.setPubSub(false);
   pairActive = false;
   controls.setPairLearning(false);
@@ -506,12 +543,27 @@ async function onBootstrap() {
 
   dht = createDHT(params);
 
+  // Physical-connection caps. Each node decides its own capacity at join
+  // time so bootstrapJoin sees the correct cap from the first call:
+  //   - webLimit on  → cap set by params.maxConnections (default 100)
+  //   - webLimit off → unrestricted
+  //   - highwayPct % of nodes randomly promoted to unrestricted (server-class)
+  const baseCap    = params.webLimit ? (params.maxConnections ?? 100) : Infinity;
+  const highwayPct = params.highwayPct ?? 0;
+  dht.maxConnections = baseCap;
+  dht.bidirectional  = params.bidirectional;
+  dht.highwayPct     = highwayPct;
+
   // Build incrementally: first node has no peers, each subsequent node
   // joins through the live network via a sponsor.
   const nodes = [];
   for (let i = 0; i < params.nodeCount; i++) {
     const { lat, lng } = globe.randomLandPoint();
     const node = await dht.addNode(lat, lng);
+    // Per-node capacity decision.
+    const isHighway = (Math.random() * 100) < highwayPct;
+    node.maxConnections = isHighway ? Infinity : baseCap;
+    node.isHighway      = isHighway;
     nodes.push(node);
 
     // Every node after the first joins via sponsor
@@ -569,6 +621,7 @@ async function onBootstrap() {
   );
   controls.updateNodeCount(nodes.length);
   controls.setRunning(false);
+  setAppState('idle');
   controls.setProgress(0);
   sweep.notifyInitComplete();
 }
@@ -931,6 +984,7 @@ async function onTrainNetwork() {
   }
 
   trainingActive  = true;
+  setAppState('training');
   trainingHistory = [];
   trainingEpoch   = 0;
   results.clearTraining();
@@ -1028,6 +1082,7 @@ async function onTrainNetwork() {
   }
 
   trainingActive = false;
+  setAppState('idle');
   controls.setTraining(false);
   const trainedSessions = trainingHistory.filter(s => !s.isBaseline).length;
   const _trainMsg = `Training stopped after ${trainedSessions} session(s).`;
@@ -1136,6 +1191,7 @@ async function onPubSub() {
   const actualCoverage = ((covered.size / aliveNodes.length) * 100).toFixed(1);
 
   pubsubActive = true;
+  setAppState('pubsub');
   controls.setPubSub(true);
   globe.clearArcs();
   globe.clearConnections();
@@ -1205,6 +1261,7 @@ async function onPubSub() {
   }
 
   pubsubActive = false;
+  setAppState('idle');
   controls.setPubSub(false);
   globe.clearPubSubHighlights();
   const _psMsg = `Pub/Sub stopped after ${tick} session(s).`;
@@ -1249,6 +1306,7 @@ async function onMembershipPubSub() {
   }
 
   pubsubActive = true;
+  setAppState('pubsub');
   controls.setPubSub(true);
   globe.clearArcs();
   globe.clearConnections();
@@ -1327,6 +1385,7 @@ async function onMembershipPubSub() {
   }
 
   pubsubActive = false;
+  setAppState('idle');
   controls.setPubSub(false);
   const finalMsg = `Membership Pub/Sub stopped after ${tick} tick(s); cumulative kill ${cumulativeKilled} (${((cumulativeKilled/initialAliveCount)*100).toFixed(1)}%).`;
   controls.setStatus(finalMsg, 'success');
@@ -1520,6 +1579,7 @@ async function onBenchmark() {
   }
 
   benchmarkActive = true;
+  setAppState('benchmark');
   controls.setBenchmarking(true);
   controls.setProgress(0);
   globe.clearArcs();
@@ -1530,9 +1590,7 @@ async function onBenchmark() {
 
   const PROTOCOL_DEFS = [
     { key: 'kademlia', label: 'Kademlia' },
-    { key: 'geo',      label: `G-DHT-${params.geoBits}` },
-    { key: 'geoa',     label: 'G-DHT-a' },
-    { key: 'geob',     label: 'G-DHT-b' },
+    { key: 'geob',     label: 'G-DHT' },          // retired: 'geo' (G-DHT-8), 'geoa' (G-DHT-a); geob is the SOTA variant and now the only G-DHT in benchmarks
     // Neuromorphic protocols need a warmup burst so synaptic shortcuts form
     // before measurement.  Without warmup their weights are identical to G-DHT.
     { key: 'ngdht',     label: 'N-1',     warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000 },
@@ -1614,12 +1672,22 @@ async function onBenchmark() {
       if (params.benchBootstrap && benchDHT.bootstrapJoin) {
         // Propagate connection cap + bidirectional flag (normally done by
         // buildRoutingTables, which the bootstrap path skips).
-        const maxConn = params.webLimit ? 50 : Infinity;
+        const maxConn = params.webLimit ? (params.maxConnections ?? 100) : Infinity;
+        const highwayPct = params.highwayPct ?? 0;
         benchDHT.maxConnections = maxConn;
         benchDHT.bidirectional  = params.bidirectional;
-        // Propagate cap to all existing nodes so addToBucket enforces it
-        for (const node of benchDHT.nodeMap.values()) {
-          if (node.maxConnections !== undefined) node.maxConnections = maxConn;
+        benchDHT.highwayPct     = highwayPct;
+        // Mixed-capacity model: promote a random `highwayPct` fraction of
+        // nodes to unrestricted (server-class transit hubs). The rest keep
+        // the normal web cap. Mirrors the logic in DHT.buildRoutingTables.
+        const allNodesArr = [...benchDHT.nodeMap.values()];
+        const highwayCount = Math.floor(allNodesArr.length * (highwayPct / 100));
+        const shuffled = [...allNodesArr].sort(() => Math.random() - 0.5);
+        const highwaySet = new Set(shuffled.slice(0, highwayCount).map(n => n.id));
+        for (const node of allNodesArr) {
+          const isHw = highwaySet.has(node.id);
+          node.maxConnections = isHw ? Infinity : maxConn;
+          node.isHighway      = isHw;
         }
 
         // Bootstrapped init: each node joins via sponsor + refresh pass
@@ -1654,7 +1722,8 @@ async function onBenchmark() {
         controls.setStatus(`${tag} — building routing tables…`, 'bench');
         benchDHT.buildRoutingTables({
           bidirectional:  params.bidirectional,
-          maxConnections: params.webLimit ? 50 : Infinity,
+          maxConnections: params.webLimit ? (params.maxConnections ?? 100) : Infinity,
+          highwayPct:     params.highwayPct ?? 0,
         });
       }
       completedSteps++;
@@ -1692,6 +1761,7 @@ async function onBenchmark() {
 
   const stopped = !benchmarkActive;
   benchmarkActive = false;
+  setAppState('idle');
   controls.setBenchmarking(false);
   controls.setProgress(0);
 

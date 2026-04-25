@@ -322,7 +322,7 @@ def build_pdf():
         canvas.drawString(
             1*inch,
             0.5*inch,
-            "Neuromorphic DHT Architecture v0.55.00"
+            "Neuromorphic DHT Architecture v0.56.00"
         )
         canvas.restoreState()
 

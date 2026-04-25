@@ -129,8 +129,14 @@ export class NeuromorphicDHT extends DHT {
     const k      = this._k;
     const sorted = [...this.nodeMap.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
-    for (const node of sorted) {
+    // Shuffle processing order to avoid sort-order bias under tight caps
+    // (see KademliaDHT.buildRoutingTables for the rationale).
+    const processingOrder = [...sorted].sort(() => Math.random() - 0.5);
+
+    for (const node of processingOrder) {
       for (const peer of buildXorRoutingTable(node.id, sorted, k)) {
+        // Physical-transport gate: refuses if either side is at cap
+        if (!node.tryConnect(peer)) continue;
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
         node.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
@@ -182,6 +188,7 @@ export class NeuromorphicDHT extends DHT {
     const addPeer = (peer) => {
       if (peer.id === newNodeId || newNode.synaptome.has(peer.id)) return;
       if (newNode.synaptome.size >= synCap) return;
+      if (!newNode.tryConnect(peer)) return;  // physical cap exhausted on either side
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
       newNode.addSynapse(new Synapse({ peerId: peer.id, latencyMs: latMs, stratum }));
@@ -505,6 +512,7 @@ export class NeuromorphicDHT extends DHT {
     const nodeC = this.nodeMap.get(cId);
     if (!nodeA || !nodeC || !nodeA.alive || !nodeC.alive) return;
     if (nodeA.hasSynapse(cId)) return; // already connected
+    if (!nodeA.tryConnect(nodeC)) return;  // physical cap exhausted on either side
 
     const latMs   = roundTripLatency(nodeA, nodeC);
     const stratum = clz64(nodeA.id ^ nodeC.id);

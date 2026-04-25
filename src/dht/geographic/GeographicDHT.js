@@ -342,7 +342,11 @@ export class GeographicDHTb extends GeographicDHT {
 
     for (const node of sorted) node.maxConnections = maxConnections;
 
-    for (const node of sorted) {
+    // Randomize processing order to avoid sort-order bias under tight caps
+    // (see KademliaDHT.buildRoutingTables for the rationale).
+    const processingOrder = [...sorted].sort(() => Math.random() - 0.5);
+
+    for (const node of processingOrder) {
       if (isFinite(maxConnections)) {
         // ── Core: stratified allocation for 80% of budget ─────────────────
         const coreBudget = Math.floor(maxConnections * 0.8);

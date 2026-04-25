@@ -142,13 +142,25 @@ export function _collectBucket(selfId, sorted, b, k) {
     if (sorted[mid].id < rangeStart) lo = mid + 1; else hi = mid;
   }
 
-  // Collect up to k peers from [rangeStart, rangeEnd].
-  const nodes = [];
-  for (let i = lo; i < sorted.length && nodes.length < k; i++) {
+  // Reservoir-sample up to k peers from [rangeStart, rangeEnd]. Reservoir
+  // sampling (instead of a deterministic "first k") is critical under a
+  // bilateral connection cap: if every node that falls in the same bucket
+  // range were to always pick the same first-k candidates, those candidates
+  // saturate instantly and the rest of the range's capacity is wasted.
+  // Random sampling spreads connection demand across the full stratum.
+  const reservoir = [];
+  let count = 0;
+  for (let i = lo; i < sorted.length; i++) {
     if (sorted[i].id > rangeEnd) break;
-    nodes.push(sorted[i]);
+    if (count < k) {
+      reservoir.push(sorted[i]);
+    } else {
+      const j = Math.floor(Math.random() * (count + 1));
+      if (j < k) reservoir[j] = sorted[i];
+    }
+    count++;
   }
-  return nodes;
+  return reservoir;
 }
 
 /**

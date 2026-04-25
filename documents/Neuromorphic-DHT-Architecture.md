@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.55.00*
+*Version 0.56.00*
 
 ---
 
@@ -42,7 +42,7 @@ Kademlia treats all distances identically: a lookup to a peer 500 km away traver
 
 ### Performance at a Glance (25,000 nodes, web-limited)
 
-| Workload | Kademlia | G-DHT-b | NX-10 | NX-10 vs Kademlia |
+| Workload | Kademlia | G-DHT | NX-10 | NX-10 vs Kademlia |
 |----------|----------|---------|-------|------|
 | **500 km lookup** | 378 ms | 130 ms | **66 ms** | **5.7× faster** |
 | **1,000 km lookup** | 379 ms | 134 ms | **75 ms** | **5.1× faster** |
@@ -56,7 +56,7 @@ Kademlia treats all distances identically: a lookup to a peer 500 km away traver
 | **Under 10% churn** | 419 ms / 100% | 322 ms / 100% | **262 ms / 100%** | 1.6× faster |
 | **Under 25% churn** | 489 ms / 100% | 334 ms / **99.4%** | **259 ms / 100%** | **1.89× faster** |
 
-Both G-DHT-b and NX-10 deliver multi-fold improvements on the workloads that dominate real-world traffic -- local lookups and concentrated-destination patterns -- with NX-10 approaching an order of magnitude in the best cases. NX-10's 500 km latency of 66 ms is 5.7× faster than Kademlia's 378 ms. For repeated lookups to a popular 10% set of destinations, NX-10 achieves 40 ms -- nearly direct delivery -- compared to Kademlia's 234 ms. And for lookups between members of two popular 10% pools (modeling community-to-community traffic), NX-10 reaches 32 ms, **7.6× faster than Kademlia**.
+Both G-DHT and NX-10 deliver multi-fold improvements on the workloads that dominate real-world traffic -- local lookups and concentrated-destination patterns -- with NX-10 approaching an order of magnitude in the best cases. NX-10's 500 km latency of 66 ms is 5.7× faster than Kademlia's 378 ms. For repeated lookups to a popular 10% set of destinations, NX-10 achieves 40 ms -- nearly direct delivery -- compared to Kademlia's 234 ms. And for lookups between members of two popular 10% pools (modeling community-to-community traffic), NX-10 reaches 32 ms, **7.6× faster than Kademlia**.
 
 ### Churn Invariance
 
@@ -65,10 +65,10 @@ Both G-DHT-b and NX-10 deliver multi-fold improvements on the workloads that dom
 | Protocol | At rest | 10% churn | 25% churn | Δ at 25% |
 |----------|---------|-----------|-----------|---------|
 | Kademlia | 375 ms / 100% | 419 ms / 100% | 489 ms / 100% | **+30%** latency penalty |
-| G-DHT-b | 284 ms / 100% | 322 ms / 100% | 334 ms / **99.4%** | +18% penalty, **reliability breaks** |
+| G-DHT | 284 ms / 100% | 322 ms / 100% | 334 ms / **99.4%** | +18% penalty, **reliability breaks** |
 | **NX-10** | 255 ms / 100% | 262 ms / 100% | **259 ms / 100%** | **+1.6% latency penalty** |
 
-At 25% churn per round across 5 rounds, approximately **76% of the original network has been replaced**. Kademlia degrades by 30% in latency but completes every lookup. G-DHT-b reaches its reliability ceiling and begins dropping lookups. NX-10 routes in 259 ms -- statistically indistinguishable from its 255 ms at-rest baseline. The network does not slow down, lose reliability, or show signs of stress. It simply continues operating.
+At 25% churn per round across 5 rounds, approximately **76% of the original network has been replaced**. Kademlia degrades by 30% in latency but completes every lookup. G-DHT reaches its reliability ceiling and begins dropping lookups. NX-10 routes in 259 ms -- statistically indistinguishable from its 255 ms at-rest baseline. The network does not slow down, lose reliability, or show signs of stress. It simply continues operating.
 
 A notable pattern emerges in the at-rest / 10% / 25% progression: Kademlia's latency climbs from 375 ms to 489 ms, while NX-10's stays flat at 255–262 ms. The gap between them widens from 1.47× at rest to 1.89× at 25% churn. Most engineered systems converge under degradation (all components slow together); NX-10 diverges, because its adaptive mechanisms extract increasing value from each lookup as the topology shifts, while static systems lose performance exactly in proportion to the damage inflicted.
 
@@ -951,7 +951,7 @@ All benchmarks use 25,000 nodes uniformly distributed across the globe, with 500
 
 ### 6.1 Point-to-Point Routing (Web-Limited, 50 connections)
 
-| Metric | K-DHT | G-DHT-b | NX-10 |
+| Metric | K-DHT | G-DHT | NX-10 |
 |--------|-------|---------|-------|
 | Global hops | 3.45 | 4.62 | 3.43 |
 | Global latency | 355 ms | 272 ms | 261 ms |
@@ -962,14 +962,14 @@ All benchmarks use 25,000 nodes uniformly distributed across the globe, with 500
 | NA to Asia latency | 342 ms | 294 ms | 249 ms |
 | Success rate | 100% | 100% | 100% |
 
-Under web-realistic connection limits (50 peers per node), the Neuromorphic DHT achieves **26% lower global latency** than Kademlia and **4% lower** than G-DHT-b. The regional advantage is dramatic: at 500 km, NX-10 routes in 67 ms vs. Kademlia's 362 ms -- an **81% reduction**. For concentrated workloads (10% destinations), NX-10 achieves 40 ms vs. Kademlia's 241 ms through hop caching and LTP reinforcement of popular routes.
+Under web-realistic connection limits (50 peers per node), the Neuromorphic DHT achieves **26% lower global latency** than Kademlia and **4% lower** than G-DHT. The regional advantage is dramatic: at 500 km, NX-10 routes in 67 ms vs. Kademlia's 362 ms -- an **81% reduction**. For concentrated workloads (10% destinations), NX-10 achieves 40 ms vs. Kademlia's 241 ms through hop caching and LTP reinforcement of popular routes.
 
 ```
 Latency by Distance (Web-Limited, 25K nodes):
 
            500km   2000km   5000km   Global   NA→AS
 K-DHT:     362     348      349      355      342
-G-DHT-b:   124     157      196      272      294
+G-DHT:   124     157      196      272      294
 NX-10:      67      90      147      261      249
 ```
 
@@ -977,7 +977,7 @@ NX-10:      67      90      147      261      249
 
 The web-limited results above assume each node can maintain at most 50 peer connections -- a browser-realistic constraint. To understand whether the Neuromorphic advantage is an artifact of constrained resources, we also measured all three protocols with the connection cap removed. In this mode, Kademlia and G-DHT are free to fill every XOR bucket to its full `k=20` allocation (producing hundreds of peers per node), and NX-10 is allowed a synaptome of up to 256 connections.
 
-| Metric | K-DHT | G-DHT-b | NX-10 |
+| Metric | K-DHT | G-DHT | NX-10 |
 |--------|-------|---------|-------|
 | Global hops | 2.99 | 4.37 | 2.75 |
 | Global latency | 299 ms | 269 ms | **191 ms** |
@@ -995,7 +995,7 @@ The uncapped results confirm that the Neuromorphic advantage is structural, not 
 
 **Kademlia barely improves.** Global latency drops only from 355 ms to 299 ms (-16%), and regional latency is essentially unchanged (500 km: 362→297 ms). Giving Kademlia an unlimited connection budget does not fix XOR's geographic blindness -- the protocol still routes through distant peers because that's what its metric demands. Hop count drops from 3.45 to 2.99 (one hop saved), but each hop still costs as much as before.
 
-**G-DHT-b gains modestly.** Global latency improves from 272→269 ms, regional from 124→117 ms at 500 km. The three-layer bootstrap already provided geographic locality under the cap; removing the cap lets the buckets fill more deeply but the protocol has no learning mechanism to exploit the extra capacity.
+**G-DHT gains modestly.** Global latency improves from 272→269 ms, regional from 124→117 ms at 500 km. The three-layer bootstrap already provided geographic locality under the cap; removing the cap lets the buckets fill more deeply but the protocol has no learning mechanism to exploit the extra capacity.
 
 **NX-10 gains the most.** Global latency drops from 261→191 ms (-27%), and regional from 67→46 ms at 500 km (-31%). The adaptive mechanisms -- hop caching, lateral spread, LTP reinforcement, triadic closure -- all scale with available synaptome slots. More capacity means more room to cache discovered routes, more diverse exploration, and more stable long-range connections. The concentrated-workload metrics (10% dest at 31 ms, 10%→10% at 31 ms) drop to near-direct delivery, indicating the learning machinery has converged on optimal routes for popular traffic patterns.
 
@@ -1017,7 +1017,7 @@ One caveat: under concentrated-workload scenarios (10% dest, 10%→10%), Kademli
 
 ### 6.3 Pub/Sub Broadcast (2,000 subscribers)
 
-| Metric | K-DHT (flat) | G-DHT-b (flat) | NX-10 (axonal) |
+| Metric | K-DHT (flat) | G-DHT (flat) | NX-10 (axonal) |
 |--------|-------------|----------------|----------------|
 | Relay latency | 418 ms | 303 ms | 233 ms |
 | Broadcast latency | 359 ms | 276 ms | 260 ms |
@@ -1031,14 +1031,14 @@ The axonal tree reduces max fan-out from 1,999 to 42 -- a **48x reduction** in p
 Fan-out per Relay Node:
 
 K-DHT (flat):      ████████████████████████████████████ 1,999
-G-DHT-b (flat):    ████████████████████████████████████ 1,999
+G-DHT (flat):    ████████████████████████████████████ 1,999
 NX-10 (axonal):    █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    42
                    0         500       1000      1500     2000
 ```
 
 ### 6.4 Churn Resilience
 
-| Metric | K-DHT | G-DHT-b | NX-10 |
+| Metric | K-DHT | G-DHT | NX-10 |
 |--------|-------|---------|-------|
 | 5% churn hops | 3.64 | 4.88 | 4.27 |
 | 5% churn latency | 384 ms | 300 ms | 253 ms |
@@ -1060,7 +1060,7 @@ The Slice World test partitions the network into Eastern and Western hemispheres
 | Protocol | Success | Key mechanism |
 |----------|---------|---------------|
 | K-DHT | 52% | Cannot find bridge -- terminates after 2 no-progress rounds |
-| G-DHT-b | 52% | Same limitation as Kademlia |
+| G-DHT | 52% | Same limitation as Kademlia |
 | NX-3 (no fallback) | 99.4% | Incoming synapses expose bridge connections |
 | NX-10 | **100%** | Iterative fallback + incoming synapses guarantee bridge discovery |
 

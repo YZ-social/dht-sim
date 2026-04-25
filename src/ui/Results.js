@@ -1401,7 +1401,7 @@ export class Results {
     // Protocol row tooltip descriptions.
     const protoTips = {
       kademlia:  'Classic Kademlia: XOR-metric k-bucket routing with α-parallel iterative node lookups. No geographic awareness.',
-      geo:       'G-DHT: XOR routing with an S2 geographic cell prefix embedded in node IDs. Biases routing toward physically nearby nodes. Prefix width set by G-DHT Bits.',
+      geob:      'G-DHT: XOR routing with an S2 geographic cell prefix embedded in node IDs. Biases routing toward physically nearby nodes. Stratified inter-cell (40%) + intra-cell (30%) + random global (30%) allocation keeps reachability at 100% under the web-connection cap.',
       ngdht:     'Neuromorphic-1 (N-1): Hebbian synapse weighting layered on top of geographic routing. Synapses strengthen on frequently used paths. First-generation adaptive DHT.',
       ngdht15w:  'Neuromorphic-15W (N-15W): Renewal-Based Highway Protection. Highway synapses decay slowly only when recently traversed; idle synapses decay at the cold local rate and are pruned naturally.',
       ngdhtnx1w: 'NX-1W: Configurable research protocol with modular neuromorphic rules (Markov annealing, hop caching, triadic closure, LTP). Rule parameters individually tunable.',

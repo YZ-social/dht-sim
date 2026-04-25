@@ -56,9 +56,32 @@ export class DHT {
    * Rebuild routing tables after bulk node additions.
    * Optional: some implementations do this lazily.
    */
-  buildRoutingTables({ bidirectional = true, maxConnections = Infinity } = {}) {
+  buildRoutingTables({
+    bidirectional = true,
+    maxConnections = Infinity,
+    highwayPct = 0,
+  } = {}) {
     this.bidirectional  = bidirectional;
     this.maxConnections = maxConnections;
+    this.highwayPct     = highwayPct;
+    // Propagate the per-node physical cap so tryConnect() can enforce it.
+    // Every DHTNode already defaults to Infinity; subclasses' buildRoutingTables
+    // should call super.buildRoutingTables() first so this runs before they
+    // start wiring peers together.
+    //
+    // Mixed-capacity model: `highwayPct` fraction of nodes are promoted to
+    // unrestricted (server-class). These "highway" nodes accept unlimited
+    // incoming connections and act as transit hubs. The rest keep the
+    // normal cap (browser-class clients). Models a realistic hybrid
+    // deployment where a small server backbone complements a P2P swarm.
+    const nodes = this.getNodes();
+    const highwayCount = Math.floor(nodes.length * (highwayPct / 100));
+    const shuffled = [...nodes].sort(() => Math.random() - 0.5);
+    const highwaySet = new Set(shuffled.slice(0, highwayCount).map(n => n.id));
+    for (const node of nodes) {
+      node.maxConnections = highwaySet.has(node.id) ? Infinity : maxConnections;
+      node.isHighway = highwaySet.has(node.id);
+    }
   }
 
   /** Return all currently active nodes. */

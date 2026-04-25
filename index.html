@@ -28,7 +28,10 @@
 
     <!-- Header -->
     <div class="sb-hdr">
-      <button class="app-title" id="btnAbout" data-tip="Open the DHT (Distributed Hash Table) Globe user guide.">&#9670; DHT Globe</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="app-title" id="btnAbout" data-tip="Open the DHT (Distributed Hash Table) Globe user guide.">&#9670; DHT Globe</button>
+        <span id="heartbeat" class="heartbeat" data-state="idle" data-tip="Liveness indicator — colour = what the app is doing: blue=idle, amber=benchmark, green=training, purple=pub/sub, red=error.">&nbsp;</span>
+      </div>
       <div style="display:flex;gap:4px;align-items:center">
         <button id="btnThemeToggle" data-tip="Toggle light / dark mode">&#9788;</button>
         <button class="btn-notify" id="btnNotify" data-tip="Enable desktop notifications — you will be alerted when long-running tests complete.">&#x1F514;</button>
@@ -40,9 +43,7 @@
       <div class="sb-sec-lbl">Network</div>
       <select id="dhtProtocol" class="sb-select-full" data-tip="Kademlia: random node IDs, XOR distance metric. Classic baseline Distributed Hash Table (DHT).">
         <option value="kademlia">Kademlia ★</option>
-        <option value="geo">G-DHT</option>
-        <option value="geoa">G-DHT-a</option>
-        <option value="geob">G-DHT-b ★</option>
+        <option value="geob">G-DHT ★</option>
         <option value="ngdht">N-1</option>
         <option value="ngdht15w">N-15W ★</option>
         <option value="ngdhtnx1w">NX-1W</option>
@@ -66,8 +67,12 @@
         </label>
         <label class="sb-check" style="display:flex;align-items:center;gap:5px;cursor:pointer">
           <input type="checkbox" id="webLimit" checked>
-          <span data-tip="Limits each node to 50 connections — a realistic cap for browser-based DHT nodes using WebRTC or WebSocket. Without this, nodes initialise with hundreds of routing-table entries that a real browser peer cannot maintain.">Web Limit</span>
+          <span data-tip="Enforces a per-node physical-connection cap (via bilateral tryConnect) to simulate realistic browser transport limits. Each connection consumes one slot on EACH side regardless of direction. Cap value is set by the 'Max connections' field below. Uncheck to remove all caps (server-class deployment).">Web Limit</span>
         </label>
+      </div>
+      <div class="sb-row">
+        <span class="sb-lbl" data-tip="Total connection slots per node when Web Limit is on. Shared between outgoing routing-table entries and incoming reverse-index pointers (a connection costs one slot on each side). Default 100 matches a safe cross-browser WebRTC target (Chromium hard caps at 500; practical P2P ceiling is ~100–150; Safari/iOS more constrained). Ignored when Web Limit is unchecked.">Max connections</span>
+        <input type="number" id="maxConnections" class="sb-num" value="100" min="10" max="1000" step="10" style="width:56px">
       </div>
       <div class="sb-row">
         <span class="sb-lbl" data-tip="Size of the simulated network (20–100,000). Larger networks take longer to initialise.">Nodes</span>
@@ -93,6 +98,8 @@
       <div class="sb-row">
         <span class="sb-lbl" data-tip="Number of high-order bits in G-DHT node IDs that encode the geographic S2 cell. More bits = finer geographic resolution (2^n cells worldwide). Only affects G-DHT protocols.">G-DHT Bits</span>
         <input type="number" id="geoBits" class="sb-num" value="8" min="0" max="32" step="1" style="width:36px">
+        <span class="sb-lbl" data-tip="Highway %: fraction of nodes with UNRESTRICTED maxConnections (server-class transit hubs). The rest keep the normal web cap. 0 = pure browser swarm; 5-25% = hybrid deployment with a small server backbone. Applies to Init, Bootstrap, and Benchmark builds.">Highway%</span>
+        <input type="number" id="highwayPct" class="sb-num" value="0" min="0" max="100" step="1" style="width:46px">
       </div>
       <div class="sb-btns">
         <button class="btn btn-primary btn-action" id="btnInit" data-tip="Build the network: place nodes on land, assign random IDs, and populate all routing tables. Re-clicking resets everything.">&#9632; Init Network</button>
@@ -219,9 +226,7 @@
           </div>
           <select id="benchProtocols" multiple size="6">
             <option value="kademlia"   selected>Kademlia ★</option>
-            <option value="geo"        selected>G-DHT</option>
-            <option value="geoa"       selected>G-DHT-a</option>
-            <option value="geob"       selected>G-DHT-b ★</option>
+            <option value="geob"       selected>G-DHT ★</option>
             <option value="ngdht"      selected>N-1</option>
             <option value="ngdht15w"   selected>N-15W ★</option>
             <option value="ngdhtnx1w"  selected>NX-1W</option>
@@ -1034,7 +1039,7 @@
     </div>
 
     <!-- Version -->
-    <div id="legend">Version: 0.61.00</div>
+    <div id="legend">Version: 0.64.00</div>
   </div>
 
   </div><!-- /mainRow -->
@@ -1126,7 +1131,7 @@
           <thead><tr><th>Protocol</th><th>Key idea</th></tr></thead>
           <tbody>
             <tr><td><strong>Kademlia &#9733;</strong></td><td>Classical DHT baseline (2002). Random 64-bit IDs; XOR distance metric; O(log N) hops. K-bucket routing table with &alpha; parallel queries per round. Static &mdash; no learning. Performs identically regardless of where messages are destined.</td></tr>
-            <tr><td><strong>G-DHT &#9733;</strong></td><td>Geographic DHT &mdash; assigns IDs from physical location using an S2 Hilbert-curve prefix. Nearby nodes share high-order bits so routing paths follow geographic clusters. <strong>G-DHT-b</strong> variant combines stratified core (80%) with random global supplement (20%) for churn resilience. ~2&times; faster than Kademlia on local lookups; 100% success under 10% churn.</td></tr>
+            <tr><td><strong>G-DHT &#9733;</strong></td><td>Geographic DHT &mdash; assigns IDs from physical location using an S2 Hilbert-curve prefix. Nearby nodes share high-order bits so routing paths follow geographic clusters. Combines stratified inter-cell allocation (40%), intra-cell locality (30%), and random global supplement (30%) for both latency and churn resilience. ~2&times; faster than Kademlia on local lookups; 100% success under 10% churn at 25 K nodes under the web-connection cap.</td></tr>
             <tr><td><strong>NX-17 &#9733;&#9733;</strong></td><td><strong>State of the Art.</strong> Neuromorphic routing layer (synaptome + AP scoring + LTP + annealing + churn-triggered temperature reheat + iterative fallback + two-tier highway) <em>plus</em> a distributed pub/sub membership protocol: publisher-prefix topic addressing (@XX/domain/event), routed subscribe with terminal-globality verification, root-only publish consumption, external-peer batch adoption on overflow, all-axon periodic re-subscribe for self-healing, and a bounded per-relay replay cache with subscriber-side lastSeenTs for missed-message recovery. 5&ndash;7&times; faster local routing than Kademlia; near-invariant under 25% churn; cumulative pub/sub delivery stays above 80% through 30% cumulative network churn without gossip, replication, or parent tracking.</td></tr>
           </tbody>
         </table>
@@ -1182,9 +1187,7 @@
   // ── Protocol selector tooltip ────────────────────────────────────────────
   const PROTOCOL_TIPS = {
     kademlia:   '★ Best in Class — Kademlia: random node IDs, XOR distance metric. Classic baseline DHT with O(log N) routing. Static — no learning.',
-    geo:        'G-DHT: geographic IDs from S2 Hilbert prefix. Nearby nodes share high-order bits so lookups follow geographic clusters. Three-layer bootstrap (inter-cell k=1, local, random).',
-    geoa:       'G-DHT-a: geographic IDs + Kademlia stratified allocation under web-limit. Fixes G-DHT reachability gap by using breadth-first bucket fill across all 64 XOR buckets.',
-    geob:       '★ Best in Class — G-DHT-b: stratified inter-cell (40%) + intra-cell local (30%) + random global (30%). Combines G-DHT-a reachability with G-DHT-8 low latency and churn resilience.',
+    geob:       '★ Best in Class — G-DHT: geographic IDs from S2 Hilbert prefix. Nearby nodes share high-order bits so lookups follow geographic clusters. Stratified inter-cell (40%) + intra-cell local (30%) + random global (30%) allocation for locality, reachability, and churn resilience at the web-connection cap.',
     ngdht:      'N-1: first-generation neuromorphic DHT. Synaptic shortcuts form on heavily-used paths and decay on idle ones. No highway layer.',
     ngdht15w:   '★ Best in Class — N-15W: browser-realistic neuromorphic with highway synapse preservation. Two-tier synaptome (48 local + 12 highway), adaptive decay, Markov learning, annealing, floor protection, relay pinning.',
     ngdhtnx1w:  'NX-1W: fully configurable research protocol. Every rule on/off via UI, every parameter exposed. Defaults reproduce N-15W. Adds incoming synapses (reverse routing).',

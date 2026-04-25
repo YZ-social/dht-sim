@@ -57,7 +57,10 @@ export class NeuromorphicDHTNX11 extends NeuromorphicDHTNX10 {
     const randomBudget = maxConnections - coreBudget;
     const allNodes = [...this.nodeMap.values()];
 
-    for (const node of allNodes) {
+    // Shuffle the processing order to avoid sort-order bias under tight caps.
+    const processingOrder = [...allNodes].sort(() => Math.random() - 0.5);
+
+    for (const node of processingOrder) {
       if (!node.alive) continue;
 
       // Collect IDs already in synaptome to avoid duplicates
@@ -70,6 +73,7 @@ export class NeuromorphicDHTNX11 extends NeuromorphicDHTNX10 {
       // Add random global peers
       const randomPeers = reservoirSample(allNodes, randomBudget, existing);
       for (const peer of randomPeers) {
+        if (!node.tryConnect(peer)) continue;  // physical cap exhausted
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
         const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
@@ -94,6 +98,7 @@ export class NeuromorphicDHTNX11 extends NeuromorphicDHTNX10 {
     const bidir   = this.bidirectional;
 
     const wireSynapse = (peer, weight) => {
+      if (!newNode.tryConnect(peer)) return;  // physical cap exhausted
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
       const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });

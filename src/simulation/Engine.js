@@ -266,7 +266,13 @@ export class SimulationEngine {
       };
     }
 
-    const YIELD_EVERY = 50; // yield every N lookups
+    const YIELD_EVERY = 1; // Yield every lookup. Even ONE NX-17 NA→AS lookup
+                             // can consume ~10 K ops (9 hops × ~1,200 ops).
+                             // Yielding between every lookup keeps the main
+                             // thread responsive (heartbeat ticks, UI updates)
+                             // throughout the test. Overhead of ~500 extra
+                             // yields × ~1 ms = ~500 ms per 500-lookup test —
+                             // negligible vs the several-minute runtime itself.
 
     for (let i = 0; i < numMessages; i++) {
       if (!this.running) break;
@@ -828,18 +834,21 @@ export class SimulationEngine {
           // Short warmup — let the tree stabilise before we start counting.
           const warmupTicks = 3;
           onStart(`${tag} · ${label} warmup (${warmupTicks} ticks)…`);
-          const runOneTick = () => {
+          const runOneTick = async () => {
             // Reset per-group delivery bits.
             for (const e of entries.values()) {
               for (const gid of e.deliveries.keys()) e.deliveries.set(gid, false);
             }
-            // Publish on each group (synchronous under NX-15 — no await needed).
+            // Publish on each group. Yield every 20 groups so a tick
+            // doesn't freeze the main thread on heavy N-DHT publishes.
+            let i = 0;
             for (const group of groups) {
               const gKey = 'g' + group.id;
               getEntry(group.relay).adapter.publish(domainFor(group), gKey, {});
+              if (++i % 20 === 0) await this._yield();
             }
           };
-          for (let t = 0; t < warmupTicks; t++) { if (!this.running) break; runOneTick(); }
+          for (let t = 0; t < warmupTicks; t++) { if (!this.running) break; await runOneTick(); }
 
           const measTicks = Math.max(10, Math.ceil(numMessages / (groupSize + 1)));
           onStart(`${tag} · ${label} (${measTicks} ticks)…`);
@@ -850,7 +859,7 @@ export class SimulationEngine {
           const perTickTreeDepth    = [];
           for (let t = 0; t < measTicks; t++) {
             if (!this.running) break;
-            runOneTick();
+            await runOneTick();
 
             // Count per-group delivery rate for this tick.
             let delivered = 0, expected = 0;
@@ -1018,15 +1027,23 @@ export class SimulationEngine {
             getEntry(group.relay);
           }
 
-          const runOneTick = () => {
+          // runOneTick publishes across ~79 groups. Each publish routes
+          // through the DHT, which on N-DHT can cost ~10 K ops (7+ hops ×
+          // 1,200 ops). A single synchronous tick (79 × 10 K = ~800 K ops)
+          // can block the main thread for several hundred ms — enough to
+          // freeze the heartbeat timer. Yielding every 20 groups keeps
+          // the main thread responsive across a tick.
+          const runOneTick = async () => {
             for (const e of entries.values()) {
               if (!e.node.alive) continue;
               for (const gid of e.deliveries.keys()) e.deliveries.set(gid, false);
             }
+            let i = 0;
             for (const group of groups) {
               if (!group.relay.alive) continue;
               const gKey = 'g' + group.id;
               getEntry(group.relay).adapter.publish(domainFor(group), gKey, {});
+              if (++i % 20 === 0) await this._yield();
             }
           };
           const measureDeliveredPct = () => {
@@ -1156,7 +1173,7 @@ export class SimulationEngine {
 
           // Phase 1: warmup (let tree stabilise).
           onStart(`${tag} · Pub/Sub+Churn · warmup…`);
-          for (let t = 0; t < 3; t++) { if (!this.running) break; runOneTick(); }
+          for (let t = 0; t < 3; t++) { if (!this.running) break; await runOneTick(); }
 
           // Phase 2: baseline measurement.
           onStart(`${tag} · Pub/Sub+Churn · baseline…`);
@@ -1164,7 +1181,7 @@ export class SimulationEngine {
           const baseline = [];
           for (let t = 0; t < baselineTicks; t++) {
             if (!this.running) break;
-            runOneTick();
+            await runOneTick();
             baseline.push(measureDeliveredPct());
           }
           const baselineOverlap = measureOverlap();
@@ -1188,29 +1205,38 @@ export class SimulationEngine {
           const immediate = [];
           for (let t = 0; t < 5; t++) {
             if (!this.running) break;
-            runOneTick();
+            await runOneTick();
             immediate.push(measureDeliveredPct());
           }
           const immediateOverlap   = measureOverlap();
           const immediateStability = measureStability(kSnapshot);
 
           // Phase 5a: first refresh burst (3 rounds). Measures how fast
-          // the tree heals under a light cycle count.
-          const runRefreshRounds = (rounds) => {
+          // the tree heals under a light cycle count. Yields every 2000
+          // node×round iterations to keep the main thread breathing; at
+          // 25 K nodes × 10 rounds = 250 K iterations without yielding
+          // this block could freeze the tab for tens of seconds.
+          const runRefreshRounds = async (rounds) => {
+            let opsSinceYield = 0;
             for (let r = 0; r < rounds; r++) {
               for (const node of aliveNodes) {
                 if (!node.alive) continue;
                 dht.axonFor(node).refreshTick();
+                if (++opsSinceYield >= 2000) {
+                  await this._yield();
+                  opsSinceYield = 0;
+                  if (!this.running) return;
+                }
               }
             }
           };
-          runRefreshRounds(3);
+          await runRefreshRounds(3);
 
           // Phase 6a: post-recovery measurement after 3 rounds.
           const recovered = [];
           for (let t = 0; t < 5; t++) {
             if (!this.running) break;
-            runOneTick();
+            await runOneTick();
             recovered.push(measureDeliveredPct());
           }
           const recoveredOverlap   = measureOverlap();
@@ -1220,13 +1246,13 @@ export class SimulationEngine {
           // see whether 3 rounds had converged or whether additional
           // refresh cycles continue to heal the tree. Reported as
           // `recoveredDeep` alongside the 3-round `recovered` number.
-          runRefreshRounds(7);
+          await runRefreshRounds(7);
 
           // Phase 6b: deep-recovery measurement.
           const recoveredDeep = [];
           for (let t = 0; t < 5; t++) {
             if (!this.running) break;
-            runOneTick();
+            await runOneTick();
             recoveredDeep.push(measureDeliveredPct());
           }
           const recoveredDeepOverlap   = measureOverlap();

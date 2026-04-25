@@ -109,7 +109,7 @@ export class NeuromorphicDHTNX6 extends DHT {
                                ? p('twoTier', 'highwaySlots', 12) : 0;
 
     // ── Rule 3: AP Routing with Two-Hop Lookahead ─────────────────────────────
-    this.LOOKAHEAD_ALPHA     = p('apRouting', 'lookaheadAlpha', 5);
+    this.LOOKAHEAD_ALPHA     = p('apRouting', 'lookaheadAlpha', 3);  // reduced from 5 → 3: empirically LOOKAHEAD_ALPHA=3 matches LOOKAHEAD_ALPHA=5 on hop count within noise at 25K, while cutting two-hop probe cost by 40 %
     this.WEIGHT_SCALE        = p('apRouting', 'weightScale', 0.40);
     this.GEO_REGION_BITS     = p('apRouting', 'geoRegionBits', 4);
     this.EXPLORATION_EPSILON = p('apRouting', 'explorationEpsilon', 0.05);
@@ -125,8 +125,8 @@ export class NeuromorphicDHTNX6 extends DHT {
     this.HOP_CASCADE_WEIGHT = p('hopCaching', 'cascadeWeight', 0.1);
 
     // ── Rule 7: Cascading Lateral Spread ──────────────────────────────────────
-    this.LATERAL_K         = p('lateralSpread', 'lateralK', 6);
-    this.LATERAL_K2        = p('lateralSpread', 'lateralK2', 2);
+    this.LATERAL_K         = p('lateralSpread', 'lateralK', 2);   // reduced 6→2: primary cache hit (current→target) still fires; lateral propagation to regional neighbours is bounded. Cuts hop-caching wall-clock by ~65% on cold-corridor tests like NA→AS
+    this.LATERAL_K2        = p('lateralSpread', 'lateralK2', 1);   // unused when LATERAL_MAX_DEPTH=1
     this.LATERAL_MAX_DEPTH = p('lateralSpread', 'lateralMaxDepth', 1);
 
     // ── Rule 8: Stratified Eviction ───────────────────────────────────────────
@@ -246,6 +246,7 @@ export class NeuromorphicDHTNX6 extends DHT {
     );
 
     const wireSynapse = (node, peer, isStructural) => {
+      if (!node.tryConnect(peer)) return;  // physical cap exhausted on either side
       const latMs   = roundTripLatency(node, peer);
       const stratum = clz64(node.id ^ peer.id);
       const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
@@ -254,9 +255,15 @@ export class NeuromorphicDHTNX6 extends DHT {
       if (this.bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
     };
 
+    // Randomize processing order to avoid sort-order bias under tight caps
+    // (see KademliaDHT.buildRoutingTables). Under bidirectional bilateral
+    // tryConnect, first-come-first-served iteration starves the tail of the
+    // sort. Shuffling produces a uniform connection distribution.
+    const processingOrder = [...sorted].sort(() => Math.random() - 0.5);
+
     if (isFinite(maxConnections)) {
       // ── Web-limited: flat XOR init (same as NX-2W) for reliable coverage ──
-      for (const node of sorted) {
+      for (const node of processingOrder) {
         for (const peer of buildXorRoutingTable(node.id, sorted, k, maxConnections)) {
           wireSynapse(node, peer, false);
         }
@@ -265,7 +272,7 @@ export class NeuromorphicDHTNX6 extends DHT {
     } else {
       // ── Uncapped: three-layer geographic init for best latency ──
       const allNodes = [...this.nodeMap.values()];
-      for (const node of sorted) {
+      for (const node of processingOrder) {
         const selected = new Set([node.id]);
 
         // Layer 2: inter-cell structured (bootstrap-protected)
@@ -315,6 +322,7 @@ export class NeuromorphicDHTNX6 extends DHT {
     const bidir   = this.bidirectional;
 
     for (const peer of buildXorRoutingTable(newNode.id, sorted, k, maxConn)) {
+      if (!newNode.tryConnect(peer)) continue;  // physical cap
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
       const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
@@ -383,6 +391,7 @@ export class NeuromorphicDHTNX6 extends DHT {
 
     const addPeer = (peer) => {
       if (peer.id === newNodeId || newNode.synaptome.has(peer.id)) return;
+      if (!newNode.tryConnect(peer)) return;  // physical cap exhausted on either side
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
       const newSyn  = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
@@ -535,6 +544,15 @@ export class NeuromorphicDHTNX6 extends DHT {
 
       const currentDist = current.id ^ targetKey;
       if (currentDist === 0n) { reached = true; break; }
+
+      // Yield every 4 hops to keep the main thread responsive. On cold-
+      // corridor lookups (e.g. NA→AS), a single lookup can do ~8 hops of
+      // ~1,200 ops each — 10 K+ ops of uninterrupted sync compute would
+      // block the heartbeat-tick setInterval (400 ms). Yielding mid-lookup
+      // caps the blocking window to ~4 hops × ~1 ms each = ~4-50 ms.
+      if (hop > 0 && hop % 4 === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
 
       // Collect forward-progress candidates from all tiers
       // NX-6: collect dead synapses for deferred eviction+replacement
@@ -780,6 +798,24 @@ export class NeuromorphicDHTNX6 extends DHT {
       return { s, ap1 };
     }).sort((a, b) => b.ap1 - a.ap1);
 
+    // ── Last-hop / trusted-route shortcut ──────────────────────────────────
+    // The two-hop probe's purpose is to avoid greedy local minima. Once the
+    // top-AP1 candidate is either very close to the target or carries a
+    // strongly-reinforced LTP weight, the probe cannot improve on one-hop
+    // greedy — and its cost (5× synaptome scan + sort) dominates lookup
+    // wall-clock. Skip it in those cases.
+    //
+    // This was the main source of wall-clock slowness on cross-continent
+    // NA→AS lookups where each hop makes enough XOR progress that the
+    // probe adds no routing information.
+    if (sorted.length > 0) {
+      const top = sorted[0].s;
+      const topDist = top.peerId ^ targetKey;
+      if (topDist === 0n) return top;                    // exact match
+      if (topDist < (currentDist >> 4n)) return top;     // ≥ 4 bits of XOR progress — last-hop territory
+      if (top.weight > 0.5) return top;                  // well-trained synapse — trust greedy
+    }
+
     const probeSet = sorted.slice(0, this.LOOKAHEAD_ALPHA).map(x => x.s);
 
     let bestSyn = null;
@@ -880,6 +916,18 @@ export class NeuromorphicDHTNX6 extends DHT {
   // ── Local-tier stratified admission ────────────────────────────────────────
 
   _stratifiedAdd(node, newSyn) {
+    // Physical-transport gate. If either side is at cap, refuse silently
+    // — the caller (LTP introduce, hop caching, triadic closure) will try
+    // again on a future lookup. Aggressive eviction-on-refusal was tried
+    // in v0.63.05 and produced severe synaptome thrashing: good routes
+    // were evicted before LTP could reinforce them, degrading baseline
+    // routing quality by ~10 pp. The churn-resilience fix lives in
+    // `_evictAndReplace` alone (where the alternative — leaving a slot
+    // empty after a peer dies — is genuinely worse than evicting any
+    // substitute).
+    const peer = this.nodeMap?.get(newSyn.peerId);
+    if (peer && !node.tryConnect(peer)) return false;
+
     if (node.synaptome.size < this.MAX_SYNAPTOME_SIZE) {
       node.addSynapse(newSyn);
       return true;
@@ -1042,7 +1090,14 @@ export class NeuromorphicDHTNX6 extends DHT {
 
     if (!candidate || this._hasAny(node, candidate.id)) return;
 
+    // Free the victim's physical slot before trying to connect the candidate —
+    // otherwise tryConnect would refuse at-cap even though the victim is about
+    // to be evicted from the synaptome.
+    const victimPeer = this.nodeMap.get(victim.peerId);
     node.synaptome.delete(victim.peerId);
+    if (victimPeer) node.disconnect(victimPeer);
+
+    if (!node.tryConnect(candidate)) return;  // candidate's own cap blocked us
     const latMs   = roundTripLatency(node, candidate);
     const stratum = clz64(node.id ^ candidate.id);
     const newSyn  = new Synapse({ peerId: candidate.id, latencyMs: latMs, stratum });
@@ -1061,6 +1116,15 @@ export class NeuromorphicDHTNX6 extends DHT {
   // ── Local candidate (annealing neighbourhood) ─────────────────────────────
 
   _localCandidate(node, lo, hi) {
+    const list = this._localCandidateList(node, lo, hi);
+    return list.length > 0 ? list[0] : null;
+  }
+
+  /** Return a shuffled list of all viable 2-hop-neighbourhood candidates in
+   *  the given stratum range. Callers that may be refused by `tryConnect`
+   *  (i.e. `_evictAndReplace` under a bilateral-cap regime) can iterate
+   *  through this list retrying instead of giving up after a single pick. */
+  _localCandidateList(node, lo, hi) {
     const candidates = [];
     outer:
     for (const syn of node.synaptome.values()) {
@@ -1078,8 +1142,12 @@ export class NeuromorphicDHTNX6 extends DHT {
         }
       }
     }
-    if (candidates.length === 0) return null;
-    return candidates[Math.floor(Math.random() * candidates.length)];
+    // Fisher–Yates shuffle so retries don't collide on the same first pick
+    for (let i = candidates.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+    }
+    return candidates;
   }
 
   // ── NX-6: Dead-synapse eviction + replacement ──────────────────────────────
@@ -1090,15 +1158,42 @@ export class NeuromorphicDHTNX6 extends DHT {
    */
   _evictAndReplace(node, deadSyn) {
     const stratum = deadSyn.stratum;
+    // The dead peer held a physical slot too; free it before we probe for a
+    // replacement so tryConnect has room.
     node.synaptome.delete(deadSyn.peerId);
+    node.connections.delete(deadSyn.peerId);   // peer is dead — no bilateral cleanup needed
 
     // Target the same stratum group as the dead peer
     const group = Math.min(this.STRATA_GROUPS - 1, stratum >>> 2);
     const lo = group * 4;
     const hi = lo + 3;
 
-    const candidate = this._localCandidate(node, lo, hi);
-    if (!candidate || this._hasAny(node, candidate.id)) return null;
+    // Under a bilateral connection cap, picking a single random candidate
+    // and giving up on refusal leaks slots: the dead peer's slot stays
+    // empty and the synaptome shrinks permanently. Iterate the shuffled
+    // candidate list until one accepts — typically the first 1-3 pass on
+    // an under-loaded network, later ones on a saturated one. If every
+    // local candidate refuses, we fall through to the widened scan below.
+    const localCands = this._localCandidateList(node, lo, hi);
+    let candidate = null;
+    for (const c of localCands) {
+      if (this._hasAny(node, c.id)) continue;
+      if (node.tryConnect(c)) { candidate = c; break; }
+    }
+
+    // Fallback: widen the stratum window. If the target stratum is empty
+    // or every candidate in it is at cap, search the whole synaptome's
+    // 2-hop neighbourhood for any free-slot peer. Better to replace with
+    // a suboptimal-stratum peer than to leave the slot empty.
+    if (!candidate) {
+      const wideCands = this._localCandidateList(node, 0, 63);
+      for (const c of wideCands) {
+        if (this._hasAny(node, c.id)) continue;
+        if (node.tryConnect(c)) { candidate = c; break; }
+      }
+    }
+
+    if (!candidate) return null;
 
     // Replacement weight = median of existing synapses (not penalised —
     // the dead node was killed by churn, the replacement is equally stable)

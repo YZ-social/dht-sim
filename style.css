@@ -48,6 +48,38 @@ html, body { height: 100%; background: var(--bg); color: var(--text);
   justify-content: space-between;
 }
 
+/* ── Heartbeat indicator ──────────────────────────────────────────────────
+ * Driven by a JS setInterval — NOT a CSS @keyframes — so when the main
+ * thread is blocked on heavy sync compute, the pulse visibly freezes.
+ * That is the point: a frozen pulse = frozen JS. The transition handles
+ * the smooth fade between on/off states; colour is state-driven via
+ * data-state.
+ *
+ * States: idle / init / benchmark / training / pubsub / sweep / error.
+ * main.js toggles the `.beat` class on every pulse tick (default 400 ms).
+ */
+.heartbeat {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #3c8dfa;
+  opacity: 0.35;
+  transform: scale(1.0);
+  transition: opacity 0.25s ease, transform 0.25s ease, background 0.2s, box-shadow 0.2s;
+}
+.heartbeat.beat {
+  opacity: 1.0;
+  transform: scale(1.35);
+}
+.heartbeat[data-state="idle"]      { background: #3c8dfa; box-shadow: 0 0 6px 0 rgba(60,141,250,0.6); }
+.heartbeat[data-state="benchmark"] { background: #e8a42a; box-shadow: 0 0 8px 0 rgba(232,164,42,0.85); }
+.heartbeat[data-state="training"]  { background: #40c27a; box-shadow: 0 0 8px 0 rgba(64,194,122,0.85); }
+.heartbeat[data-state="pubsub"]    { background: #9b6adb; box-shadow: 0 0 8px 0 rgba(155,106,219,0.85); }
+.heartbeat[data-state="sweep"]     { background: #2d7373; box-shadow: 0 0 8px 0 rgba(45,115,115,0.85); }
+.heartbeat[data-state="init"]      { background: #f0d060; box-shadow: 0 0 8px 0 rgba(240,208,96,0.85); }
+.heartbeat[data-state="error"]     { background: #e04848; box-shadow: 0 0 10px 0 rgba(224,72,72,0.9); }
+
 /* Notification bell button */
 .btn-notify {
   background: none;

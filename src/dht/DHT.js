@@ -17,7 +17,11 @@ export class DHT {
    */
   constructor(config = {}) {
     this.config = config;
-    this.network = new SimulatedNetwork();
+    // Pass `this` so the network can stamp the connection-cap onto every
+    // registered node, including those added after buildRoutingTables runs
+    // (churn replacements, interactive Add Nodes, etc.).
+    this.network = new SimulatedNetwork(this);
+    this.maxConnections = Infinity;  // default; overridden by buildRoutingTables
   }
 
   /**
@@ -140,5 +144,69 @@ export class DHT {
   /** Human-readable protocol name – used in UI. */
   static get protocolName() {
     return 'DHT';
+  }
+
+  /**
+   * Verify the bilateral connection cap is being honored.
+   *
+   * The browser-transport cap (this.maxConnections) is the central physical
+   * constraint that the entire simulator exists to model — exceeding it makes
+   * benchmark numbers misleading because the protocol is operating with more
+   * peer information than a real WebRTC client could sustain. This check
+   * guards against any future change (in this protocol or a new one) that
+   * silently bypasses tryConnect.
+   *
+   * Returns null when no cap is in effect (web limit off / Infinity), so
+   * callers can short-circuit. Otherwise returns a snapshot:
+   *   { cap, alive, avg, max, overflow, overflowIds }
+   *
+   * `overflow` is the count of live nodes whose connections.size > cap.
+   * `overflowIds` is a small sample (up to 5) for quick diagnosis.
+   *
+   * @param {string} [phase] - Label for log output (e.g. "post-init").
+   * @returns {object|null}
+   */
+  verifyConnectionCap(phase = 'unspecified') {
+    const dhtCap = this.maxConnections;
+    // Web limit off: no cap to enforce. Return null so callers can skip
+    // logging / scoring without a special-case.
+    if (!isFinite(dhtCap)) return null;
+
+    const alive = this.getNodes().filter(n => n.alive);
+    if (alive.length === 0) return null;
+
+    // Each node has its own maxConnections (highway nodes get Infinity).
+    // We check each node against ITS OWN cap, not the DHT-wide cap, so
+    // highway nodes are correctly exempted from violation reporting.
+    let sum = 0, max = 0, overflow = 0;
+    let highwayCount = 0;
+    const overflowIds = [];
+    for (const n of alive) {
+      const sz = n.connections?.size ?? 0;
+      sum += sz;
+      if (sz > max) max = sz;
+      const nodeCap = n.maxConnections;
+      if (!isFinite(nodeCap)) { highwayCount++; continue; }
+      if (sz > nodeCap) {
+        overflow++;
+        if (overflowIds.length < 5) overflowIds.push(n.id);
+      }
+    }
+    const avg = sum / alive.length;
+    const proto = this.constructor.protocolName ?? this.constructor.name;
+    const hwTag = highwayCount > 0 ? `, highway=${highwayCount}` : '';
+    if (overflow > 0) {
+      console.error(
+        `[CAP VIOLATION] ${proto} @${phase}: ${overflow}/${alive.length - highwayCount} ` +
+        `capped nodes exceed cap=${dhtCap} (max observed=${max}, ` +
+        `sample IDs=${overflowIds.join(',')}${hwTag})`,
+      );
+    } else {
+      console.log(
+        `[cap-ok] ${proto} @${phase}: cap=${dhtCap}, alive=${alive.length}${hwTag}, ` +
+        `avg=${avg.toFixed(1)}, max=${max}`,
+      );
+    }
+    return { cap: dhtCap, alive: alive.length, highway: highwayCount, avg, max, overflow, overflowIds };
   }
 }

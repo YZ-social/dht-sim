@@ -26,3 +26,7 @@ build/
 # Generated test results (written by server at runtime)
 results/*.csv
 results/.ready
+
+# Python virtualenv (used by presentation tooling)
+documents/presentation/venv/
+**/__pycache__/

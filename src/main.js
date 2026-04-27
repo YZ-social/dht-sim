@@ -56,6 +56,7 @@ import { NeuromorphicDHTNX10 } from './dht/neuromorphic/NeuromorphicDHTNX10.js';
 import { NeuromorphicDHTNX13 } from './dht/neuromorphic/NeuromorphicDHTNX13.js';
 import { NeuromorphicDHTNX15 } from './dht/neuromorphic/NeuromorphicDHTNX15.js';
 import { NeuromorphicDHTNX17 } from './dht/neuromorphic/NeuromorphicDHTNX17.js';
+import { NeuromorphicDHTNH1 }  from './dht/neuromorphic/NeuromorphicDHTNH1.js';
 import { SimulationEngine }   from './simulation/Engine.js';
 import { Controls }           from './ui/Controls.js';
 import { Results }            from './ui/Results.js';
@@ -322,6 +323,11 @@ async function onInit() {
     highwayPct:     params.highwayPct ?? 0,
   });
 
+  // Bilateral-cap invariant check. No-op when web limit is off (cap=Infinity).
+  // Logs to console for visibility; surfaces violations as console.error so
+  // they're impossible to miss when iterating on a new protocol.
+  dht.verifyConnectionCap?.('post-init');
+
   controls.setProgress(1);
   await yieldUI();  // let GC settle after routing table build before globe work
 
@@ -468,6 +474,7 @@ async function onSliceWorld() {
     maxConnections: params.webLimit ? (params.maxConnections ?? 100) : Infinity,
     highwayPct:     params.highwayPct ?? 0,
   });
+  dht.verifyConnectionCap?.('post-init-slice-world');
 
   controls.setStatus('Pruning cross-hemisphere connections (Hawaii bridge only)…', 'info');
   controls.setProgress(0.85);
@@ -1608,6 +1615,7 @@ async function onBenchmark() {
     { key: 'ngdhtnx13', label: 'NX-13',  warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
     { key: 'ngdhtnx15', label: 'NX-15',  warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
     { key: 'ngdhtnx17', label: 'NX-17',  warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
+    { key: 'ngdhtnh1',  label: 'NH-1',   warmupLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 500, warmupHotPct: 10, warmupRadius: 2000, warmupGlobalLookups: Math.max(params.benchWarmupSessions, Math.round(4 * params.nodeCount / 10000)) * 250 },
   ].filter(def => !params.benchProtocols || params.benchProtocols.has(def.key));
 
   // Build the full ordered test list, then filter by user selection.
@@ -1726,6 +1734,8 @@ async function onBenchmark() {
           highwayPct:     params.highwayPct ?? 0,
         });
       }
+      // Bilateral-cap invariant check post-bootstrap. No-op when web limit off.
+      benchDHT.verifyConnectionCap?.(`${tag} post-bootstrap`);
       completedSteps++;
       controls.setProgress(stepFrac(completedSteps));
       await yieldUI();
@@ -1924,6 +1934,19 @@ function createDHT(params) {
         // NX-17 ignores rootSetSize (forced to 0 in its constructor) but
         // honours maxDirectSubs, minDirectSubs, refresh/TTL timers.
         membership: params.nx17Params ?? params.nx15Params,
+      });
+    case 'ngdhtnh1':
+      return new NeuromorphicDHTNH1({
+        k: params.k,
+        alpha: params.alpha,
+        bits: params.bits,
+        geoBits: params.geoBits,
+        rules: params.nh1Rules,
+        // Reuse the same membership params as NX-17 — NH-1's AxonManager
+        // is configured identically (rootSetSize forced to 0, NX-17-style
+        // single-root-per-topic routed mode) so a head-to-head pubsubm
+        // benchmark is apples-to-apples.
+        membership: params.nh1Params ?? params.nx17Params ?? params.nx15Params,
       });
     case 'kademlia':
     default:

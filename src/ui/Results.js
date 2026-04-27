@@ -1723,7 +1723,7 @@ export class Results {
       } else if (s.type === 'pubsubm' || s.type === 'pubsubm-local') {
         headerCols.push(`${lbl} delivered%`, `${lbl} axon roles`, `${lbl} max subs/axon`, `${lbl} tree depth`, `${lbl} K-overlap%`, `${lbl} full-converge%`);
       } else if (s.type === 'pubsubmchurn') {
-        headerCols.push(`${lbl} baseline%`, `${lbl} immediate%`, `${lbl} recovered%`, `${lbl} recovered10%`, `${lbl} killed`, `${lbl} baseline-overlap%`, `${lbl} immediate-overlap%`, `${lbl} recovered-overlap%`, `${lbl} recovered10-overlap%`, `${lbl} imm pub-K-stab%`, `${lbl} imm sub-K-stab%`, `${lbl} rec pub-K-stab%`, `${lbl} rec sub-K-stab%`, `${lbl} rec10 pub-K-stab%`, `${lbl} rec10 sub-K-stab%`);
+        headerCols.push(`${lbl} baseline%`, `${lbl} immediate%`, `${lbl} recovered%`, `${lbl} recovered10%`, `${lbl} killed`, `${lbl} baseline-overlap%`, `${lbl} immediate-overlap%`, `${lbl} recovered-overlap%`, `${lbl} recovered10-overlap%`, `${lbl} imm pub-K-stab%`, `${lbl} imm sub-K-stab%`, `${lbl} rec pub-K-stab%`, `${lbl} rec sub-K-stab%`, `${lbl} rec10 pub-K-stab%`, `${lbl} rec10 sub-K-stab%`, `${lbl} attached%`, `${lbl} orphaned`, `${lbl} roles`, `${lbl} dead-children`);
       } else {
         headerCols.push(`${lbl} hops`, `${lbl} ms`, `${lbl} success%`);
       }
@@ -1761,7 +1761,7 @@ export class Results {
           }
         } else if (s.type === 'pubsubmchurn') {
           if (cell?.unsupported) {
-            cols.push('n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a');
+            cols.push('n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a', 'n/a');
           } else {
             cols.push(
               cell?.baseline?.mean      != null ? cell.baseline.mean.toFixed(1) + '%'      : '',
@@ -1779,6 +1779,10 @@ export class Results {
               cell?.recoveredStability?.subStabilityPct     != null ? cell.recoveredStability.subStabilityPct.toFixed(1) + '%'     : '',
               cell?.recoveredDeepStability?.pubStabilityPct != null ? cell.recoveredDeepStability.pubStabilityPct.toFixed(1) + '%' : '',
               cell?.recoveredDeepStability?.subStabilityPct != null ? cell.recoveredDeepStability.subStabilityPct.toFixed(1) + '%' : '',
+              cell?.orphanDiag?.attachedPct != null ? cell.orphanDiag.attachedPct.toFixed(1) + '%' : '',
+              cell?.orphanDiag?.orphanedSubs != null ? cell.orphanDiag.orphanedSubs + '' : '',
+              cell?.orphanDiag?.totalRoles   != null ? cell.orphanDiag.totalRoles + ''   : '',
+              cell?.orphanDiag?.totalDeadChildren != null ? cell.orphanDiag.totalDeadChildren + '' : '',
             );
           }
         } else {

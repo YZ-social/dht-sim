@@ -471,6 +471,13 @@ export class SimulationEngine {
         });
       }
 
+      // Bilateral-cap invariant check after warmup completes. Warmup-driven
+      // hop caching, triadic closure, and annealing all add synapses; if any
+      // bypass tryConnect we'd see overflow here.
+      if (def.warmupLookups > 0 || def.warmupGlobalLookups > 0) {
+        dht.verifyConnectionCap?.(`${tag} post-warmup`);
+      }
+
       for (const spec of testSpecs) {
         if (!this.running) break;
 
@@ -603,6 +610,10 @@ export class SimulationEngine {
             if (typeof dht.postChurnHeal === 'function') {
               dht.postChurnHeal();
             }
+            // Bilateral-cap invariant check after each churn round. No-op
+            // when web limit is off (cap=Infinity). Surfaces any new protocol
+            // that bypasses tryConnect during bootstrapJoin or churn-heal.
+            dht.verifyConnectionCap?.(`${tag} churn-round-${round + 1}`);
 
             // Neuromorphic protocols get adaptation lookups between rounds
             // so synaptic weights can adjust to the changed topology.
@@ -1171,9 +1182,23 @@ export class SimulationEngine {
             };
           };
 
+          // ── Per-phase timing instrumentation ─────────────────────────────
+          // Pubsubmchurn at 25K is slow; before optimising we need data on
+          // which phase dominates. Each phase logs `[pubsubmchurn-time]
+          // <protocol> <phase>: <ms>ms`. Grep the console for
+          // `pubsubmchurn-time` to see the breakdown.
+          const t0 = performance.now();
+          let tPrev = t0;
+          const phase = (label) => {
+            const now = performance.now();
+            console.log(`[pubsubmchurn-time] ${tag} ${label}: ${(now - tPrev).toFixed(0)}ms`);
+            tPrev = now;
+          };
+
           // Phase 1: warmup (let tree stabilise).
           onStart(`${tag} · Pub/Sub+Churn · warmup…`);
           for (let t = 0; t < 3; t++) { if (!this.running) break; await runOneTick(); }
+          phase('warmup-3ticks');
 
           // Phase 2: baseline measurement.
           onStart(`${tag} · Pub/Sub+Churn · baseline…`);
@@ -1184,11 +1209,14 @@ export class SimulationEngine {
             await runOneTick();
             baseline.push(measureDeliveredPct());
           }
+          phase('baseline-5ticks');
           const baselineOverlap = measureOverlap();
+          phase('baseline-overlap');
           // Snapshot K-sets RIGHT BEFORE churn so stability is measured
           // relative to the steady-state views, not polluted by phase-4
           // rerouting.
           const kSnapshot = snapshotKSets();
+          phase('snapshotKSets');
 
           // Phase 3: kill churnRate% of nodes. Exclude relays so publishes
           // can keep firing (we're testing subscriber/axon churn, not
@@ -1199,6 +1227,17 @@ export class SimulationEngine {
           const killTarget = Math.floor(aliveNodes.length * churnRate / 100);
           const numKilled = Math.min(killTarget, killable.length);
           for (let i = 0; i < numKilled; i++) killable[i].alive = false;
+          // Network topology just changed (nodes died). Invalidate every
+          // AxonManager's local findKClosest cache so the post-churn
+          // refresh rounds compute against the new state. In a real
+          // deployment, churn-detection (e.g., heartbeat timeout) would
+          // bump each node's cache epoch independently; we do it
+          // simulator-side as a one-shot here for speed.
+          if (dht._axonsByNode instanceof Map) {
+            for (const axon of dht._axonsByNode.values()) {
+              axon.invalidateKClosestCache?.();
+            }
+          }
           onStart(`${tag} · Pub/Sub+Churn · killed ${numKilled} of ${aliveNodes.length}…`);
 
           // Phase 4: immediate post-churn measurement (no refresh yet).
@@ -1208,18 +1247,43 @@ export class SimulationEngine {
             await runOneTick();
             immediate.push(measureDeliveredPct());
           }
+          phase('immediate-5ticks');
           const immediateOverlap   = measureOverlap();
+          phase('immediate-overlap');
           const immediateStability = measureStability(kSnapshot);
+          phase('immediate-stability');
 
           // Phase 5a: first refresh burst (3 rounds). Measures how fast
           // the tree heals under a light cycle count. Yields every 2000
           // node×round iterations to keep the main thread breathing; at
           // 25 K nodes × 10 rounds = 250 K iterations without yielding
           // this block could freeze the tab for tens of seconds.
+          //
+          // Optimisation: only iterate nodes that have an AxonManager
+          // instance with non-empty subscriptions OR axon roles. The base
+          // benchmark pre-creates AxonManager on every alive node (line
+          // ~1007) but most of those have nothing to refresh — they're
+          // not subscribers and not axons for any topic. Skipping them
+          // turns a 25K-iteration loop per round into a ~3-4K-iteration
+          // loop (subscribers + axon hosts only), an order-of-magnitude
+          // speedup on the dominant phase.
           const runRefreshRounds = async (rounds) => {
+            // Materialise the set of nodes that actually have something to
+            // refresh. Done once before the rounds; refreshTick may add new
+            // axon roles when it processes overflow, but a fresh axon-role
+            // creation only happens via the publish/subscribe handlers, not
+            // refreshTick itself, so this snapshot is stable across rounds.
+            const refreshSet = [];
+            for (const node of aliveNodes) {
+              if (!node.alive) continue;
+              const axon = dht._axonsByNode?.get(node);
+              if (!axon) continue;
+              if (axon.mySubscriptions?.size === 0 && axon.axonRoles?.size === 0) continue;
+              refreshSet.push(node);
+            }
             let opsSinceYield = 0;
             for (let r = 0; r < rounds; r++) {
-              for (const node of aliveNodes) {
+              for (const node of refreshSet) {
                 if (!node.alive) continue;
                 dht.axonFor(node).refreshTick();
                 if (++opsSinceYield >= 2000) {
@@ -1231,6 +1295,7 @@ export class SimulationEngine {
             }
           };
           await runRefreshRounds(3);
+          phase('refresh-3rounds');
 
           // Phase 6a: post-recovery measurement after 3 rounds.
           const recovered = [];
@@ -1239,14 +1304,18 @@ export class SimulationEngine {
             await runOneTick();
             recovered.push(measureDeliveredPct());
           }
+          phase('recovered-5ticks');
           const recoveredOverlap   = measureOverlap();
+          phase('recovered-overlap');
           const recoveredStability = measureStability(kSnapshot);
+          phase('recovered-stability');
 
           // Phase 5b: run 7 more refresh rounds (cumulative 10). Lets us
           // see whether 3 rounds had converged or whether additional
           // refresh cycles continue to heal the tree. Reported as
           // `recoveredDeep` alongside the 3-round `recovered` number.
           await runRefreshRounds(7);
+          phase('refresh-7rounds');
 
           // Phase 6b: deep-recovery measurement.
           const recoveredDeep = [];
@@ -1255,8 +1324,77 @@ export class SimulationEngine {
             await runOneTick();
             recoveredDeep.push(measureDeliveredPct());
           }
+          phase('recoveredDeep-5ticks');
           const recoveredDeepOverlap   = measureOverlap();
+          phase('recoveredDeep-overlap');
           const recoveredDeepStability = measureStability(kSnapshot);
+          phase('recoveredDeep-stability');
+          console.log(`[pubsubmchurn-time] ${tag} TOTAL: ${(performance.now() - t0).toFixed(0)}ms`);
+
+          // ── Orphan diagnostic ──────────────────────────────────────────
+          // For each group, count live subscribers who are in SOME role's
+          // children somewhere in the network vs. those who are not
+          // attached anywhere. Differentiates:
+          //   - orphaned (re-subscribe failed to re-attach them)
+          //   - attached-but-not-receiving (fan-out path broken)
+          // from the aggregate `recovered%` number.
+          //
+          // Only iterates LIVE axon nodes — dead-node AxonManagers stay in
+          // _axonsByNode but their roles can't deliver, so they don't count
+          // as "attached" for this measurement.
+          const attachedDiag = (() => {
+            const attachedByGroup = new Map(); // groupId → Set<subId>
+            const roleCountByGroup = new Map();
+            const deadChildByGroup = new Map();
+            if (dht._axonsByNode instanceof Map) {
+              for (const [axonNode, axon] of dht._axonsByNode) {
+                if (!axonNode?.alive) continue;   // skip dead axon hosts
+                for (const [topicId, role] of axon.axonRoles) {
+                  // topicId → group index: we stored these per-group so
+                  // invert the mapping via the group's topic we built earlier
+                  const group = groups.find(g =>
+                    topicIdForPrefixed(domainFor(g), 'g' + g.id) === topicId);
+                  if (!group) continue;
+                  roleCountByGroup.set(group.id, (roleCountByGroup.get(group.id) ?? 0) + 1);
+                  let set = attachedByGroup.get(group.id);
+                  if (!set) { set = new Set(); attachedByGroup.set(group.id, set); }
+                  let deadCount = deadChildByGroup.get(group.id) ?? 0;
+                  for (const childId of role.children.keys()) {
+                    set.add(childId);
+                    // Check if the child is a live node. `childId` is a hex
+                    // string (peerId as emitted by the adapter); resolve.
+                    const childNode = dht.nodeMap?.get(
+                      typeof childId === 'string' ? BigInt('0x' + childId) : childId
+                    );
+                    if (!childNode || !childNode.alive) deadCount++;
+                  }
+                  deadChildByGroup.set(group.id, deadCount);
+                }
+              }
+            }
+            let liveSubs = 0, attachedSubs = 0, totalDeadChildren = 0, totalRoles = 0;
+            for (const group of groups) {
+              const set = attachedByGroup.get(group.id) ?? new Set();
+              for (const p of group.participants) {
+                if (!p.alive) continue;
+                liveSubs++;
+                // Subscriber IDs in role.children are hex strings via the
+                // adapter; compare as hex.
+                const pHex = p.id.toString(16).padStart(16, '0');
+                if (set.has(pHex) || set.has(p.id)) attachedSubs++;
+              }
+              totalRoles += roleCountByGroup.get(group.id) ?? 0;
+              totalDeadChildren += deadChildByGroup.get(group.id) ?? 0;
+            }
+            return {
+              liveSubs,
+              attachedSubs,
+              orphanedSubs: liveSubs - attachedSubs,
+              attachedPct: liveSubs ? (attachedSubs / liveSubs) * 100 : 0,
+              totalRoles,
+              totalDeadChildren,
+            };
+          })();
 
           data[def.key]['pubsubmchurn'] = {
             baseline:       computeStats(baseline),
@@ -1275,8 +1413,9 @@ export class SimulationEngine {
             churnRate,
             numGroups,
             groupSize,
+            orphanDiag:     attachedDiag,
           };
-          onStep(`${tag} · Pub/Sub+Churn ✓`);
+          onStep(`${tag} · Pub/Sub+Churn ✓ (attached ${attachedDiag.attachedSubs}/${attachedDiag.liveSubs} = ${attachedDiag.attachedPct.toFixed(1)}%, roles ${attachedDiag.totalRoles}, dead-children ${attachedDiag.totalDeadChildren})`);
           continue;
         }
 

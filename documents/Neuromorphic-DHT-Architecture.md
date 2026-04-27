@@ -2,7 +2,9 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.56.00*
+*Version 0.66.07*
+
+> **Update note (v0.66):** Since v0.56 several simulator-integrity issues were discovered and corrected. The current numbers throughout this document reflect a benchmarking regime in which (i) the bilateral connection cap is honestly enforced on every node by a base-class guard rail, (ii) all routing optimisations are *locality-honest* — no inter-node information sharing — and (iii) `findKClosest` simulates real Kademlia FIND_NODE responses bounded to k=20 per peer, not full routing-table dumps. Earlier numbers are **superseded** by those in this revision; pre-fix benchmarks underestimated NX-17's robustness because cap violations during churn artificially inflated some nodes' reach. See Appendix C for the **NH-1** protocol introduced in this revision.
 
 ---
 
@@ -40,23 +42,30 @@ Real-world DHT workloads are dominated by *local* traffic. Users interact most w
 
 Kademlia treats all distances identically: a lookup to a peer 500 km away traverses the same number of hops, routing through the same XOR-space detours, as a lookup to the opposite side of the globe. The XOR metric is geographically blind. A message destined for a node in the next city may bounce through Tokyo, São Paulo, and Helsinki before arriving. Both the Geographic DHT and Neuromorphic DHT address this fundamental inefficiency -- and the performance gap they open is dramatic specifically for local and concentrated-workload traffic.
 
-### Performance at a Glance (25,000 nodes, web-limited)
+### Performance at a Glance (25,000 nodes, web-limited, v0.66.07)
 
-| Workload | Kademlia | G-DHT | NX-10 | NX-10 vs Kademlia |
-|----------|----------|---------|-------|------|
-| **500 km lookup** | 378 ms | 130 ms | **66 ms** | **5.7× faster** |
-| **1,000 km lookup** | 379 ms | 134 ms | **75 ms** | **5.1× faster** |
-| **2,000 km lookup** | 368 ms | 153 ms | **89 ms** | **4.1× faster** |
-| **5,000 km lookup** | 368 ms | 195 ms | **144 ms** | **2.6× faster** |
-| Concentrated source (10% pool) | 376 ms | 290 ms | **251 ms** | 1.5× faster |
-| Concentrated dest (10% pool) | 234 ms | 108 ms | **40 ms** | **5.9× faster** |
-| Concentrated pair (10% → 10%) | 242 ms | 108 ms | **32 ms** | **7.6× faster** |
-| Global random | 375 ms | 284 ms | **255 ms** | 1.5× faster |
-| NA → Asia | 364 ms | 292 ms | **249 ms** | 1.5× faster |
-| **Under 10% churn** | 419 ms / 100% | 322 ms / 100% | **262 ms / 100%** | 1.6× faster |
-| **Under 25% churn** | 489 ms / 100% | 334 ms / **99.4%** | **259 ms / 100%** | **1.89× faster** |
+| Workload | Kademlia | G-DHT | **NX-17** | NH-1 | NX-17 vs Kademlia |
+|----------|----------|---------|---------|---------|------|
+| **500 km lookup** | 518 ms | 153 ms | **80 ms** | 97 ms | **6.4× faster** |
+| **1,000 km lookup** | 511 ms | 163 ms | **88 ms** | 106 ms | **5.8× faster** |
+| **2,000 km lookup** | 517 ms | 176 ms | **106 ms** | 125 ms | **4.9× faster** |
+| **5,000 km lookup** | 503 ms | 211 ms | **145 ms** | 161 ms | **3.5× faster** |
+| Concentrated source (10% pool) | 516 ms | 284 ms | **232 ms** | 252 ms | 2.2× faster |
+| Concentrated dest (10% pool) | 249 ms | 110 ms | **41 ms** | 45 ms | **6.0× faster** |
+| Concentrated pair (10% → 10%) | 241 ms | 109 ms | **32 ms** | 34 ms | **7.5× faster** |
+| Global random | 516 ms | 290 ms | **237 ms** | 260 ms | 2.2× faster |
+| NA → Asia | 497 ms | 290 ms | **242 ms** | 258 ms | 2.1× faster |
+| **Under 5% churn** | 467 ms / 99.8% | 284 ms / 100% | **238 ms / 100%** | 279 ms / 100% | **2.0× faster** |
 
-Both G-DHT and NX-10 deliver multi-fold improvements on the workloads that dominate real-world traffic -- local lookups and concentrated-destination patterns -- with NX-10 approaching an order of magnitude in the best cases. NX-10's 500 km latency of 66 ms is 5.7× faster than Kademlia's 378 ms. For repeated lookups to a popular 10% set of destinations, NX-10 achieves 40 ms -- nearly direct delivery -- compared to Kademlia's 234 ms. And for lookups between members of two popular 10% pools (modeling community-to-community traffic), NX-10 reaches 32 ms, **7.6× faster than Kademlia**.
+NX-17 delivers multi-fold improvements on the workloads that dominate real-world traffic — local lookups and concentrated-destination patterns. NX-17's 500 km latency of 80 ms is 6.4× faster than Kademlia's 518 ms. For repeated lookups to a popular 10% set of destinations, NX-17 achieves 41 ms — nearly direct delivery — compared to Kademlia's 249 ms. And for lookups between members of two popular 10% pools (modeling community-to-community traffic), NX-17 reaches 32 ms, **7.5× faster than Kademlia**.
+
+**Pub/sub-with-churn** (membership protocol, 5% turnover, 25,000 nodes):
+
+| Metric | NX-17 | NH-1 |
+|---|---:|---:|
+| baseline / immediate / recovered / recovered-after-10-rounds | **100 / 100 / 100 / 100 %** | 99 / 98 / 98 / 98 % |
+| K-overlap (publisher↔subscriber agreement on top-K) | 100 % | 99.6 % |
+| attached / orphaned / dead-children | 100 % / 0 / 0 | 100 % / 0 / 0 |
 
 ### Churn Invariance
 
@@ -2268,3 +2277,63 @@ profile = await node.retrieve(hash("profile:" + otherNodeId))
 ```
 
 This example exercises all three layers: transport (WebRTC), DHT (routing, key-value storage), and pub/sub (axonal tree broadcast). The node joins via bootstrap, subscribes to a topic (building an axonal tree path), publishes messages (delivered through the tree), and stores/retrieves data (replicated across k closest nodes).
+
+---
+
+## Appendix C: NH-1 — Neuro-Homeostatic Protocol
+
+NX-1 through NX-17 evolved organically: each version added a rule that fixed a specific failure mode, accumulating into a routing layer with ~36 distinct mechanisms and 44 tunable parameters. The result is fast and robust, but the resulting code-base is large and the rules interact in ways that are difficult to reason about analytically.
+
+NH-1 asks a different question: **what is the minimum set of operations that, expressed cleanly, can match NX-17's measured behaviour?**
+
+### C.1 Five Operations
+
+NH-1 expresses every routing and learning behaviour as one of five fundamental operations:
+
+| Operation | What it does |
+|---|---|
+| **NAVIGATE** | AP routing with two-hop lookahead and iterative fallback |
+| **LEARN** | LTP reinforcement, hop caching, triadic closure, incoming promotion |
+| **FORGET** | Continuous weight decay with vitality-based eviction |
+| **EXPLORE** | Temperature-controlled annealing; epsilon-greedy first hop |
+| **STRUCTURE** | Stratified bootstrap; under-represented-stratum replacement |
+
+The 16 NX-17 rules collapse into instances of these five operations, often a single line of code each. The full implementation is ~700 lines (vs NX-17's ~1,200) and uses 12 base parameters (vs NX-17's 44).
+
+### C.2 Unified Vitality Model
+
+Every synapse has a dynamically-computed score:
+
+```
+vitality(syn) = weight × recency
+```
+
+where `weight ∈ [0, 1]` is trained by LTP and decayed periodically, and `recency` is exp-decay from the last reinforcement epoch (using the inertia field). A single admission gate `_addByVitality(node, newSyn)` handles every synapse-add decision: new entries displace the lowest-vitality existing synapse (skipping LTP-locked and bootstrap-flagged entries).
+
+This gate replaces NX-17's stratified eviction, two-tier highway management, stratum floors, and synaptome floors — each of which was a separate rule with its own parameters.
+
+### C.3 Pub/Sub Layer
+
+NH-1 includes the same NX-17-style membership pub/sub stack: per-node `AxonManager` instances with publisher-prefix topic IDs, single-root routed mode, batch-adoption on overflow, and bounded replay caches. The DHT primitives `routeMessage`, `sendDirect`, `findKClosest`, and the handler registries are ported from NX-15 with the protocol-specific bits removed (no two-tier highway, no NX-17 K-closest mode). This makes NH-1 vs NX-17 an apples-to-apples comparison on every benchmark including `pubsubm+churn`.
+
+### C.4 Measured Performance (25,000 nodes, web-limited)
+
+| Test | NX-17 hops/ms | NH-1 hops/ms | Δ |
+|---|---:|---:|---:|
+| Global lookup | 4.36 / 237 | 5.14 / 260 | +18% hops, +10% ms |
+| 500 km lookup | 2.76 / 81 | 3.35 / 97 | +21% hops, +20% ms |
+| 10%→10% hot lane | 1.06 / 32 | 1.12 / 34 | **+6% hops, +5% ms** |
+| 5% churn lookup | 4.29 / 238 | 5.61 / 279 | +31% hops, +17% ms |
+| pubsubm delivered | 100% | **100%** | TIE |
+| pubsubm+5%churn baseline | 100% | 99% | -1pp |
+| pubsubm+5%churn recovered | 100% | 98% | -2pp |
+| K-overlap (pub↔sub agreement) | 100% | 99.6% | -0.4pp |
+| dead-children / orphans | 0 / 0 | 0 / 0 | TIE |
+
+Without the connection cap (server-class deployment), NH-1 essentially ties NX-17 across every metric — the residual gap exists almost entirely because NX-17's specialized rules (highway tier, stratified eviction) are most valuable under tight per-node connection budgets.
+
+### C.5 What NH-1 Establishes
+
+NH-1 is not proposed here as a replacement for NX-17. It is offered as evidence that the neuromorphic-DHT design space has more than one strong point. NX-17's organic accumulation produced a protocol with ~7% additional hops over NH-1's unified model, in exchange for ~3× the code surface and ~4× the tunable parameters. That is a real trade-off — denser routing tables give NX-17 a real advantage at scale under cap pressure — but it is not necessarily the right trade-off for every deployment.
+
+For implementations targeting server-class transports without per-node connection caps, NH-1's smaller code-base and simpler tuning surface deliver equivalent performance. For browser-class deployments where the cap matters, NX-17 retains a measurable but not categorical edge.

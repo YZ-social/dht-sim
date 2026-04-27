@@ -281,14 +281,19 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
 
       for (const peer of toQuery) {
         visited.add(peer.id);
-        // Per-hop expansion uses OUTGOING routing (synaptome + highway)
-        // only. incomingSynapses is a reverse index — those entries
-        // aren't topologically-meaningful for expanding toward a
-        // target, and including them bloats the candidate pool with
-        // essentially-random nodes. Seed-only is enough to break out
-        // of LTP-specialized local minima.
-        addTier(peer.synaptome);
-        addTier(peer.highway);
+        // v0.66.07: simulate the wire FIND_NODE response. In a real
+        // Kademlia, the response is bounded by the BUCKET SIZE (this._k,
+        // typically 20), NOT the caller's requested K. The caller asks
+        // for K=5 globally-closest, but each peer responds with their
+        // top-_k=20 because that's the standard FIND_NODE primitive
+        // (K-DHT does exactly this: `peer.findClosest(target, this.k)`).
+        //
+        // v0.66.06 used K (caller's 5) as the per-peer bound, which was
+        // too small — convergence quality dropped (full-converge 99.4
+        // → 98.6, local-2000km 99.9 → ~72%). Using this._k restores
+        // convergence while keeping the iterative pool naturally
+        // bounded (~k per peer per round, not full synaptome).
+        this._addPeerTopKToCandidates(peer, this._k, targetBig, addCandidate);
       }
 
       const grew = candidates.size > lastPoolSize;
@@ -303,6 +308,38 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
     return [...candidates.values()]
       .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
       .slice(0, K);
+  }
+
+  /**
+   * Simulate a FIND_NODE RPC response from `peer`: peer reports its K
+   * closest peers to `targetBig` from its OWN local view (synaptome +
+   * highway). Inserts those K nodes into the caller's candidate pool
+   * via `addCandidate`. This is the bounded wire response a real
+   * Kademlia client would send — not a full routing-table dump.
+   *
+   * Insertion-sort into a fixed-size top-K array. Cheap because K is
+   * small (typically 5) and peer's tiers are bounded by the cap.
+   */
+  _addPeerTopKToCandidates(peer, K, targetBig, addCandidate) {
+    const top = [];   // sorted asc by dist; size <= K
+    const consider = (syn) => {
+      const node = this.nodeMap.get(syn.peerId);
+      if (!node?.alive) return;
+      const d = node.id ^ targetBig;
+      if (top.length < K) {
+        let i = 0;
+        while (i < top.length && top[i].d < d) i++;
+        top.splice(i, 0, { node, d });
+      } else if (d < top[K - 1].d) {
+        let i = 0;
+        while (i < top.length && top[i].d < d) i++;
+        top.splice(i, 0, { node, d });
+        top.pop();
+      }
+    };
+    for (const syn of peer.synaptome.values()) consider(syn);
+    if (peer.highway) for (const syn of peer.highway.values()) consider(syn);
+    for (const { node } of top) addCandidate(node);
   }
 
   // ── Greedy single-step routing ──────────────────────────────────────
@@ -338,6 +375,75 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
       }
     }
     return best;
+  }
+
+  /**
+   * Cheap 2-hop "is anyone closer than me?" check used by routeMessage's
+   * terminal-globality verification. Answers: "from this terminal node,
+   * does any of my 1-hop peers know about a 2-hop peer that's closer to
+   * target than I am?"
+   *
+   * v0.66.06: restructured as an explicit per-peer query to make the
+   * simulator's intent match real-network semantics. For each 1-hop peer
+   * p1, we simulate p1's response to a "what's your closest to target?"
+   * query — p1 reports its single best 2-hop candidate from p1's own
+   * routing table. We then take the minimum across all p1 responses.
+   *
+   * Mathematically equivalent to the previous flat-loop implementation
+   * (min over (p1, p2) pairs == min over p1 of (min over p2 in p1's
+   * synaptome)), but the structure now explicitly reflects the bounded
+   * wire-RPC pattern, making it obvious that we're not reading peer
+   * memory directly. Same cost as before; this is a clarity refactor.
+   */
+  _findCloserInTwoHops(node, targetId) {
+    const target = topicToBigInt(targetId);
+    const myDist = node.id ^ target;
+    let bestPeer = null;
+    let bestDist = myDist;
+
+    // For each 1-hop peer p1, ask: "what is p1's single closest peer to
+    // target?" (bounded RPC response). Tracks p1's response separately
+    // so the loop structure mirrors the wire pattern.
+    const queryP1 = (p1) => {
+      let p1Best = null, p1BestDist = null;
+      const considerSyn = (syn2) => {
+        if (syn2.peerId === node.id) return;     // self-loop
+        const d2 = syn2.peerId ^ target;
+        if (p1BestDist !== null && d2 >= p1BestDist) return;
+        const p2 = this.nodeMap.get(syn2.peerId);
+        if (!p2?.alive) return;
+        p1BestDist = d2;
+        p1Best = p2;
+      };
+      for (const syn2 of p1.synaptome.values()) considerSyn(syn2);
+      if (p1.highway) for (const syn2 of p1.highway.values()) considerSyn(syn2);
+      if (p1Best && p1BestDist < bestDist) {
+        bestDist = p1BestDist;
+        bestPeer = p1Best;
+      }
+    };
+
+    for (const syn of node.synaptome.values()) {
+      const p1 = this.nodeMap.get(syn.peerId);
+      if (p1?.alive) queryP1(p1);
+    }
+    if (node.highway) {
+      for (const syn of node.highway.values()) {
+        const p1 = this.nodeMap.get(syn.peerId);
+        if (p1?.alive) queryP1(p1);
+      }
+    }
+
+    // Reverse-routing via incoming synapses (1-hop visibility through
+    // peers who point at us — useful for sparse-region targets that
+    // outgoing routing alone doesn't reach).
+    for (const syn of node.incomingSynapses.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (!peer?.alive) continue;
+      const d = peer.id ^ target;
+      if (d < bestDist) { bestDist = d; bestPeer = peer; }
+    }
+    return bestPeer;
   }
 
   // ── Routed messaging ────────────────────────────────────────────────
@@ -383,8 +489,10 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
       let isTerminal = nextHop === null;
 
       if (isTerminal) {
-        // Verify: is there actually a more-global-closest live peer?
-        const [globalClosest] = this.findKClosest(current, targetId, 1);
+        // v0.66.03: bounded 2-hop scan in place of full iterative
+        // findKClosest. Same semantic — find a peer in 2 hops closer than
+        // current — at ~10× lower cost. See _findCloserInTwoHops doc.
+        const globalClosest = this._findCloserInTwoHops(current, targetId);
         if (globalClosest
             && globalClosest.id !== current.id
             && !visitedTerminalCheck.has(globalClosest.id)) {

@@ -55,6 +55,7 @@ export class AxonManager {
     maxSubscriptionAgeMs = DEFAULT_MAX_SUBSCRIPTION_AGE_MS,
     rootGraceMs          = DEFAULT_ROOT_GRACE_MS,
     rootSetSize          = DEFAULT_ROOT_SET_SIZE,    // K in K-closest replication
+    crossFragmentRoots   = 4,                        // NX-17: number of alternate-root direct copies per publish/subscribe. Total K = crossFragmentRoots + 1 = 5 by default. K=5 matches the K-overlap measurement (100 % set agreement at K=5 even under cap pressure), so publisher and subscriber target identical sets and fragmentation cannot occur. K=2/3 dropped to ~80 % delivery in v0.64.03/04 because top-3 ordering drifts under cap even when top-5 is set-stable.
     replayCacheSize      = DEFAULT_REPLAY_CACHE_SIZE, // per-role bounded ring
     pickRecruitPeer      = null,   // protocol-specific override (§5.9)
     pickRelayPeer        = null,   // NX-17+ batch-adoption path override
@@ -71,6 +72,7 @@ export class AxonManager {
     this.maxSubscriptionAgeMs  = maxSubscriptionAgeMs;
     this.rootGraceMs           = rootGraceMs;
     this.rootSetSize           = rootSetSize;
+    this.crossFragmentRoots    = crossFragmentRoots;
     this.replayCacheSize       = replayCacheSize;
     this._now                  = now;
 
@@ -102,6 +104,22 @@ export class AxonManager {
     this._seenPublishes = new Map();     // publishId -> insertedAt (ms)
     this._seenPublishCap = 4096;         // bounded size (LRU-ish)
     this._seenPublishTtlMs = 60_000;     // entries expire after 60 s
+
+    // ── Per-AxonManager findKClosest cache ──────────────────────────────
+    // Each call to dht.findKClosest from this AxonManager (publish,
+    // subscribe, refreshTick) is expensive at scale (~5-15ms at 25K).
+    // The result for a given (topicId, K) depends on this node's local
+    // routing table and the network topology; both are stable between
+    // churn events. Caching per-(topicId, K) per-node lets a real
+    // protocol implementation amortise the cost across many calls
+    // within a stable interval — exactly what a real deployment would
+    // do, and only using information local to this node.
+    //
+    // Invalidation: invalidateKClosestCache() bumps the epoch; cache
+    // entries from prior epochs are discarded on next access. The
+    // Engine calls it after churn events.
+    this._kClosestCache = new Map();     // `${topicHex}_${K}` -> { epoch, value: peerIds[] }
+    this._kClosestEpoch = 0;
 
     // Policy overrides — if provided, replace the default methods. The DHT
     // (e.g., NX-15) is the usual source; it injects its protocol-specific
@@ -155,6 +173,43 @@ export class AxonManager {
   }
 
   /**
+   * Per-node findKClosest with epoch-keyed local cache. All AxonManager
+   * call sites that need K-closest peers should use this helper instead
+   * of calling `this.dht.findKClosest` directly — the cache amortises
+   * cost across the pub/sub primitives (publish, subscribe, refreshTick)
+   * within a single network-stability interval.
+   *
+   * Locality preserved: the cache is per-AxonManager (per-node). Each
+   * node still computes its own answer on first miss using only its
+   * local routing table; no inter-node sharing of results.
+   */
+  _findKClosest(topicId, K) {
+    const key = `${typeof topicId === 'string' ? topicId : topicId.toString(16).padStart(16, '0')}_${K}`;
+    const entry = this._kClosestCache.get(key);
+    if (entry && entry.epoch === this._kClosestEpoch) {
+      return entry.value;
+    }
+    const value = this.dht.findKClosest(topicId, K);
+    this._kClosestCache.set(key, { epoch: this._kClosestEpoch, value });
+    return value;
+  }
+
+  /**
+   * Invalidate this node's K-closest cache. Called by the engine (or in a
+   * real deployment, by a churn-detection mechanism) when network
+   * topology may have changed enough to invalidate cached K-sets. Bumps
+   * the epoch so all entries are stale on next access; the Map self-prunes
+   * lazily on miss.
+   */
+  invalidateKClosestCache() {
+    this._kClosestEpoch++;
+    // Cap memory: full clear if the map has grown unboundedly. Subscribers
+    // typically hold 1-5 topics, axon hosts up to ~maxDirectSubs roles —
+    // so the natural size is small, but defensive clear handles edge cases.
+    if (this._kClosestCache.size > 256) this._kClosestCache.clear();
+  }
+
+  /**
    * Clear all pub/sub runtime state so this AxonManager appears fresh
    * to the next test or test phase, while preserving:
    *   - DHT handler registrations (onRoutedMessage/onDirectMessage)
@@ -177,6 +232,8 @@ export class AxonManager {
     this._lastSeenTsByTopic.clear();
     this._receivedPublishIds.clear();
     this._seenPublishes.clear();
+    this._kClosestCache.clear();
+    this._kClosestEpoch = 0;
     this._deliveryCallback = null;
     this._publishCounter = 0;
   }
@@ -202,16 +259,8 @@ export class AxonManager {
     // their replay cache.
     const publishTs = this._now();
     if (this._useKClosestMode()) {
-      const roots = this.dht.findKClosest(topicId, this.rootSetSize);
+      const roots = this._findKClosest(topicId, this.rootSetSize);
       if (roots.length > 0) {
-        // Send to ALL K roots, not just one. Publisher's K-closest set
-        // and subscriber's K-closest set diverge under routing-table
-        // instability (churn especially), so subscribers stored at a
-        // slightly different set than the publisher now sees. Sending
-        // to ALL K guarantees coverage as long as SOME root holds the
-        // subscriber. The publishId dedup at each receiver prevents
-        // duplicate fan-out, so the cost is K small sendDirect calls
-        // to the K roots (not K× amplification on fan-out).
         for (const target of roots) {
           this.dht.sendDirect(target, 'pubsub:publish-k', {
             topicId, json, publishId, publishTs,
@@ -220,6 +269,39 @@ export class AxonManager {
         return publishId;
       }
     }
+
+    // NX-17 axonal mode with cross-fragment redundancy.
+    //
+    // Under a bilateral physical-connection cap, routed-walk convergence
+    // weakens: different sources can land at different "globally closest"
+    // terminals, each opening its own root for the same topic. Pre-fix,
+    // recovered delivery dropped from 100 % → 64 % at cap=100 / 5 % churn.
+    //
+    // Strategy: send via direct messages to the top-K closest peers
+    // (K = crossFragmentRoots + 1, default 3). findKClosest is set-stable
+    // across sources (K-overlap measured at 100 % under our test
+    // conditions), so publisher and subscribers agree on the same K
+    // peers. Each recipient is either a role-holder (fan out to children)
+    // or — via _onPublishDirect's existing fallback — routes onward to
+    // find one. publishId dedup at every receiver prevents duplicate
+    // delivery if multiple direct sends land at overlapping subtrees.
+    //
+    // K=1 reduces to the legacy single-routed-walk mode. K>=2 gives
+    // multi-root resilience under cap pressure.
+    const K = (this.crossFragmentRoots ?? 0) + 1;
+    if (K > 1 && typeof this.dht.findKClosest === 'function') {
+      const targets = this._findKClosest(topicId, K);
+      if (targets.length > 0) {
+        for (const target of targets) {
+          if (target === this.nodeId) continue;
+          this.dht.sendDirect(target, 'pubsub:publish-k', {
+            topicId, json, publishId, publishTs,
+          });
+        }
+        return publishId;
+      }
+    }
+    // Fallback (K=1 or no findKClosest): single routed walk.
     this.dht.routeMessage(topicId, 'pubsub:publish', {
       topicId, json, publishId, publishTs,
     });
@@ -237,21 +319,39 @@ export class AxonManager {
     const lastSeenTs = this._lastSeenTsByTopic.get(topicId);
 
     if (this._useKClosestMode()) {
-      const roots = this.dht.findKClosest(topicId, this.rootSetSize);
+      const roots = this._findKClosest(topicId, this.rootSetSize);
       if (roots.length > 0) {
         for (const peerId of roots) {
           this.dht.sendDirect(peerId, 'pubsub:subscribe-k', {
             topicId,
             subscriberId: this.nodeId,
-            peerRoots:    roots,          // gossip the K-set so each root
-                                          // knows its peers (used by root
-                                          // reconciliation in the future)
-            lastSeenTs,                   // replay cache key; undefined = new
+            peerRoots:    roots,
+            lastSeenTs,
           });
         }
         return;
       }
     }
+
+    // NX-17 axonal mode: subscribe via direct sends to top-K closest
+    // peers (mirrors pubsubPublish). Both sides target the SAME K via
+    // findKClosest, which is set-stable across sources, so subscribers
+    // and publisher agree on the same K peers regardless of cap-induced
+    // routing-walk divergence.
+    const K = (this.crossFragmentRoots ?? 0) + 1;
+    if (K > 1 && typeof this.dht.findKClosest === 'function') {
+      const targets = this._findKClosest(topicId, K);
+      if (targets.length > 0) {
+        for (const target of targets) {
+          if (target === this.nodeId) continue;
+          this.dht.sendDirect(target, 'pubsub:subscribe-k', {
+            topicId, subscriberId: this.nodeId, peerRoots: targets, lastSeenTs,
+          });
+        }
+        return;
+      }
+    }
+    // Fallback (K=1 or no findKClosest): single routed walk.
     this.dht.routeMessage(topicId, 'pubsub:subscribe',
                           { topicId, subscriberId: this.nodeId, lastSeenTs });
   }
@@ -260,7 +360,7 @@ export class AxonManager {
     this.mySubscriptions.delete(topicId);
 
     if (this._useKClosestMode()) {
-      const roots = this.dht.findKClosest(topicId, this.rootSetSize);
+      const roots = this._findKClosest(topicId, this.rootSetSize);
       if (roots.length > 0) {
         for (const peerId of roots) {
           this.dht.sendDirect(peerId, 'pubsub:unsubscribe-k', {
@@ -1038,18 +1138,26 @@ export class AxonManager {
   refreshTick() {
     const now = this._now();
 
-    // 1. Leaf refresh — re-issue each of our own subscribes. In K-closest
-    //    mode, the refresh re-STOREs at the current K-closest set so the
-    //    root set tracks any ID-space drift from churn. Every outgoing
-    //    subscribe carries our current `lastSeenTs` for this topic so
-    //    the receiving axon can replay anything newer from its cache.
+    // 1. Leaf refresh — re-issue each of our own subscribes via the same
+    //    transport mode used at original subscribe time (K-closest, NX-17
+    //    multi-root, or routed). Refresh must mirror the subscribe path
+    //    or we'd drift between root sets across rounds.
+    const altK = (this.crossFragmentRoots ?? 0) + 1;
     for (const topicId of this.mySubscriptions.keys()) {
       const lastSeenTs = this._lastSeenTsByTopic.get(topicId);
       if (this._useKClosestMode()) {
-        const roots = this.dht.findKClosest(topicId, this.rootSetSize);
+        const roots = this._findKClosest(topicId, this.rootSetSize);
         for (const peerId of roots) {
           this.dht.sendDirect(peerId, 'pubsub:subscribe-k', {
             topicId, subscriberId: this.nodeId, peerRoots: roots, lastSeenTs,
+          });
+        }
+      } else if (altK > 1 && typeof this.dht.findKClosest === 'function') {
+        const targets = this._findKClosest(topicId, altK);
+        for (const target of targets) {
+          if (target === this.nodeId) continue;
+          this.dht.sendDirect(target, 'pubsub:subscribe-k', {
+            topicId, subscriberId: this.nodeId, peerRoots: targets, lastSeenTs,
           });
         }
       } else {
@@ -1059,15 +1167,24 @@ export class AxonManager {
     }
 
     // 2. Axon refresh — every axon role (root and non-root) periodically
-    //    re-issues a subscribe toward topicId. See _onSubscribe's self-
-    //    subscribe branch for what happens at each target.
-    //    An axon with no children has no reason to stay in the tree;
-    //    skip the refresh and let the GC step remove it.
+    //    re-issues a subscribe toward topicId so its own attachment
+    //    upward stays fresh. An axon with no children has no reason to
+    //    stay in the tree; skip the refresh and let the GC step remove it.
     for (const [topicId, role] of this.axonRoles) {
       if (role.children.size === 0) continue;
       const lastSeenTs = this._lastSeenTsByTopic.get(topicId);
-      this.dht.routeMessage(topicId, 'pubsub:subscribe',
-                            { topicId, subscriberId: this.nodeId, lastSeenTs });
+      if (altK > 1 && typeof this.dht.findKClosest === 'function') {
+        const targets = this._findKClosest(topicId, altK);
+        for (const target of targets) {
+          if (target === this.nodeId) continue;
+          this.dht.sendDirect(target, 'pubsub:subscribe-k', {
+            topicId, subscriberId: this.nodeId, peerRoots: targets, lastSeenTs,
+          });
+        }
+      } else {
+        this.dht.routeMessage(topicId, 'pubsub:subscribe',
+                              { topicId, subscriberId: this.nodeId, lastSeenTs });
+      }
       role.parentLastSent = now;
     }
 
@@ -1100,7 +1217,6 @@ export class AxonManager {
         continue;
       }
       if (now - role.lowWaterSince > this.refreshIntervalMs) {
-        // One full refresh interval below min → dissolve.
         for (const [childId] of role.children) {
           this.dht.sendDirect(childId, 'pubsub:dissolve-hint', {
             topicId, suggestedParent: role.parentId,

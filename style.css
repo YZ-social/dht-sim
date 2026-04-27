@@ -560,13 +560,30 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
 .bench-title-note {
   font-weight: 400; color: #8899bb; font-size: 10px; letter-spacing: 0;
 }
-.bench-table-wrap { overflow-x: auto; }
+/* Horizontal scroll when the column count exceeds container width.
+   The wrap is the scroll viewport; the table grows to its content.
+   `min-width: 100%` keeps narrow benchmarks (few columns) flush left/right. */
+.bench-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  /* Subtle visual cue that this is scrollable; only paints when content overflows. */
+  background:
+    linear-gradient(to right, #060c18 30%, rgba(6,12,24,0)) 0 0/20px 100% no-repeat,
+    linear-gradient(to right, rgba(6,12,24,0), #060c18 70%) 100% 0/20px 100% no-repeat,
+    linear-gradient(to right, #1a3a60, #1a3a60) 0 0/4px 100% no-repeat,
+    linear-gradient(to right, #1a3a60, #1a3a60) 100% 0/4px 100% no-repeat;
+  background-attachment: local, local, scroll, scroll;
+}
 .bench-table {
-  width: 100%; border-collapse: collapse; font-size: 10px;
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
 }
 .bench-table th, .bench-table td {
   padding: 3px 6px; text-align: right;
   border: 1px solid #1a3a60;
+  white-space: nowrap;     /* keep numeric cells from wrapping inside narrow columns */
 }
 .bench-table thead th {
   background: #081628; color: #9dc8e8; font-weight: 600; text-align: center;
@@ -848,6 +865,17 @@ input[type="checkbox"] { accent-color: var(--glow); cursor: pointer; }
   display: flex; align-items: center; justify-content: center;
 }
 .guide-steps li strong { color: #77ccff; }
+
+.guide-list {
+  margin: 8px 0 8px 20px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #a8c4e0;
+}
+.guide-list li { margin-bottom: 4px; }
+.guide-list li strong { color: #77ccff; }
+body.light .guide-list { color: var(--text); }
+body.light .guide-list li strong { color: #1a4a80; }
 
 .guide-tip {
   font-size: 11px; color: var(--dim); font-style: italic;

@@ -1,15 +1,27 @@
 # DHT Globe Simulator
 
-**Version 0.50.00**
+**Version 0.66.07**
 
 An interactive 3-D globe simulator for studying and comparing distributed hash table routing protocols, from classical Kademlia to a family of neuromorphic protocols that learn and adapt their routing tables through simulated synaptic plasticity — designed for real-world browser WebRTC deployment.
 
-The current state of the art is **NX-10**, which delivers:
+## Current state of the art
 
-- **5–7× faster local routing** than Kademlia under browser-realistic connection limits (500 km lookups in 66 ms vs. 378 ms; concentrated community-to-community traffic in 32 ms vs. 242 ms)
-- **Churn invariance** — only a +1.6% latency penalty at 25% per-round churn (vs. +30% for Kademlia), while maintaining 100% lookup success as the original network is ~76% replaced
-- **48× pub/sub fan-out reduction** via the Axonal Pub/Sub tree — delivering to 2,000 subscribers with max per-node fan-out of 42, compared to 1,999 for flat-delivery baselines
-- **100% success under network partition** (Slice World test: East/West hemispheres connected only through a single node in Hawaii) via iterative fallback + incoming-synapse reverse routing, where Kademlia and G-DHT both fail at ~52%
+**NX-17 ★★** — Neuromorphic routing layer (synaptome + AP scoring + LTP + annealing + churn-triggered temperature reheat + iterative fallback + two-tier highway) plus a self-healing distributed pub/sub membership protocol with publisher-prefix topic addressing, single-root routed mode, batch-adoption, and bounded replay caches. At 25,000 nodes under a 100-connection browser cap:
+
+- **5–7× faster local routing** than Kademlia (500 km lookups in 80 ms vs. 510 ms; concentrated 10%→10% traffic in 32 ms vs. 251 ms)
+- **100% delivery on every pub/sub-with-churn metric** (baseline / immediate / recovered / recovered-after-10-rounds)
+- **100% lookup success** including under 5% churn turnover
+- **0 cap violations, 0 orphans, 0 dead-children** with the bilateral-cap guard rail enforced
+
+**NH-1** — A consolidation of NX-17's ~36 organically-grown rules into five fundamental operations (NAVIGATE, LEARN, FORGET, EXPLORE, STRUCTURE) expressed through a unified vitality model `vitality(syn) = weight × recency`. ~12 parameters replace NX-17's 44. Includes the full NX-17-style AxonManager pub/sub layer. At 25K capped: **routing within 14–21% of NX-17**, **pub/sub delivery within 1–2 percentage points** (98–99% recovered vs NX-17's 100%), **uncapped: essentially tied with NX-17**.
+
+## Simulator integrity
+
+This simulator enforces three invariants on every benchmark, with guard rails that scream on violation:
+
+1. **Bilateral connection cap** — every node enforces `connections.size ≤ maxConnections` (default 100); `DHT.verifyConnectionCap()` runs at post-bootstrap, post-warmup, and after every churn round, logging `[CAP VIOLATION]` to console if any protocol bypasses `tryConnect`.
+2. **Locality** — no inter-node information sharing in optimisation paths; each node's `findKClosest` runs independently using only its own routing table.
+3. **Bounded RPC** — `findKClosest` simulates real Kademlia FIND_NODE responses bounded to `k` (= 20) per peer, not full routing-table dumps.
 
 The full technical write-up is in [`documents/Neuromorphic-DHT-Architecture.md`](documents/Neuromorphic-DHT-Architecture.md) / [`.pdf`](documents/Neuromorphic-DHT-Architecture.pdf).
 

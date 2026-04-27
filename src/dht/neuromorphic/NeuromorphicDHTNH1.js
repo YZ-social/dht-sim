@@ -25,6 +25,20 @@ import { Synapse }      from './Synapse.js';
 import { NeuronNode }   from './NeuronNode.js';
 import { randomU64, clz64, roundTripLatency, buildXorRoutingTable }
                          from '../../utils/geo.js';
+import { geoCellId }     from '../../utils/s2.js';
+import { AxonManager }   from '../../pubsub/AxonManager.js';
+
+// ── Identity conversions for the AxonManager boundary ────────────────────────
+// AxonManager works in 16-char hex strings; NeuronNode uses BigInt. NH-1
+// converts at the boundary so the rest of the protocol stays untouched.
+function topicToBigInt(v) {
+  if (typeof v === 'bigint') return v;
+  return BigInt('0x' + v);
+}
+function nodeIdToHex(id) {
+  if (typeof id === 'string') return id;
+  return id.toString(16).padStart(16, '0');
+}
 
 export class NeuromorphicDHTNH1 extends DHT {
   static get protocolName() { return 'Neuromorphic-NH1'; }
@@ -44,7 +58,9 @@ export class NeuromorphicDHTNH1 extends DHT {
     // ── Parameters — one per behavioral axis ────────────────────────────
     // STRUCTURE
     this.MAX_SYNAPTOME      = r.maxSynaptome       ?? 50;
-    this.DIVERSITY_BUDGET   = r.diversityBudget     ?? 4;
+    // (diversityBudget removed in v0.65.06 — penalty was harmful; stratum
+    //  diversity is now enforced solely by DHTNode._trySwapIn at the
+    //  connection layer.)
     // NAVIGATE
     this.WEIGHT_SCALE       = r.weightScale         ?? 0.40;
     this.LOOKAHEAD_ALPHA    = r.lookaheadAlpha      ?? 5;
@@ -63,8 +79,8 @@ export class NeuromorphicDHTNH1 extends DHT {
     this.INERTIA_DURATION   = r.inertiaDuration     ?? 20;
     this.PROMOTE_THRESHOLD  = r.promoteThreshold    ?? 2;
     this.TRIADIC_THRESHOLD  = r.triadicThreshold    ?? 2;
-    this.EN_LATERAL_SPREAD  = r.lateralSpread       ?? false;
-    this.LATERAL_K          = r.lateralK            ?? 6;
+    this.EN_LATERAL_SPREAD  = r.lateralSpread       ?? true;   // NX-6 parity: ON by default
+    this.LATERAL_K          = r.lateralK            ?? 2;      // NX-6 parity: 2 (cold-corridor speedup)
 
     // ── Fixed constants ──────────────────────────────────────────────────
     this.DECAY_INTERVAL      = 100;
@@ -76,14 +92,52 @@ export class NeuromorphicDHTNH1 extends DHT {
     this.STRATA_GROUPS       = 16;
     this.ANNEAL_LOCAL_SAMPLE = 50;
     this.RECENCY_HALF_LIFE   = r.recencyHalfLife ?? 50;
+
+    // ── Membership pub/sub layer (AxonManager) ───────────────────────────
+    // Per-node handler registries (lazy: empty until AxonManager registers).
+    this._routedHandlers = new Map();   // NeuronNode → Map<type, handler>
+    this._directHandlers = new Map();   // NeuronNode → Map<type, handler>
+    // Per-node AxonManager instances. Lazy-created on first axonFor().
+    this._axonsByNode    = new Map();   // NeuronNode → AxonManager
+
+    // Membership params from UI / experiment config; passed through to each
+    // AxonManager. rootSetSize=0 forces routed mode (NX-17 design — single
+    // root per topic, grown by routing, healed by re-subscription).
+    this._membershipOpts = {
+      ...(config.membership || {}),
+      rootSetSize: 0,
+    };
+
+    // sendDirect drain-loop state — see sendDirect() for the rationale (a
+    // synchronous fan-out through a 3-level axonal tree blows past Node's
+    // ~10K stack frame limit without iterative delivery).
+    this._sendQueue    = null;
+    this._sendDraining = false;
   }
+
+  /**
+   * Marker the benchmark engine reads to decide whether to emit prefixed
+   * topic names ('@XX/…') or plain names. NH-1 uses publisher-prefix topic
+   * IDs (NX-17 parity): top 8 bits = publisher's S2 cell, bottom 56 = hash
+   * of the topic name. This pins the tree root close to the publisher.
+   */
+  get usesPublisherPrefix() { return true; }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Node Lifecycle
   // ═══════════════════════════════════════════════════════════════════════════
 
   async addNode(lat, lng) {
-    const id   = randomU64();
+    // Geographic ID assignment (NX-6 parity): top GEO_BITS encode the
+    // S2 Hilbert-curve cell prefix for (lat, lng); bottom bits are random.
+    // This makes XOR-distance correlate with geographic distance, which is
+    // essential for: (1) regional lookup performance, (2) the 10%→10%
+    // tributary test's XOR-nearest dest selection, (3) routing-table
+    // structure giving useful first-hop candidates for nearby targets.
+    const prefix   = geoCellId(lat, lng, this.GEO_BITS);
+    const shift    = 64 - this.GEO_BITS;
+    const randBits = randomU64() & ((1n << BigInt(shift)) - 1n);
+    const id       = (BigInt(prefix) << BigInt(shift)) | randBits;
     const node = new NeuronNode({ id, lat, lng });
     node._nodeMapRef = this.nodeMap;
     node.temperature = this.T_INIT;
@@ -115,26 +169,41 @@ export class NeuromorphicDHTNH1 extends DHT {
       (a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0
     );
 
-    for (const node of sorted) {
+    // Shuffled processing order (NX-6 parity): under tight bilateral caps,
+    // first-come-first-served iteration starves the tail of the sort.
+    // Random order produces a uniform connection distribution across nodes.
+    const processingOrder = [...sorted].sort(() => Math.random() - 0.5);
+
+    for (const node of processingOrder) {
       for (const peer of buildXorRoutingTable(node.id, sorted, k, maxConnections)) {
+        // Bilateral physical-cap gate: silently refuse if either side is full.
+        // This is the connection-management discipline that all NX-series
+        // protocols use; bypassing it leaves the connections Set empty so
+        // runtime tryConnect calls always succeed regardless of true load.
+        if (!node.tryConnect(peer)) continue;
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
         const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
+        syn.bootstrap = true;     // NX-6 parity: bootstrap synapses preferred to keep
         node.addSynapse(syn);
         if (bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
       node._nodeMapRef = this.nodeMap;
     }
+    // Cap-enforcement audit happens via DHT.verifyConnectionCap in main.js
+    // after this method returns, so every protocol gets the same check.
   }
 
   bootstrapNode(newNode, sorted, k = 20) {
     if (!sorted?.length || !newNode?.alive) return;
     const bidir = this.bidirectional;
     for (const peer of buildXorRoutingTable(newNode.id, sorted, k, this.MAX_SYNAPTOME)) {
+      if (!newNode.tryConnect(peer)) continue;  // bilateral cap
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
       const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
       syn.weight    = 0.5;
+      syn.bootstrap = true;     // NX-6 parity
       newNode.addSynapse(syn);
       if (bidir) peer.addIncomingSynapse(newNode.id, latMs, stratum);
     }
@@ -151,6 +220,7 @@ export class NeuromorphicDHTNH1 extends DHT {
     const addPeer = (peer) => {
       if (peer.id === newNodeId || newNode.synaptome.has(peer.id)) return;
       if (newNode.synaptome.size >= this.MAX_SYNAPTOME) return;
+      if (!newNode.tryConnect(peer)) return;     // bilateral cap
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
       const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
@@ -381,7 +451,17 @@ export class NeuromorphicDHTNH1 extends DHT {
   // Vitality Model — The Unified Admission Gate
   // ═══════════════════════════════════════════════════════════════════════════
 
-  /** Compute dynamic vitality: weight × recency × diversity */
+  /**
+   * Compute dynamic vitality: weight × recency.
+   *
+   * The diversity term (penalty for over-represented stratum groups) was
+   * removed in v0.65.06 after a controlled benchmark showed it was actively
+   * harmful — pub/sub broadcast hop counts dropped 17% and routing was
+   * unaffected when the penalty was disabled. Stratum diversity is already
+   * preserved at the connection layer by DHTNode._trySwapIn (which evicts
+   * over-represented strata when accepting new peers); duplicating the
+   * concept at the synaptome layer added cost without adding signal.
+   */
   _vitality(node, syn) {
     // Recency: exponential decay from last reinforcement
     let recency;
@@ -391,37 +471,38 @@ export class NeuromorphicDHTNH1 extends DHT {
       const elapsed = this.simEpoch - syn.inertia;
       recency = Math.max(0.1, Math.exp(-elapsed / this.RECENCY_HALF_LIFE));
     }
-
-    // Diversity: penalty for over-represented stratum groups
-    const group = Math.min(this.STRATA_GROUPS - 1, syn.stratum >>> 2);
-    let groupCount = 0;
-    for (const s of node.synaptome.values()) {
-      if (Math.min(this.STRATA_GROUPS - 1, s.stratum >>> 2) === group) groupCount++;
-    }
-    const excess = Math.max(0, groupCount - this.DIVERSITY_BUDGET);
-    const diversity = 1.0 / (1 + excess);
-
-    return syn.weight * recency * diversity;
+    return syn.weight * recency;
   }
 
-  /** Add synapse, evicting lowest-vitality if full. */
+  /** Add synapse, honouring bilateral cap and evicting lowest-vitality if full. */
   _addByVitality(node, newSyn) {
+    // Physical-transport gate (bilateral cap). If either side is at cap,
+    // refuse silently — caller will retry on a future lookup. This matches
+    // NX-6's _stratifiedAdd discipline; aggressive eviction without this
+    // gate produced thrashing in v0.63.05.
+    const peer = this.nodeMap?.get(newSyn.peerId);
+    if (peer && !node.tryConnect(peer)) return false;
+
     if (node.synaptome.size < this.MAX_SYNAPTOME) {
       node.addSynapse(newSyn);
       return true;
     }
 
-    // Hybrid: vitality selects the SMARTEST victim (diversity-aware),
-    // weight comparison gates admission (safe, proven by NS-5).
+    // Vitality-based eviction with bootstrap preference (NX-6 simple-eviction parity):
+    // pick lowest-vitality non-bootstrap; fall back to lowest-vitality overall
+    // if every victim is a bootstrap synapse.
     let victim = null, minV = Infinity;
+    let victimAny = null, minVAny = Infinity;
     for (const s of node.synaptome.values()) {
       if (s.inertia > this.simEpoch) continue;  // LTP-locked: protected
       const v = this._vitality(node, s);
-      if (v < minV) { minV = v; victim = s; }
+      if (v < minVAny) { minVAny = v; victimAny = s; }
+      if (!s.bootstrap && v < minV) { minV = v; victim = s; }
     }
-    if (!victim || victim.weight >= newSyn.weight) return false;
+    const evictTarget = victim ?? victimAny;
+    if (!evictTarget) return false;
 
-    node.synaptome.delete(victim.peerId);
+    node.synaptome.delete(evictTarget.peerId);
     node.addSynapse(newSyn);
     return true;
   }
@@ -483,8 +564,8 @@ export class NeuromorphicDHTNH1 extends DHT {
       const latMs   = roundTripLatency(node, target);
       const stratum = clz64(node.id ^ target.id);
       const syn     = new Synapse({ peerId: targetId, latencyMs: latMs, stratum });
-      syn.weight    = 0.3;
-      syn.inertia   = this.simEpoch;  // fresh recency so vitality comparison is fair
+      syn.weight    = 0.5;             // NX-6 parity (was 0.3 — too low to displace bootstrap)
+      syn.inertia   = this.simEpoch;   // fresh recency so vitality comparison is fair
       const added   = this._addByVitality(node, syn);
 
       // Lateral spread: propagate to geographic neighbors (same top-4 geo bits)
@@ -566,7 +647,13 @@ export class NeuromorphicDHTNH1 extends DHT {
     const candidate = this._localCandidate(node, lo, hi);
     if (!candidate || node.synaptome.has(candidate.id)) return;
 
+    // Delete victim from synaptome AND release its connections slot so the
+    // bilateral cap doesn't reject the candidate. Anneal is intentionally
+    // a 1-for-1 exchange — the peer count stays constant.
     node.synaptome.delete(victim.peerId);
+    node.connections?.delete(victim.peerId);
+    if (!node.tryConnect(candidate)) return;        // bilateral cap
+
     const latMs   = roundTripLatency(node, candidate);
     const stratum = clz64(node.id ^ candidate.id);
     const syn     = new Synapse({ peerId: candidate.id, latencyMs: latMs, stratum });
@@ -579,10 +666,15 @@ export class NeuromorphicDHTNH1 extends DHT {
   // ═══════════════════════════════════════════════════════════════════════════
 
   _evictAndReplace(node, deadSyn) {
+    // The dead peer is gone; release its slot from the connections Set so the
+    // bilateral-cap accounting reflects the actual surviving link count.
     node.synaptome.delete(deadSyn.peerId);
+    node.connections?.delete(deadSyn.peerId);
+
     const group = Math.min(this.STRATA_GROUPS - 1, deadSyn.stratum >>> 2);
     const candidate = this._localCandidate(node, group * 4, group * 4 + 3);
     if (!candidate || node.synaptome.has(candidate.id)) return null;
+    if (!node.tryConnect(candidate)) return null;     // bilateral cap
 
     const weights = [];
     for (const s of node.synaptome.values()) weights.push(s.weight);
@@ -647,12 +739,551 @@ export class NeuromorphicDHTNH1 extends DHT {
 
   getStats() {
     const base  = super.getStats();
-    const nodes = [...this.nodeMap.values()];
+    const nodes = [...this.nodeMap.values()].filter(n => n.alive);
     const avgSyn = nodes.length
       ? (nodes.reduce((a, n) => a + n.synaptome.size, 0) / nodes.length).toFixed(1) : 0;
     const avgTemp = nodes.length
       ? (nodes.reduce((a, n) => a + (n.temperature ?? this.T_INIT), 0) / nodes.length).toFixed(3)
       : '—';
     return { ...base, protocol: 'Neuromorphic-NH1', epoch: this.simEpoch, avgSynapses: avgSyn, avgTemp };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Membership Pub/Sub Layer (AxonManager-driven)
+  //
+  // Ported from NX-15's pub/sub mechanics, adapted for NH-1's two-tier-free
+  // synaptome (no `node.highway` map; everything lives in `node.synaptome`
+  // and `node.incomingSynapses`). The four primitives AxonManager needs are:
+  //
+  //   routeMessage(targetId, type, payload, opts)
+  //   sendDirect(peerId, type, payload)
+  //   onRoutedMessage(type, handler)
+  //   onDirectMessage(type, handler)
+  //
+  // Plus identity accessors getSelfId() / getAlivePeer() / findKClosest().
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get (or lazily create) the AxonManager attached to `node`.
+   */
+  axonFor(nodeOrId) {
+    const node = this._resolveNode(nodeOrId);
+    if (!node) throw Error(`NH-1: no live node for id ${nodeOrId}`);
+    let axon = this._axonsByNode.get(node);
+    if (axon) return axon;
+
+    const m = this._membershipOpts;
+    axon = new AxonManager({
+      dht: this._nodeShim(node),
+      maxDirectSubs:        m.maxDirectSubs,
+      minDirectSubs:        m.minDirectSubs,
+      refreshIntervalMs:    m.refreshIntervalMs,
+      maxSubscriptionAgeMs: m.maxSubscriptionAgeMs,
+      rootGraceMs:          m.rootGraceMs,
+      rootSetSize:          m.rootSetSize,         // forced to 0 (routed mode)
+      replayCacheSize:      m.replayCacheSize,
+      // Recruit policy: prefer high-weight synaptome children when promoting
+      // an existing child as sub-axon (NX-15 parity).
+      pickRecruitPeer: (role, meta, subscriberId) =>
+        this._pickRecruitPeer(node, role, meta, subscriberId),
+      // Relay policy: when overflowing maxDirectSubs, return an EXTERNAL
+      // synaptome peer to be the new sub-axon (NX-17 parity — batch-adopts
+      // children whose IDs point toward the new relay).
+      pickRelayPeer: (role, subscriberId, forwarderId) =>
+        this._pickRelayPeer(node, role, subscriberId, forwarderId),
+    });
+    this._axonsByNode.set(node, axon);
+    return axon;
+  }
+
+  /** Clear pub/sub state on every AxonManager. Synaptomes / weights / LTP
+   *  are preserved — only axon trees, subscriptions, replay caches, dedup
+   *  sets are zeroed. Used by the benchmark runner to start clean per test. */
+  resetAllAxons() {
+    for (const axon of this._axonsByNode.values()) {
+      axon.resetState();
+    }
+  }
+
+  /** Build the thin shim that exposes NH-1 primitives in the shape AxonManager
+   *  expects, with `node` captured in closure. */
+  _nodeShim(node) {
+    const self = this;
+    return {
+      get nodeId()   { return nodeIdToHex(node.id); },
+      getSelfId()    { return nodeIdToHex(node.id); },
+      getAlivePeer(peerId) {
+        const peer = self.nodeMap.get(topicToBigInt(peerId));
+        return peer?.alive ? peer : null;
+      },
+      routeMessage(targetId, type, payload, opts) {
+        return self.routeMessage(node, targetId, type, payload, opts);
+      },
+      sendDirect(peerId, type, payload) {
+        return self.sendDirect(node, peerId, type, payload);
+      },
+      onRoutedMessage(type, handler) {
+        self.onRoutedMessage(node, type, handler);
+      },
+      onDirectMessage(type, handler) {
+        self.onDirectMessage(node, type, handler);
+      },
+      findKClosest(targetId, K, opts) {
+        return self.findKClosest(node, targetId, K, opts)
+                   .map(peer => nodeIdToHex(peer.id));
+      },
+    };
+  }
+
+  _resolveNode(nodeOrId) {
+    if (nodeOrId && typeof nodeOrId === 'object' && 'synaptome' in nodeOrId) {
+      return nodeOrId;
+    }
+    return this.nodeMap.get(topicToBigInt(nodeOrId));
+  }
+
+  // ── Handler registries ────────────────────────────────────────────────────
+
+  onRoutedMessage(node, type, handler) {
+    let table = this._routedHandlers.get(node);
+    if (!table) { table = new Map(); this._routedHandlers.set(node, table); }
+    table.set(type, handler);
+  }
+
+  onDirectMessage(node, type, handler) {
+    let table = this._directHandlers.get(node);
+    if (!table) { table = new Map(); this._directHandlers.set(node, table); }
+    table.set(type, handler);
+  }
+
+  // ── K-closest iterative lookup (used for terminal-globality verification
+  // during routed messaging, and as a primitive AxonManager can call directly). ──
+
+  findKClosest(sourceNode, targetId, K = 5, { alpha = 3, maxRounds = 40 } = {}) {
+    const src = this._resolveNode(sourceNode);
+    if (!src) return [];
+    const targetBig = topicToBigInt(targetId);
+
+    const candidates = new Map();
+    const distances  = new Map();
+    const addCandidate = (node) => {
+      if (!node?.alive || candidates.has(node.id)) return;
+      candidates.set(node.id, node);
+      distances.set(node.id, node.id ^ targetBig);
+    };
+
+    // Seed with source + all its routing tiers (synaptome + incoming).
+    // Including incomingSynapses is important: in LTP-specialized networks
+    // the outgoing synaptome biases toward high-traffic destinations and
+    // can leave sparse-region targets unreachable through outgoing alone.
+    //
+    // v0.66.03: the 2-hop seed expansion that briefly lived here in
+    // v0.66.01 was reverted. It cost ~8ms per call (×3760 calls per
+    // pubsubmchurn diagnostic = ~30s of overhead) and the routing-side
+    // problem it tried to address — local-terminal misses during route
+    // walks — is now solved at the right place by `_findCloserInTwoHops`,
+    // which runs only when actually needed (terminal-globality check)
+    // instead of on every findKClosest call.
+    addCandidate(src);
+    const addTier = (tier) => {
+      if (!tier) return;
+      for (const syn of tier.values()) addCandidate(this.nodeMap.get(syn.peerId));
+    };
+    addTier(src.synaptome);
+    addTier(src.incomingSynapses);
+
+    // Hybrid termination: stop when (a) every node in current top-K is
+    // queried AND (b) a full α-round added no new candidates. (a) alone
+    // can pin to a local optimum in LTP-specialized networks; (b) alone
+    // doesn't guarantee top-K probed. Both → real convergence.
+    const visited = new Set();
+    let lastPoolSize = 0;
+    let stableRounds = 0;
+    for (let round = 0; round < maxRounds; round++) {
+      const sortedCands = [...candidates.values()]
+        .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1);
+      const topK = sortedCands.slice(0, K);
+      const topKAllVisited = topK.every(n => visited.has(n.id));
+
+      let toQuery = topK.filter(n => !visited.has(n.id)).slice(0, alpha);
+      if (toQuery.length < alpha) {
+        const remaining = alpha - toQuery.length;
+        const beyond = sortedCands
+          .filter(n => !visited.has(n.id) && !topK.includes(n))
+          .slice(0, remaining);
+        toQuery = toQuery.concat(beyond);
+      }
+      if (toQuery.length === 0) break;
+
+      for (const peer of toQuery) {
+        visited.add(peer.id);
+        // v0.66.07: per-peer response bound is the BUCKET SIZE (this._k,
+        // typically 20), not the caller's K. Real Kademlia FIND_NODE
+        // responds with up to k nodes regardless of how many the caller
+        // ultimately wants — the bigger response gives the iterative
+        // search enough breadth to converge on the actual top-K.
+        // K-DHT does this same thing: `peer.findClosest(target, this.k)`.
+        // v0.66.06 used the caller's K (5) which was too small and hurt
+        // convergence quality (full-converge dropped 27pp on local
+        // 2000km). this._k=20 restores convergence with the same
+        // bounded-RPC honesty.
+        this._addPeerTopKToCandidates(peer, this._k, targetBig, addCandidate);
+      }
+
+      const grew = candidates.size > lastPoolSize;
+      lastPoolSize = candidates.size;
+      stableRounds = grew ? 0 : stableRounds + 1;
+      if (topKAllVisited && stableRounds >= 1) break;
+    }
+
+    return [...candidates.values()]
+      .sort((a, b) => distances.get(a.id) < distances.get(b.id) ? -1 : 1)
+      .slice(0, K);
+  }
+
+  /**
+   * Simulate a FIND_NODE RPC response from `peer`: peer reports its K
+   * closest peers to `targetBig` from its own local view (synaptome
+   * only — NH-1 has no highway tier). Inserts those K nodes into the
+   * caller's candidate pool via `addCandidate`. Insertion-sort into a
+   * fixed-size top-K array; cheap because K is typically 5.
+   */
+  _addPeerTopKToCandidates(peer, K, targetBig, addCandidate) {
+    const top = [];   // sorted asc by dist; size <= K
+    for (const syn of peer.synaptome.values()) {
+      const node = this.nodeMap.get(syn.peerId);
+      if (!node?.alive) continue;
+      const d = node.id ^ targetBig;
+      if (top.length < K) {
+        let i = 0;
+        while (i < top.length && top[i].d < d) i++;
+        top.splice(i, 0, { node, d });
+      } else if (d < top[K - 1].d) {
+        let i = 0;
+        while (i < top.length && top[i].d < d) i++;
+        top.splice(i, 0, { node, d });
+        top.pop();
+      }
+    }
+    for (const { node } of top) addCandidate(node);
+  }
+
+  // ── Greedy single-step routing (used by routeMessage) ────────────────────
+
+  _greedyNextHopToward(node, targetId) {
+    if (!node?.alive) return null;
+    const target = topicToBigInt(targetId);
+    let best = null;
+    let bestDist = node.id ^ target;
+    for (const syn of node.synaptome.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (!peer?.alive) continue;
+      const d = syn.peerId ^ target;
+      if (d < bestDist) { bestDist = d; best = peer; }
+    }
+    // NH-1 has no `highway` tier, so no second loop.
+    return best;
+  }
+
+  /**
+   * Cheap 2-hop "is anyone closer than me?" check used by routeMessage's
+   * terminal-globality verification.
+   *
+   * The terminal check exists to detect cases where the greedy walk reaches
+   * a *local* terminal — a node whose 1-hop synapses are all farther from
+   * target than itself, but a 2-hop peer (a friend's friend) is actually
+   * closer. Without this check, different greedy walks converge on
+   * different local terminals and the pub/sub tree fragments.
+   *
+   * The original implementation called `findKClosest(current, target, 1)`,
+   * which runs a full iterative K-closest search through the network. At
+   * 25K nodes that's 5-15ms per call; multiplied across ~12K
+   * routeMessage calls per refresh phase it dominates total benchmark
+   * time. This bounded 2-hop scan answers exactly the same question
+   * (is there a closer peer reachable in <=2 hops?) at O(|synaptome|^2)
+   * cost (~10K BigInt ops, ~0.5-1ms in JS at cap=100).
+   *
+   * Returns the closest node strictly closer than `node`, or null if no
+   * such 2-hop peer exists (true terminal).
+   */
+  _findCloserInTwoHops(node, targetId) {
+    const target = topicToBigInt(targetId);
+    const myDist = node.id ^ target;
+    let bestPeer = null;
+    let bestDist = myDist;
+
+    // v0.66.06: restructured as an explicit per-peer query to mirror
+    // real-network semantics. For each 1-hop peer p1, we simulate p1's
+    // single-shot RPC response to "what is your closest peer to target?"
+    // — p1 reports one candidate from its own local routing table. We
+    // then take the minimum across all p1 responses. Mathematically
+    // equivalent to the previous flat double-loop (same cost, same
+    // result); the structure now makes the bounded-RPC pattern explicit.
+    const queryP1 = (p1) => {
+      let p1Best = null, p1BestDist = null;
+      for (const syn2 of p1.synaptome.values()) {
+        if (syn2.peerId === node.id) continue;     // skip self
+        const d2 = syn2.peerId ^ target;
+        if (p1BestDist !== null && d2 >= p1BestDist) continue;
+        const p2 = this.nodeMap.get(syn2.peerId);
+        if (!p2?.alive) continue;
+        p1BestDist = d2;
+        p1Best = p2;
+      }
+      if (p1Best && p1BestDist < bestDist) {
+        bestDist = p1BestDist;
+        bestPeer = p1Best;
+      }
+    };
+    for (const syn of node.synaptome.values()) {
+      const p1 = this.nodeMap.get(syn.peerId);
+      if (p1?.alive) queryP1(p1);
+    }
+
+    // Also consider incoming peers as a reverse-routing option (incoming
+    // peers point AT us, so we can route via them to whatever they reach).
+    for (const syn of node.incomingSynapses.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (!peer?.alive) continue;
+      const d = peer.id ^ target;
+      if (d < bestDist) { bestDist = d; bestPeer = peer; }
+    }
+    return bestPeer;
+  }
+
+  // ── Routed messaging ─────────────────────────────────────────────────────
+
+  /**
+   * Walk a typed message from `originNode` toward `targetId`. Each hop may
+   * inspect and optionally consume the message via its registered handler.
+   * Returns { consumed, atNode, hops, terminal?, exhausted? }.
+   */
+  async routeMessage(originNode, targetId, type, payload, opts = {}) {
+    const maxHops = opts.maxHops ?? 40;
+    const originId = opts.fromId ?? nodeIdToHex(originNode.id);
+
+    let current = originNode;
+    let previousId = originId;
+    let hops = 0;
+
+    // Terminal-globality verification: if a greedy walk reaches a node that
+    // has no 1-hop synapse strictly closer to the target, we run a bounded
+    // 2-hop scan to detect whether ANY 2-hop peer is closer. Without this,
+    // different callers' greedy walks converge on different local terminals
+    // → multiple roots per topic → publishes miss subscribers attached to
+    // sibling roots.
+    //
+    // v0.66.03: replaced `findKClosest(current, target, 1)` (full iterative
+    // search, ~5-15ms at 25K) with `_findCloserInTwoHops` (bounded local
+    // scan, ~0.5-1ms). Same semantic answer — "is any reachable peer in 2
+    // hops closer than current?" — at ~10× lower cost. Was dominating
+    // refresh-phase wall-clock time.
+    const visitedTerminalCheck = new Set();
+
+    while (hops < maxHops) {
+      let nextHop = this._greedyNextHopToward(current, targetId);
+      let isTerminal = nextHop === null;
+
+      if (isTerminal) {
+        const globalClosest = this._findCloserInTwoHops(current, targetId);
+        if (globalClosest
+            && globalClosest.id !== current.id
+            && !visitedTerminalCheck.has(globalClosest.id)) {
+          visitedTerminalCheck.add(current.id);
+          nextHop = globalClosest;
+          isTerminal = false;
+        }
+      }
+
+      const result = this._deliverRouted(current, type, payload, {
+        fromId:   previousId,
+        targetId,
+        hopCount: hops,
+        isTerminal,
+        node:     current,
+      });
+
+      if (result === 'consumed') return { consumed: true, atNode: current.id, hops };
+      if (isTerminal) return { consumed: false, atNode: current.id, hops, terminal: true };
+
+      previousId = nodeIdToHex(current.id);
+      current = nextHop;
+      hops++;
+    }
+    return { consumed: false, atNode: current.id, hops, exhausted: true };
+  }
+
+  _deliverRouted(node, type, payload, meta) {
+    const handlers = this._routedHandlers.get(node);
+    const handler = handlers?.get(type);
+    if (!handler) return 'forward';
+    try { return handler(payload, meta) || 'forward'; }
+    catch (err) {
+      console.error(`NH-1 routed handler error at ${node.id} for '${type}':`, err);
+      return 'forward';
+    }
+  }
+
+  // ── Point-to-point with iterative drain loop ─────────────────────────────
+
+  /**
+   * Deliver `payload` directly to `peerId`. Returns true if peer is live,
+   * false if dropped. Uses an iterative FIFO drain so a fan-out through a
+   * deep axon tree doesn't blow Node's ~10K stack frame limit.
+   *
+   * Publish-time semantics preserved: all handlers triggered by a single
+   * top-level sendDirect complete before the call returns.
+   */
+  sendDirect(fromNode, peerId, type, payload) {
+    const peer = this.nodeMap.get(topicToBigInt(peerId));
+    if (!peer?.alive) return false;
+    const handlers = this._directHandlers.get(peer);
+    const handler = handlers?.get(type);
+    if (!handler) return true;        // peer alive but no handler — no-op
+
+    const item = {
+      handler,
+      payload,
+      meta: { fromId: nodeIdToHex(fromNode.id), type },
+      peerId: peer.id,
+      type,
+    };
+
+    if (this._sendDraining) {
+      // Nested call from inside a handler — enqueue; outer loop picks up.
+      this._sendQueue.push(item);
+      return true;
+    }
+
+    this._sendQueue   = [item];
+    this._sendDraining = true;
+    let processed = 0;
+    let peakSize  = 1;
+    const ABORT_CAP = 200000;
+    try {
+      while (this._sendQueue.length > 0) {
+        if (this._sendQueue.length > peakSize) peakSize = this._sendQueue.length;
+        if (processed >= ABORT_CAP) {
+          const typeCounts = {};
+          for (const q of this._sendQueue) typeCounts[q.type] = (typeCounts[q.type] || 0) + 1;
+          console.error(
+            `NH-1 drain loop aborted after ${processed} items ` +
+            `(queue ${this._sendQueue.length}, peak ${peakSize}). ` +
+            `Top-level type='${item.type}'. Queue: ${JSON.stringify(typeCounts)}`,
+          );
+          break;
+        }
+        const next = this._sendQueue.shift();
+        processed++;
+        try {
+          next.handler(next.payload, next.meta);
+        } catch (err) {
+          console.error(`NH-1 direct handler error at peer ${next.peerId} for '${next.type}':`, err);
+        }
+      }
+    } finally {
+      this._sendDraining = false;
+      this._sendQueue    = null;
+    }
+    return true;
+  }
+
+  // ── Recruitment & relay policies (NX-15 / NX-17 parity) ──────────────────
+
+  /**
+   * Pick an EXISTING child to promote as sub-axon. Prefer children that
+   * also appear in this node's synaptome with high LTP weight — high-weight
+   * synapses are LTP-validated as reliable, so the axon backbone sits on
+   * proven connections. Falls back to XOR-closest existing child.
+   */
+  _pickRecruitPeer(node, role, meta, subscriberId) {
+    if (role.children.size === 0) return null;
+    const selfHex   = nodeIdToHex(node.id);
+    const forwarder = meta.fromId;
+
+    // Index synaptome weights by hex peerId for quick lookup.
+    const synapseWeights = new Map();
+    for (const syn of node.synaptome.values()) {
+      const peer = this.nodeMap.get(syn.peerId);
+      if (!peer?.alive) continue;
+      synapseWeights.set(nodeIdToHex(syn.peerId), {
+        weight:  syn.weight,
+        latency: syn.latency ?? syn.latencyMs ?? 0,
+      });
+    }
+
+    let bestChildId = null;
+    let bestScore = -Infinity;
+    for (const childId of role.children.keys()) {
+      if (childId === selfHex)   continue;
+      if (childId === forwarder) continue;
+      const s = synapseWeights.get(childId);
+      if (!s) continue;
+      const score = s.weight * 1_000_000 - s.latency;
+      if (score > bestScore) { bestScore = score; bestChildId = childId; }
+    }
+    if (bestChildId) return bestChildId;
+
+    // No synaptome match — fall back to XOR-closest existing child.
+    const subBig = topicToBigInt(subscriberId);
+    let best = null;
+    let bestDist = null;
+    for (const childId of role.children.keys()) {
+      if (childId === selfHex)   continue;
+      if (childId === forwarder) continue;
+      const d = BigInt('0x' + childId) ^ subBig;
+      if (bestDist === null || d < bestDist) { bestDist = d; best = childId; }
+    }
+    return best;
+  }
+
+  /**
+   * Pick an EXTERNAL synaptome peer (not yet a child) to become a new
+   * sub-axon when this role overflows past maxDirectSubs. AxonManager
+   * partitions existing children by XOR direction toward this new relay
+   * and hands off the in-direction subset in a single batch-adopt message.
+   *
+   * Selection: XOR-closest synaptome peer to the new subscriber's id —
+   * cheapest signal of "which direction is this group growing toward."
+   */
+  _pickRelayPeer(node, role, subscriberId, forwarderId) {
+    if (!node?.alive) return null;
+    const selfHex = nodeIdToHex(node.id);
+    const subBig  = topicToBigInt(subscriberId);
+
+    const considered = new Map();   // hexId → { peer, distToSub }
+    const consider = (peer) => {
+      if (!peer?.alive) return;
+      const hex = nodeIdToHex(peer.id);
+      if (hex === selfHex)       return;
+      if (hex === forwarderId)   return;
+      if (hex === subscriberId)  return;
+      if (role.children.has(hex)) return;
+      if (considered.has(hex))    return;
+      considered.set(hex, { peer, distToSub: peer.id ^ subBig });
+    };
+    for (const syn of node.synaptome.values()) consider(this.nodeMap.get(syn.peerId));
+    if (considered.size === 0) return null;
+
+    let bestHex = null, bestDist = null;
+    for (const [hex, rec] of considered) {
+      if (bestDist === null || rec.distToSub < bestDist) {
+        bestDist = rec.distToSub;
+        bestHex  = hex;
+      }
+    }
+    return bestHex;
+  }
+
+  // ── Dispose: release pub/sub state along with synaptic state ─────────────
+
+  dispose() {
+    this._axonsByNode?.clear();
+    this._routedHandlers?.clear();
+    this._directHandlers?.clear();
+    this._axonsByNode    = null;
+    this._routedHandlers = null;
+    this._directHandlers = null;
+    super.dispose();
   }
 }

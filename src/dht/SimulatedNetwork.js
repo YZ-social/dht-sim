@@ -12,16 +12,31 @@ import { roundTripLatency } from '../utils/geo.js';
  *   - Keep the same interface so DHTNode / DHT subclasses need zero changes.
  */
 export class SimulatedNetwork {
-  constructor() {
+  constructor(dht = null) {
     /** @type {Map<number, import('./DHTNode.js').DHTNode>} */
     this.nodes = new Map();
     this.messageCount = 0;
+    /**
+     * Back-reference to the owning DHT so we can propagate connection-cap
+     * invariants to every node that registers, including those added long
+     * after `buildRoutingTables` has already run (churn replacements,
+     * interactive Add Nodes, slice-world bridges, etc.).
+     */
+    this.dht = dht;
   }
 
-  /** Register a node and attach this network to it. */
+  /**
+   * Register a node, attach this network to it, and inherit the DHT-wide
+   * connection cap (set by buildRoutingTables). This is the single chokepoint
+   * where the bilateral-cap invariant gets stamped onto every node — no
+   * subclass can forget to do it because every subclass calls this method.
+   */
   addNode(node) {
     this.nodes.set(node.id, node);
     node._network = this;
+    if (this.dht && isFinite(this.dht.maxConnections)) {
+      node.maxConnections = this.dht.maxConnections;
+    }
   }
 
   /** Mark a node as dead and remove it from the registry. */

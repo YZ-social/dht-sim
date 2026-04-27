@@ -288,6 +288,20 @@ export class BenchmarkSweep {
       setNum('nx-loadFloor',        r.loadBalancing?.loadFloor);
       setNum('nx-loadSaturation',   r.loadBalancing?.loadSaturation);
     }
+
+    // ── NH-1 rule overrides (no UI; passed directly to constructor) ──
+    // The NH-1 protocol's rule-set is small enough that we don't expose a
+    // UI panel for it. Experiments can still drive ablations by passing
+    // `nh1Rules` in the run object — this stash is read by main.js
+    // createDHT so each run can override defaults like
+    // `triadicThreshold: Infinity` to disable a single rule cleanly.
+    if (run.nh1Rules !== undefined) {
+      window.__sim ??= {};
+      window.__sim._nh1RulesOverride = run.nh1Rules;
+    } else {
+      // Clear any prior override so subsequent runs use defaults
+      if (window.__sim) delete window.__sim._nh1RulesOverride;
+    }
   }
 
   _updateSweepStatus() {

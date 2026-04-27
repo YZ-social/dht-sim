@@ -62,7 +62,10 @@ export class NeuromorphicDHTNH1 extends DHT {
     //  diversity is now enforced solely by DHTNode._trySwapIn at the
     //  connection layer.)
     // NAVIGATE
-    this.WEIGHT_SCALE       = r.weightScale         ?? 0.40;
+    // (weightScale removed in v0.66.10 — ablation showed it had no
+    //  measurable effect on routing or pub/sub at 5K capped, and
+    //  marginally hurt pub/sub full-converge. AP scoring is now pure
+    //  progress/latency without LTP-weight bias.)
     this.LOOKAHEAD_ALPHA    = r.lookaheadAlpha      ?? 5;
     this.MAX_HOPS           = r.maxHops             ?? 40;
     // EXPLORE
@@ -185,6 +188,7 @@ export class NeuromorphicDHTNH1 extends DHT {
         const stratum = clz64(node.id ^ peer.id);
         const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
         syn.bootstrap = true;     // NX-6 parity: bootstrap synapses preferred to keep
+        syn._addedBy  = 'bootstrap';
         node.addSynapse(syn);
         if (bidirectional) peer.addIncomingSynapse(node.id, latMs, stratum);
       }
@@ -204,6 +208,7 @@ export class NeuromorphicDHTNH1 extends DHT {
       const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
       syn.weight    = 0.5;
       syn.bootstrap = true;     // NX-6 parity
+      syn._addedBy  = 'bootstrap';
       newNode.addSynapse(syn);
       if (bidir) peer.addIncomingSynapse(newNode.id, latMs, stratum);
     }
@@ -224,6 +229,7 @@ export class NeuromorphicDHTNH1 extends DHT {
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
       const syn     = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
+      syn._addedBy  = 'bootstrapJoin';
       newNode.addSynapse(syn);
       if (this.bidirectional) peer.addIncomingSynapse(newNode.id, latMs, stratum);
     };
@@ -357,9 +363,7 @@ export class NeuromorphicDHTNH1 extends DHT {
       }
 
       if (!nextSyn) {
-        const inRegion = ((current.id ^ targetKey) >> BigInt(64 - this.GEO_REGION_BITS)) === 0n;
-        nextSyn = this._bestByTwoHopAP(current, candidates, targetKey, currentDist,
-          inRegion ? this.WEIGHT_SCALE : 0);
+        nextSyn = this._bestByTwoHopAP(current, candidates, targetKey, currentDist);
       }
 
       const nextId = nextSyn.peerId;
@@ -373,6 +377,7 @@ export class NeuromorphicDHTNH1 extends DHT {
           const syn = new Synapse({ peerId: nextId, latencyMs: inc.latency, stratum: inc.stratum });
           syn.weight = 0.5;
           syn.inertia = this.simEpoch;  // fresh recency
+          syn._addedBy = 'promote';
           if (this._addByVitality(current, syn)) current.incomingSynapses.delete(nextId);
         }
       }
@@ -410,10 +415,14 @@ export class NeuromorphicDHTNH1 extends DHT {
   // NAVIGATE: Two-hop lookahead AP selection
   // ═══════════════════════════════════════════════════════════════════════════
 
-  _bestByTwoHopAP(current, candidates, targetKey, currentDist, wScale) {
+  _bestByTwoHopAP(current, candidates, targetKey, currentDist) {
+    // v0.66.10: pure progress/latency AP — the LTP-weight bias was removed
+    // because ablation showed `weightScale` had no measurable effect on
+    // routing and marginally hurt pub/sub full-converge (likely because
+    // weight differences across nodes injected K-set drift into routing
+    // decisions that should otherwise be deterministic given network state).
     const ranked = candidates.map(s => {
-      const ap = (Number(currentDist - (s.peerId ^ targetKey)) / s.latency)
-              * (1 + wScale * s.weight);
+      const ap = Number(currentDist - (s.peerId ^ targetKey)) / s.latency;
       return { s, ap };
     }).sort((a, b) => b.ap - a.ap);
 
@@ -435,16 +444,15 @@ export class NeuromorphicDHTNH1 extends DHT {
       let twoHopDist, secondLat;
       if (!fwd.length) { twoHopDist = firstDist; secondLat = 0; }
       else {
-        const best2 = firstNode.bestByAP(fwd, targetKey, wScale);
+        const best2 = firstNode.bestByAP(fwd, targetKey, 0);
         twoHopDist = best2.peerId ^ targetKey;
         secondLat  = best2.latency;
       }
 
-      const ap2 = (Number(currentDist - twoHopDist) / (first.latency + secondLat))
-               * (1 + wScale * first.weight);
+      const ap2 = Number(currentDist - twoHopDist) / (first.latency + secondLat);
       if (ap2 > bestAP2) { bestAP2 = ap2; bestSyn = first; }
     }
-    return bestSyn ?? current.bestByAP(candidates, targetKey, wScale);
+    return bestSyn ?? current.bestByAP(candidates, targetKey, 0);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -549,6 +557,7 @@ export class NeuromorphicDHTNH1 extends DHT {
     const syn     = new Synapse({ peerId: cId, latencyMs: latMs, stratum });
     syn.weight    = 0.5;
     syn.inertia   = this.simEpoch;  // fresh recency
+    syn._addedBy  = 'triadic';
     this._addByVitality(nodeA, syn);
   }
 
@@ -566,6 +575,7 @@ export class NeuromorphicDHTNH1 extends DHT {
       const syn     = new Synapse({ peerId: targetId, latencyMs: latMs, stratum });
       syn.weight    = 0.5;             // NX-6 parity (was 0.3 — too low to displace bootstrap)
       syn.inertia   = this.simEpoch;   // fresh recency so vitality comparison is fair
+      syn._addedBy  = depth === 0 ? 'hopCache' : 'lateralSpread';
       const added   = this._addByVitality(node, syn);
 
       // Lateral spread: propagate to geographic neighbors (same top-4 geo bits)
@@ -658,6 +668,7 @@ export class NeuromorphicDHTNH1 extends DHT {
     const stratum = clz64(node.id ^ candidate.id);
     const syn     = new Synapse({ peerId: candidate.id, latencyMs: latMs, stratum });
     syn.weight    = 0.1;
+    syn._addedBy  = 'anneal';
     node.addSynapse(syn);
   }
 
@@ -685,6 +696,7 @@ export class NeuromorphicDHTNH1 extends DHT {
     const stratum = clz64(node.id ^ candidate.id);
     const syn     = new Synapse({ peerId: candidate.id, latencyMs: latMs, stratum });
     syn.weight    = medW;
+    syn._addedBy  = 'evictReplace';
     node.addSynapse(syn);
     return syn;
   }

@@ -2,7 +2,7 @@
 
 **A Biologically-Inspired Distributed Hash Table with Axonal Publish/Subscribe**
 
-*Version 0.66.07*
+*Version 0.66.11*
 
 > **Update note (v0.66):** Since v0.56 several simulator-integrity issues were discovered and corrected. The current numbers throughout this document reflect a benchmarking regime in which (i) the bilateral connection cap is honestly enforced on every node by a base-class guard rail, (ii) all routing optimisations are *locality-honest* — no inter-node information sharing — and (iii) `findKClosest` simulates real Kademlia FIND_NODE responses bounded to k=20 per peer, not full routing-table dumps. Earlier numbers are **superseded** by those in this revision; pre-fix benchmarks underestimated NX-17's robustness because cap violations during churn artificially inflated some nodes' reach. See Appendix C for the **NH-1** protocol introduced in this revision.
 
@@ -2332,7 +2332,32 @@ NH-1 includes the same NX-17-style membership pub/sub stack: per-node `AxonManag
 
 Without the connection cap (server-class deployment), NH-1 essentially ties NX-17 across every metric — the residual gap exists almost entirely because NX-17's specialized rules (highway tier, stratified eviction) are most valuable under tight per-node connection budgets.
 
-### C.5 What NH-1 Establishes
+### C.5 Rule Attribution: What Each Rule Actually Affects
+
+After the v0.66.06 bounded-RPC fix, we instrumented `Synapse` with an `_addedBy` field that tags every synapse with the rule that created it (`bootstrap`, `bootstrapJoin`, `hopCache`, `lateralSpread`, `triadic`, `promote`, `anneal`, `evictReplace`). A diagnostic in the `pubsubm` test then enumerates each subscriber's K-closest set for every topic and tallies the source-rule of each member. Members that do not appear in the publisher's K-set (the cause of K-set divergence and pub/sub delivery loss) are flagged.
+
+A typical 5K NH-1 `pubsubm` run produces this distribution across 400 K-set member observations:
+
+| Source | Count | % of K-set | Divergence rate |
+|---|---:|---:|---:|
+| `discoveredByIter` (2-hop or further from subscriber) | 387 | **96.75%** | 0.3% |
+| `bootstrap` (initial XOR routing table) | 6 | 1.5% | 16.7% |
+| `incomingSynapse` (reverse routing index) | 7 | 1.75% | 0.0% |
+| `hopCache`, `lateralSpread`, `triadic`, `promote`, `anneal`, `evictReplace` | **0** | **0.0%** | — |
+
+**The "edge-density" rules — hop caching, lateral spread, triadic closure, incoming promotion, annealing, dead-synapse replacement — never place a peer into any K-set.** They add edges that are useful for hot-traffic routing, regional latency, and churn recovery, but those edges are virtually never the K-closest peers in XOR space to any topic ID.
+
+This means:
+
+1. **K-set divergence is structural, not rule-driven.** It comes from the iterative-search dynamics of `findKClosest` under the bounded-RPC honesty model (cap=100 + per-peer responses bounded to k=20). Different starting routing tables produce slightly different exploration paths through the network's 2-hop expansion graph; small differences accumulate at the K-closest boundary.
+
+2. **NH-1's rules are correctly designed for the metrics they target.** Hot-lane routing, regional latency, and churn-recovery delivery are the right success criteria for the rules; pub/sub K-set agreement is not a metric they can affect.
+
+3. **Improving full-converge would require lever changes at the iterative-search layer:** larger per-peer response sizes, more iteration rounds, or explicit cross-region landmark seeding. None of those are NH-1-specific changes.
+
+Earlier ablation experiments that appeared to show single-rule effects on full-converge (e.g., "L4 off → 100%") were artefacts of run-to-run variance combined with small sample sizes (78 groups × 5 sample subscribers = 390 observations per run, with Bernoulli standard error of ~1pp on a 95% rate).
+
+### C.6 What NH-1 Establishes
 
 NH-1 is not proposed here as a replacement for NX-17. It is offered as evidence that the neuromorphic-DHT design space has more than one strong point. NX-17's organic accumulation produced a protocol with ~7% additional hops over NH-1's unified model, in exchange for ~3× the code surface and ~4× the tunable parameters. That is a real trade-off — denser routing tables give NX-17 a real advantage at scale under cap pressure — but it is not necessarily the right trade-off for every deployment.
 

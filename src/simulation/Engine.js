@@ -917,6 +917,26 @@ export class SimulationEngine {
           // of whether the protocol actually stores at all K of them.
           const overlapK = anyAxon?.rootSetSize || 5;
           let totalOverlap = 0, totalSamples = 0, fullConverge = 0;
+          // ── Source-rule attribution diagnostic (NH-1 / NX-15 with tagged synapses) ──
+          // For each (publisher, subscriber) pair where the K-sets diverge,
+          // tabulate WHICH RULE introduced each divergent peer in the
+          // subscriber's local view. This pinpoints whether triadic / hop-cache
+          // / lateral-spread / etc. is the dominant source of K-set drift.
+          //
+          // A divergent peer P is "in subK but not pubK" — meaning the
+          // subscriber's findKClosest considered P close enough to be in
+          // its top-K, but the publisher's didn't. We look up P in the
+          // subscriber's synaptome (or incomingSynapses) to find its
+          // _addedBy tag. Peers reached only through 2-hop iterative search
+          // (not in subscriber's direct routing table) are tagged
+          // 'discoveredByIter' since their introduction is implicit.
+          const ruleTally = new Map();   // ruleName → { divergent: count, totalAppearances: count }
+          const recordRule = (rule, isDivergent) => {
+            let entry = ruleTally.get(rule);
+            if (!entry) { entry = { divergent: 0, total: 0 }; ruleTally.set(rule, entry); }
+            entry.total++;
+            if (isDivergent) entry.divergent++;
+          };
           for (const group of groups) {
             const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
             const pubK = dht.findKClosest(group.relay, topicId, overlapK).map(n => n.id);
@@ -928,6 +948,19 @@ export class SimulationEngine {
               totalOverlap += ov;
               totalSamples++;
               if (ov === overlapK) fullConverge++;
+
+              // Attribute each subK member's rule of origin in `sub`'s
+              // synaptome. Mark those NOT in pubSet as divergent.
+              for (const id of subK) {
+                let rule = 'discoveredByIter';
+                const directSyn = sub.synaptome?.get(id);
+                if (directSyn) {
+                  rule = directSyn._addedBy ?? 'untagged';
+                } else if (sub.incomingSynapses?.has(id)) {
+                  rule = 'incomingSynapse';
+                }
+                recordRule(rule, !pubSet.has(id));
+              }
             }
           }
           const overlap = totalSamples === 0
@@ -937,6 +970,19 @@ export class SimulationEngine {
                 convergePct: (fullConverge / totalSamples) * 100,
                 samples:     totalSamples,
               };
+          // Emit the rule-tally to the console for analysis. Sorted by
+          // divergent count desc; shows total appearances for context
+          // (so we can compute "divergence rate per rule").
+          if (ruleTally.size > 0) {
+            const sorted = [...ruleTally.entries()].sort((a, b) =>
+              b[1].divergent - a[1].divergent);
+            const proto = dht.constructor.protocolName ?? dht.constructor.name;
+            console.log(`[k-set-divergence] ${proto} ${spec.type}:`);
+            for (const [rule, stats] of sorted) {
+              const rate = stats.total > 0 ? (100 * stats.divergent / stats.total).toFixed(1) : '0.0';
+              console.log(`  ${rule.padEnd(20)} divergent=${stats.divergent.toString().padStart(4)}  total=${stats.total.toString().padStart(4)}  rate=${rate}%`);
+            }
+          }
 
           data[def.key][resultKey] = {
             deliveredPct:  computeStats(perTickDeliveredPct),

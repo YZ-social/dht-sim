@@ -1941,7 +1941,10 @@ function createDHT(params) {
         alpha: params.alpha,
         bits: params.bits,
         geoBits: params.geoBits,
-        rules: params.nh1Rules,
+        // BenchmarkSweep stashes per-run NH-1 rule overrides on
+        // window.__sim._nh1RulesOverride so ablation experiments can drive
+        // single-parameter changes without recompiling.
+        rules: window.__sim?._nh1RulesOverride ?? params.nh1Rules,
         // Reuse the same membership params as NX-17 — NH-1's AxonManager
         // is configured identically (rootSetSize forced to 0, NX-17-style
         // single-root-per-topic routed mode) so a head-to-head pubsubm

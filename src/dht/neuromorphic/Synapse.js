@@ -19,6 +19,11 @@ export class Synapse {
     this.inertia   = 0;         // epoch lock: immune to decay while simEpoch < inertia
     this.stratum   = stratum;   // higher = more shared geographic prefix bits
     this.bootstrap = false;     // true for initial routing table synapses (slower decay)
+    this._addedBy  = null;      // diagnostic: which rule introduced this synapse
+                                // (e.g., 'bootstrap', 'hopCache', 'lateralSpread',
+                                //  'triadic', 'promote', 'anneal', 'evictReplace').
+                                // Set at the creation site for source-attribution
+                                // analysis of K-set divergence in pub/sub.
   }
 
   /**

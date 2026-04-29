@@ -225,8 +225,12 @@ export class NeuromorphicDHTNX6 extends DHT {
 
   // ── Neurogenesis ────────────────────────────────────────────────────────────
 
-  buildRoutingTables({ bidirectional = true, maxConnections = Infinity } = {}) {
-    super.buildRoutingTables({ bidirectional, maxConnections });
+  buildRoutingTables({
+    bidirectional  = true,
+    maxConnections = Infinity,
+    initMode       = 'native',
+  } = {}) {
+    super.buildRoutingTables({ bidirectional, maxConnections, initMode });
     if (maxConnections < this.MAX_SYNAPTOME_SIZE) {
       this.MAX_SYNAPTOME_SIZE = maxConnections;
     }

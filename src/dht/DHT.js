@@ -63,11 +63,34 @@ export class DHT {
   buildRoutingTables({
     bidirectional = true,
     maxConnections = Infinity,
+    maxOutgoing    = Infinity,
+    maxIncoming    = Infinity,
     highwayPct = 0,
+    /**
+     * v0.68.00 — initialization mode for cross-protocol comparisons.
+     *
+     *   'native'    — each protocol runs its own bootstrap strategy
+     *                 (Kademlia: pure XOR; G-DHT: 50 / 50 XOR + random
+     *                  global; NX-17 via NX-11: 80 / 20 XOR + random
+     *                  global; NH-1: pure XOR). Measures the protocol
+     *                  AS DESIGNED, including its bootstrap.
+     *
+     *   'canonical' — every protocol uses the same omniscient K-closest
+     *                 XOR allocation (Kademlia-style). All random
+     *                 supplements and stratification layers are skipped.
+     *                 Measures the routing / learning algorithm in
+     *                 isolation, with identical starting state.
+     *
+     * Default 'native' preserves all prior measurement semantics.
+     */
+    initMode = 'native',
   } = {}) {
     this.bidirectional  = bidirectional;
     this.maxConnections = maxConnections;
+    this.maxOutgoing    = maxOutgoing;
+    this.maxIncoming    = maxIncoming;
     this.highwayPct     = highwayPct;
+    this.initMode       = initMode;
     // Propagate the per-node physical cap so tryConnect() can enforce it.
     // Every DHTNode already defaults to Infinity; subclasses' buildRoutingTables
     // should call super.buildRoutingTables() first so this runs before they
@@ -78,13 +101,21 @@ export class DHT {
     // incoming connections and act as transit hubs. The rest keep the
     // normal cap (browser-class clients). Models a realistic hybrid
     // deployment where a small server backbone complements a P2P swarm.
+    //
+    // Directional caps (Interpretation B, v0.67.02): browser-class nodes
+    // also receive separate maxOutgoing / maxIncoming sub-caps. Defaults
+    // to Infinity (no directional gate). Highway nodes always get
+    // Infinity/Infinity in both directions.
     const nodes = this.getNodes();
     const highwayCount = Math.floor(nodes.length * (highwayPct / 100));
     const shuffled = [...nodes].sort(() => Math.random() - 0.5);
     const highwaySet = new Set(shuffled.slice(0, highwayCount).map(n => n.id));
     for (const node of nodes) {
-      node.maxConnections = highwaySet.has(node.id) ? Infinity : maxConnections;
-      node.isHighway = highwaySet.has(node.id);
+      const isHw = highwaySet.has(node.id);
+      node.maxConnections = isHw ? Infinity : maxConnections;
+      node.maxOutgoing    = isHw ? Infinity : maxOutgoing;
+      node.maxIncoming    = isHw ? Infinity : maxIncoming;
+      node.isHighway      = isHw;
     }
   }
 

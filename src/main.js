@@ -39,6 +39,7 @@ export function setAppState(state) {
 })();
 
 import { Globe }              from './globe/Globe.js';
+import { applySliceWorldPartition, findNodeNearest } from './dht/sliceWorld.js';
 import { KademliaDHT }        from './dht/kademlia/KademliaDHT.js';
 import { GeographicDHT, GeographicDHTa, GeographicDHTb } from './dht/geographic/GeographicDHT.js';
 import { NeuromorphicDHT }    from './dht/neuromorphic/NeuromorphicDHT.js';
@@ -354,64 +355,8 @@ async function onInit() {
 // ─────────────────────────────────────────────────────────────────────────────
 // Slice World — East/West hemisphere partition with Hawaii bridge
 // ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Prune cross-hemisphere connections from every node's routing table,
- * leaving Hawaii as the sole bridge between Eastern and Western hemispheres.
- *
- * Hemisphere rule: Western = lng < 0, Eastern = lng >= 0.
- * Hawaii (hawaiiId) is exempt — keeps all connections to both hemispheres.
- */
-function pruneSliceWorld(dhtRef, hawaiiId) {
-  const isWestern = (node) => node.lng < 0;
-
-  for (const node of dhtRef.nodeMap.values()) {
-    if (!node.alive || node.id === hawaiiId) continue;
-    const nodeWest = isWestern(node);
-
-    if (node.synaptome) {
-      // ── NeuronNode (neuromorphic protocols) ──
-      for (const [peerId] of node.synaptome) {
-        if (peerId === hawaiiId) continue;
-        const peer = dhtRef.nodeMap.get(peerId);
-        if (peer && isWestern(peer) !== nodeWest) {
-          node.synaptome.delete(peerId);
-        }
-      }
-      if (node.highway) {
-        for (const [peerId] of node.highway) {
-          if (peerId === hawaiiId) continue;
-          const peer = dhtRef.nodeMap.get(peerId);
-          if (peer && isWestern(peer) !== nodeWest) {
-            node.highway.delete(peerId);
-          }
-        }
-      }
-      for (const [peerId] of node.incomingSynapses) {
-        if (peerId === hawaiiId) continue;
-        const peer = dhtRef.nodeMap.get(peerId);
-        if (peer && isWestern(peer) !== nodeWest) {
-          node.incomingSynapses.delete(peerId);
-        }
-      }
-    } else if (node.buckets) {
-      // ── KademliaNode (Kademlia / G-DHT) ──
-      for (const bucket of node.buckets) {
-        bucket.nodes = bucket.nodes.filter(peer =>
-          peer.id === hawaiiId || isWestern(peer) === nodeWest
-        );
-      }
-      node._totalConns = node.buckets.reduce((s, b) => s + b.size, 0);
-      // Clean incoming peers (reverse connections)
-      if (node.incomingPeers) {
-        for (const [peerId, peer] of node.incomingPeers) {
-          if (peerId === hawaiiId) continue;
-          if (isWestern(peer) !== nodeWest) node.incomingPeers.delete(peerId);
-        }
-      }
-    }
-  }
-}
+// Partition logic moved to src/dht/sliceWorld.js (v0.67.03) so the
+// simulation engine can reuse it as a benchmark test type.
 
 async function onSliceWorld() {
   trainingActive = false;
@@ -480,7 +425,7 @@ async function onSliceWorld() {
   controls.setProgress(0.85);
   await yieldUI();
 
-  pruneSliceWorld(dht, hawaiiId);
+  applySliceWorldPartition(dht, hawaiiId);
 
   controls.setProgress(1);
   await yieldUI();
@@ -1634,6 +1579,9 @@ async function onBenchmark() {
     { key: 'pubsubm',   type: 'pubsubm',  groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage },
     { key: 'pubsubm-local', type: 'pubsubm-local', groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage, radius: params.pubsubLocalRadius ?? 2000 },
     { key: 'pubsubmchurn', type: 'pubsubmchurn', groupSize: params.pubsubGroupSize, coverage: params.pubsubCoverage, rate: params.benchChurnPct },
+    // 'slice' modifies routing tables in place (prunes cross-hemisphere edges).
+    // Place after non-mutating tests but before churn (which destroys state).
+    { key: 'slice',     type: 'slice'    },
     { key: 'churn',     type: 'churn',    rate: params.benchChurnPct },
   ];
   const testSpecs = ALL_TEST_SPECS
@@ -1682,7 +1630,18 @@ async function onBenchmark() {
         // buildRoutingTables, which the bootstrap path skips).
         const maxConn = params.webLimit ? (params.maxConnections ?? 100) : Infinity;
         const highwayPct = params.highwayPct ?? 0;
+        // Directional caps (v0.67.02): read from BenchmarkSweep window
+        // override first, fall back to params (no UI control yet — sweep
+        // is the only producer). Infinity means "no directional gate".
+        const maxOutOverride = window.__sim?._maxOutgoingOverride;
+        const maxInOverride  = window.__sim?._maxIncomingOverride;
+        const maxOut = (params.webLimit && (maxOutOverride ?? params.maxOutgoing) != null)
+          ? (maxOutOverride ?? params.maxOutgoing) : Infinity;
+        const maxIn  = (params.webLimit && (maxInOverride  ?? params.maxIncoming) != null)
+          ? (maxInOverride  ?? params.maxIncoming) : Infinity;
         benchDHT.maxConnections = maxConn;
+        benchDHT.maxOutgoing    = maxOut;
+        benchDHT.maxIncoming    = maxIn;
         benchDHT.bidirectional  = params.bidirectional;
         benchDHT.highwayPct     = highwayPct;
         // Mixed-capacity model: promote a random `highwayPct` fraction of
@@ -1695,6 +1654,8 @@ async function onBenchmark() {
         for (const node of allNodesArr) {
           const isHw = highwaySet.has(node.id);
           node.maxConnections = isHw ? Infinity : maxConn;
+          node.maxOutgoing    = isHw ? Infinity : maxOut;
+          node.maxIncoming    = isHw ? Infinity : maxIn;
           node.isHighway      = isHw;
         }
 
@@ -1728,10 +1689,18 @@ async function onBenchmark() {
       } else {
         // Bulk routing-table construction (default)
         controls.setStatus(`${tag} — building routing tables…`, 'bench');
+        const maxOutOv     = window.__sim?._maxOutgoingOverride;
+        const maxInOv      = window.__sim?._maxIncomingOverride;
+        const initModeOv   = window.__sim?._initModeOverride;
         benchDHT.buildRoutingTables({
           bidirectional:  params.bidirectional,
           maxConnections: params.webLimit ? (params.maxConnections ?? 100) : Infinity,
+          maxOutgoing:    (params.webLimit && (maxOutOv ?? params.maxOutgoing) != null)
+                            ? (maxOutOv ?? params.maxOutgoing) : Infinity,
+          maxIncoming:    (params.webLimit && (maxInOv  ?? params.maxIncoming) != null)
+                            ? (maxInOv  ?? params.maxIncoming) : Infinity,
           highwayPct:     params.highwayPct ?? 0,
+          initMode:       initModeOv ?? params.initMode ?? 'native',
         });
       }
       // Bilateral-cap invariant check post-bootstrap. No-op when web limit off.

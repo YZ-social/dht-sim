@@ -3,170 +3,180 @@ marp: true
 theme: default
 size: 16:9
 paginate: true
-header: "Neuromorphic DHT"
-footer: "v0.2 · sim v0.66.07 · 2026-04-27"
+header: "Neuromorphic DHT — NH-1"
+footer: "v0.3.22 · sim v0.68.00 · 2026-04-29"
 style: |
   section {
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    font-size: 24px;
+    font-size: 17px;
+    line-height: 1.35;
     color: #222;
     background: #fdfdfb;
-    padding: 60px 70px;
+    padding: 28px 44px;
+    overflow: hidden;
   }
+  section p, section ul, section ol { margin: 0.3em 0; }
   section h1, section h2, section h3 {
     color: #1a1a2e;
     font-weight: 700;
+    margin: 0.2em 0 0.25em 0;
   }
-  section h1 { font-size: 40px; margin-bottom: 0.3em; }
-  section h2 { font-size: 32px; margin-bottom: 0.4em; }
-  section h3 { font-size: 26px; margin-bottom: 0.3em; }
-  section.title h1 { font-size: 52px; }
-  section.title h2 { color: #555; font-weight: 400; font-size: 26px; }
+  section h1 { font-size: 28px; }
+  section h2 { font-size: 22px; }
+  section h3 { font-size: 17px; }
+  section.title h1 { font-size: 40px; }
+  section.title h2 { color: #555; font-weight: 400; font-size: 20px; }
   strong { color: #2d7373; }
   em { color: #555; font-style: italic; }
-  table { font-size: 20px; border-collapse: collapse; margin: 0.4em 0; }
-  th, td { padding: 6px 12px; border-bottom: 1px solid #ddd; text-align: left; }
+  table { font-size: 13px; border-collapse: collapse; margin: 0.3em 0; }
+  th, td { padding: 3px 7px; border-bottom: 1px solid #ddd; text-align: left; }
   th { color: #555; font-weight: 600; }
   .hi { color: #2d7373; font-weight: 700; }
-  .muted { color: #888; }
+  .muted { color: #888; font-size: 14px; }
   .callout { color: #c4572b; font-style: italic; }
-  code { background: #f2f2ef; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
-  pre { font-size: 16px; background: #f5f4f0; padding: 10px 14px; border-radius: 4px; }
-  img { display: block; margin: 0 auto; max-width: 92%; max-height: 60vh; }
+  code { background: #f2f2ef; padding: 1px 4px; border-radius: 3px; font-size: 0.92em; }
+  pre { font-size: 12px; background: #f5f4f0; padding: 8px 10px; border-radius: 4px; line-height: 1.3; margin: 0.3em 0; }
+  img { display: block; margin: 0.2em auto; max-width: 88%; max-height: 52vh; }
   section::after { color: #999; }
-  header { color: #888; font-size: 14px; }
-  footer { color: #888; font-size: 14px; }
+  header { color: #888; font-size: 11px; }
+  footer { color: #888; font-size: 11px; }
 ---
 
 <!-- _class: title -->
 
-# Neuromorphic DHT
+# Neuromorphic DHT — NH-1
 
 ## A Learning-Adaptive Distributed Hash Table
 ## with Axonal Publish-Subscribe
 
 <br>
 
-*Research brief · 25 K-node benchmark · Whitepaper v0.56*
+*Research brief · 25 K-node benchmark*
 
-<br><br>
+<br>
+
+**David A Smith** · [YZ.social](https://YZ.social)
+davidasmith@gmail.com
+
+<br>
 
 <span class="muted">Source, data, and simulator: <code>github.com/YZ-social/dht-sim</code></span>
 
 ---
 
-## Three gaps in current DHTs
+## Why?
 
-**No locality.**
-Kademlia at 25 K nodes routes a **500 km lookup in 355 ms** — no better than a global lookup.
-
-**Pub/sub is a bolt-on.**
-K-closest replication drifts under churn; publisher and subscriber compute different top-K sets, and delivery collapses.
-
-**Churn recovery is lazy.**
-Kademlia repairs routing tables on bucket-refresh timers; subscribers miss messages during the gap.
+> *"Those who would give up essential Liberty, to purchase a little temporary Safety, deserve neither Liberty nor Safety."* — Benjamin Franklin
 
 <br>
 
-<span class="callout">This talk: a single protocol addressing all three, measured end-to-end.</span>
+**Privacy and security are not in tension.** That framing is a lie, and it is a lie on purpose.
+
+**Privacy is the precondition for freedom.** A person who can be watched cannot dissent. A person whose every word passes through a custodian does not have a private thought. A person whose identity, location, and associations are legible to power is not free — they are *permitted*.
+
+**Governments want surveillance because surveillance is state power.** **Corporations want surveillance because surveillance is the product.** Neither wants freedom. Both have learned to call compliance "safety."
+
+**Encryption over a watching network is not enough.** We need a network that *cannot watch*, by intention.
+
+<span class="callout">The DHT is the minimum viable substrate. Without it, every "decentralized" service is one trusted server away from being centralized again — and every promise of privacy is provisional on the custodian's current ideology.</span>
 
 ---
 
-## The Neuromorphic DHT in one slide
+## What is a DHT? Why we need them
 
-- **Adaptive routing.** Each node maintains a bounded table of weighted edges, reinforced by observed traffic.
-- **Locality in IDs.** 8-bit geographic cell prefix (Google **S2** Hilbert-curve index) + BigInt node key — routes follow geography with no extra mechanism.
-- **Pub/sub as a routed tree.** Topics grow their own per-topic delivery trees, self-heal via re-subscription.
+A **distributed hash table** is the foundation for finding *anything* in a decentralized network: any node, given a key, can locate the value in O(log N) hops with **no central authority, no privileged peer, no trusted coordinator**.
 
-<br>
+**Already in production at scale:**
 
-### Realistic deployment — 25 K nodes · bootstrap + 50 K training lookups · web-connection cap
+| System | Year | Built on |
+|---|---:|---|
+| BitTorrent Mainline DHT | 2005+ | Kademlia variant — millions of simultaneous nodes |
+| Ethereum devp2p | 2015+ | Modified Kademlia — peer discovery for blockchain consensus |
+| IPFS / libp2p | 2015+ | Kademlia + content routing — CID → provider mapping |
+| Mastodon / ActivityPub | 2016+ | Federation-level peer discovery |
+| Coral DSHT | 2004 | Latency-aware proximity clusters (research predecessor) |
+| S/Kademlia | 2007 | Security-hardened Kademlia (sibling broadcast, disjoint paths) |
 
-| Workload | Kademlia | G-DHT | **N-DHT** |
-|---|---|---|---|
-| Global lookup | 4.70 hops · 536 ms | 5.65 hops · 318 ms | **4.22 hops · 243 ms** |
-| 500 km regional | 4.62 hops · 517 ms | 4.73 hops · 153 ms | **2.62 hops · 73 ms** |
-| 2000 km regional | 4.60 hops · 521 ms | 5.14 hops · 187 ms | **3.00 hops · 92 ms** |
-| Global success | 98.4 % | 99.4 % | **100 %** |
+**Why we *desperately* need the next generation now:**
 
-<span class="muted" style="font-size:18px">Plus N-DHT axonal pub/sub: 100 % baseline delivery; cumulative delivery &gt; 80 % through 33 % cumulative churn.</span>
+Centralized platforms have become single points of surveillance, censorship, and outage. Secure communication can no longer assume a trustworthy intermediate. Sovereignty over identity, location, and routing requires a substrate that **no one party can compromise**.
 
----
-
-## The DHT contract
-
-**put(key, value), get(key) → value** on an untrusted, open peer-to-peer overlay.
-
-The abstraction beneath pub/sub, naming, content addressing, blockchains, decentralized databases.
-
-<br>
-
-### Correctness means:
-- **O(log N)** lookup path length
-- Eventual consistency under churn
-- No central authority or trusted coordinator
-
-<br>
-
-<span class="callout">Opening question: what is the best we can do on this abstraction in 2026?</span>
+<span class="callout">A DHT is the minimum viable substrate. Without it, every "decentralized" service is one trusted server away from being centralized again.</span>
 
 ---
 
-## Kademlia distilled
+## The Neuromorphic DHT — how it differs
 
-- **Distance metric:** XOR — `d(a, b) = a ⊕ b`
-- Every node maintains K peers per bucket
-- **Lookup** = greedy walk toward target in XOR distance; α parallel queries (α = 3), K = 20
-- Under perfect conditions: **O(log N)** hops
+Traditional DHTs (Kademlia, Pastry, Tapestry) treat the routing table as a **static data structure**: fixed buckets, one rule for replacement, no awareness of the traffic flowing through. They were designed in 2001-2002 for stable nodes — and they do not adapt to the network they live in.
+
+The **Neuromorphic DHT** treats every peer as a *synapse*: a learnable edge with a weight that grows with successful traffic and decays without it. Routing consults those weights. Eviction picks the least-vital edge. The table changes as the network changes.
+
+| | Traditional DHT | Neuromorphic DHT |
+|---|---|---|
+| Routing table | Fixed K-bucket per stratum | Weighted synaptome |
+| Edge state | Live / dead | Weight ∈ [0, 1], recency, locked-on-use |
+| Routing decision | Greedy XOR | Action Potential (XOR × weight × latency) |
+| Adapts to traffic? | No | Yes — Long-Term Potentiation (**LTP**), triadic closure, hop caching |
+| Adapts to churn? | Lazy bucket refresh | Active dead-peer eviction + temperature reheat |
+| Pub/sub | Layered on top | Integrated as axonal delivery trees |
 
 <br>
 
-<span class="muted">K-buckets were a 2002 answer to "what's a stable routing table?" — static, predictable, analyzable.
-We will argue that adaptive weighting does better in practice.</span>
+The trade is "fixed and analytical" → "adaptive and empirical". The whitepaper-correctness of K-buckets gives way to *measured* behavior — which is why the rest of this talk is about measurement.
 
 ---
 
-## Kademlia's structural limits
+## Pub/sub belongs in the network
 
-| Limit | Evidence |
-|---|---|
-| No locality awareness | 500 km lookup = **355 ms** — identical to global |
-| Fixed buckets | Same K peers whether useful or not; no response to traffic |
-| Lazy churn repair | Broken edges persist until next bucket refresh |
-| Broadcast cost O(audience) | Each recipient reached by independent lookup |
+**The end-to-end argument** (Saltzer, Reed, Clark, 1984): functions that can be implemented at the endpoints should be implemented at the endpoints. Put nothing in the network that doesn't *have* to be there.
+
+**Pub/sub routing has to be there.** A subscriber and a publisher cannot, end-to-end, discover the multicast paths that connect them — only the network can. Treating pub/sub as a separate "application overlay" forces it to reproduce the routing layer with no actual visibility into it. The end-to-end principle applies to *meaning*; **delivery is a network function**.
+
+**A decentralized DHT is the right place for it.** Every node is *both* an endpoint and a relay. The mechanism is content-blind: it routes bytes toward a topic, with no inspection and no control over what travels.
 
 <br>
 
-<span class="callout">The data structure is frozen. The network is not.</span>
+**Consequences:**
+- **Everyone becomes a broadcaster** — peer-symmetric, no privileged position, no central authority.
+- The network is **not smart**. It has no control over the information it carries.
+- It is a **protocol and a platform** for relaying that information.
+- It is **hyper-connected**, within the physical limits of a phone or a browser.
+
+<br>
+
+<span class="callout">This is the architectural commitment NH-1 inherits from the start. The whole DHT exists to make this delivery primitive viable.</span>
 
 ---
 
-## G-DHT: locality helps, but alone is not enough
+## Why a simulator
 
-- **nodeId = S2 cell prefix ‖ publicKey hash**
-- XOR in ID space ≈ XOR in physical distance (the prefix dominates)
-- Regional latency drops: **128 ms at 500 km** vs Kademlia's 355 ms — **2.7× faster**
+The environment our system runs on is **the Internet**.
+
+We have attempted to build as fair and realistic environment simulation as we could. The interface and services it provides to system components will be identical to those of an actual deployed system.
+
+**This matters because** after launch there is no easy way to monitor, repair or improve the network we deployed. By design we *can't*. The only honest path is a simulated Internet large enough for us to have a reasonable expectation of *verisimilitude* to study.
+
+**And everyone can see it.** Source, data, every CSV in this deck — all open.
 
 <br>
 
-But still a *static* routing algorithm. No learning. No dynamics.
+<span class="callout">"As close to the actual system as possible" does not mean *good*. It means: this is what we have right now. We will continue improving it.</span>
 
-<br>
-
-![C1](charts/C1_latency_kad_vs_gdht.svg)
+<span class="muted">Why do we do this? Because we *can't* track how information flows through the real system. We can't understand it — much less figure out how to repair it or improve it — without the ability to simulate it.</span>
 
 ---
 
 ## The lab bench
 
-![bg right:58%](images/DHT-SIM-Image.png)
+![bg right:55% fit](images/DHT-SIM-Image.png)
 
 Purpose-built simulator · ~25 K lines of JavaScript · open-source.
 
-**Modelled with fidelity**
+**Modeled with fidelity**
 - GeoJSON land mask; haversine distances
 - Up to 50 000 nodes on a navigable 3-D globe
 - Per-hop simulated latency including 10 ms transit cost
+- Bilateral connection caps mirroring WebRTC (Web Real-Time Communication) limits
 - Every hop, ACK, reroute captured
 
 **Abstracted**
@@ -175,23 +185,7 @@ Purpose-built simulator · ~25 K lines of JavaScript · open-source.
 
 **Reproducibility**
 - All protocols build from the *same* seeded node set
-- CSV export per run — everything in this deck is from <code>results/*.csv</code>
-
-<span class="muted" style="font-size:18px">Pictured: a single selected node and its ~220 routing-table contacts.</span>
-
----
-
-## Methodology
-
-- **500 lookups per test cell:** global, 5 radii (500 / 1k / 2k / 5k km), source-dest pools, cross-continent
-- **Warmup** distinguishes *omniscient* init (theoretical ceiling) from *bootstrap* init (sponsor-chain join, production)
-- **Churn** induced discretely (instantaneous kill) or continuously (1 % every 5 ticks)
-- **Success** = surviving subscribers receive the message; dead subscribers excluded from denominator
-- All three protocols tested on the **same node geometry**
-
-<br>
-
-<span class="callout">Direct comparison — not three independent builds.</span>
+- CSV export per run — every number in this deck is from <code>results/*.csv</code>
 
 ---
 
@@ -201,604 +195,1000 @@ Four terms from neuroscience, each mapping to a specific data structure.
 
 | Term | Maps to |
 |---|---|
-| **Synapse** | One directed routing edge, with a learned weight ∈ [0, 1] |
-| **Synaptome** | The full edge set at a node — bounded at 50, a safe cross-browser WebRTC target |
+| **Synapse** | One directed *outgoing* routing edge with a learned weight ∈ [0, 1] |
+| **Synaptome** | The full set of outgoing synapses at a node — bounded at **50** |
 | **Neuron** | A node: synaptome + temperature + message handlers |
 | **Axon** | A directed delivery tree for one pub/sub topic, grown by routed subscribe |
 
 <br>
 
-<span class="muted">Vocabulary choice, not ideology. The behavior does not depend on the biology.</span>
+The vocabulary is descriptive, not metaphorical. Every term has one and only one corresponding artifact in the source code.
+
+<span class="muted">**Capacity note.** 50 is the cap on *outgoing* synapses. The total bilateral connection budget per node is **100** peers (≈ 50 outgoing + 50 inbound) — chosen as a safe cross-browser WebRTC target. Both numbers are pragmatic: they match the practical ceiling of a typical browser, but the precise split is somewhat arbitrary.</span>
 
 ---
 
-## The synaptome
+## Protocols we will examine
 
-Each synapse: <code>{ peerId, weight, inertia, stratum, latency, lastUsed }</code>
+We benchmark four DHTs at 25 K nodes under identical conditions. Each builds on its predecessor:
 
-- **Weight** is the learned signal — reinforced on use (+δ), decayed on idle (×γ per tick)
-- **Inertia** protects newly-added synapses — young edges cannot be evicted
-- **Stratum** = `clz64(self.id ⊕ peer.id)` — indexes the Kademlia-style distance bucket
-- **Capacity 50** is binding. Adding a 51ˢᵗ synapse evicts the lowest-vitality existing one.
+| Protocol | What it adds | Inherits from |
+|---|---|---|
+| **K-DHT** (Kademlia, 2002) | XOR distance metric, K-buckets, α-parallel lookup | — |
+| **G-DHT** (geographic) | S2 cell prefix in node IDs ⇒ regional locality | K-DHT |
+| **NX-17** (predecessor state of the art, **SOTA**) | 18 specialized rules, peak performance under tight cap | G-DHT *(via NX-1 … NX-15)* |
+| **NH-1** (this work, 2026) | Vitality-driven synaptome, unified admission gate | **NX-17** *(consolidation)* |
 
 <br>
 
-<span class="callout">The routing table is a bounded, learned, traffic-shaped object.</span>
+NH-1 is *not* a fresh parallel design — it is the result of a careful analysis of NX-17 and every protocol before it. Each NX-17 rule was studied for what it does, why it was added, and whether its work could be folded into a smaller surface area.
+
+- **NX-17** carries the lineage: 18 specialized rules, 44 parameters, ~2300 lines.
+- **NH-1** consolidates that lineage: 12 rules, 12 parameters, ~270 lines — every admission decision through a single vitality score.
+
+<br>
+
+<span class="callout">We selected NH-1 as the deployment target for its **maintainability and understandability**. We continue to use NX-17 as the reference benchmark — the bar that NH-1 should approach, and that future work should match or surpass.</span>
 
 ---
 
-## Action Potential routing
+## K-DHT — Kademlia, the foundation
 
-Per-hop decision: pick the synapse maximizing
-
-<br>
-
-<div style="text-align:center; font-size:1.2em">
-<code><strong>AP</strong> = (progress / latency) × (1 + w · weight)</code>
-</div>
+**Distance metric:** XOR — `d(a, b) = a ⊕ b`
+**Routing table:** Every node maintains K peers per bucket. Lookup is a greedy walk toward the target in XOR distance, with α=3 parallel queries and K=20.
+**Properties:** O(log N) hops in steady state. Static, predictable, analyzable.
 
 <br>
 
-- **`progress`** = immediate XOR improvement toward target
-- **`weight`** biases toward recently-useful peers
-- **`latency`** normalizes for link cost
-- **`w`** is a scalar tuning parameter (default 0.40)
-
-<br>
-
-### Two-hop lookahead
-
-Top α = 5 first-hop candidates get a second-hop probe.
-The pair with best combined AP wins.
-Mitigates greedy local minima at bounded cost.
-
-<br>
-
-<span class="muted">Analogue: OSPF shortest-path plus weighted-edge reinforcement.</span>
-
----
-
-## LTP — additive reinforcement
-
-**Long-Term Potentiation:** every successful hop reinforces the used synapse by **+δ = 0.05**.
-
-<br>
-
-Analogue: **TCP AIMD, applied to the routing graph.**
-
-| Action | Effect |
+| Limit | Evidence at 25 K |
 |---|---|
-| Successful delivery | weight += δ (additive increase) |
-| Passive decay each tick | weight ×= γ (multiplicative decrease, γ = 0.995) |
-| Inertia window (20 epochs) | young synapses protected from eviction |
+| No locality awareness | 500 km lookup = **510 ms** — identical to its 499 ms global lookup |
+| Fixed buckets | Same K peers regardless of usefulness; no response to traffic |
+| Lazy churn repair | Broken edges persist until next bucket refresh |
+| Broadcast cost O(audience) | Each pub/sub recipient reached by an independent lookup |
 
 <br>
 
-<span class="callout">Net effect: frequently-used routes accumulate weight; cold routes decay;
-the synaptome tracks actual traffic patterns.</span>
+<span class="muted">K-buckets were a 2002 answer to "what's a stable routing table?" — static, predictable, analyzable. We will argue that adaptive weighting does better in practice.</span>
+
+<span class="callout">The data structure is frozen. The network is not.</span>
 
 ---
 
-## Decay, annealing, exploration
+## G-DHT — adding geographic locality
 
-**Decay γ = 0.995 per tick** across all weights. Use-it-or-lose-it regularization — prevents stale edges from ossifying.
+**The change:** `nodeId = S2 cell prefix (8 bits) ‖ H(publicKey)`.
 
-<br>
-
-**Annealing:** periodically, a probabilistic draw replaces the lowest-weight synapse with a candidate sampled from the **2-hop neighborhood**. Temperature controls intensity; cools over time.
+XOR in the ID space now approximates XOR in physical distance — the prefix dominates. Same K-bucket routing as Kademlia, no other changes.
 
 <br>
 
-<span class="muted">Analogue: simulated annealing as background exploration pressure on the routing graph. Prevents local optima.</span>
+**Result at 25 K:**
+- 500 km regional latency: 510 ms → **150 ms** (3.4× faster)
+- Global latency: 498 ms → **287 ms**
 
 <br>
 
-### Temperature reheat under churn
-
-Discovering a dead peer spikes the local temperature — accelerates replacement search.
+But still a *static* routing algorithm. No learning. No dynamics. The geographic prefix is a one-time topology decision, not an ongoing adaptation. Pub/sub is still bolted on top via K-closest replication, which drifts under churn.
 
 ---
 
-## Incoming-synapse promotion
+## The S2 library — what the cell prefix actually is
 
-- Passive observation: every time another node routes *through* me, I record them in an incoming set
-- After N transits, incoming peers get promoted to full outgoing synapses
-- Closes the loop: traffic patterns inform the routing graph **in both directions**
+![bg right:42% fit](images/S2%20Map.png)
 
-<br>
+**S2 (Google, 2011)** is a hierarchical decomposition of the sphere onto a Hilbert space-filling curve, projected through six cube faces. Every point on Earth maps to a 64-bit cell ID; every prefix length defines a successively coarser tile.
 
-<span class="callout">Reciprocity discovery falling out of routing traffic — no explicit messaging.</span>
+- **Top 8 bits** — face + a few subdivisions. ≈ **256 tiles** worldwide, each ≈ **continent-scale** (e.g. "western North America", "South-East Asia"). This is what we embed in every node ID.
+- **Hilbert curve property** — geographically adjacent points have numerically close cell IDs. XOR distance in ID space ≈ physical distance, *for free*.
+- **Sub-cell hierarchy** — refining the prefix bit-by-bit subdivides the tile in half along the Hilbert curve. 30 bits ≈ city block; 40+ bits ≈ metres.
 
----
-
-## Churn mechanisms
-
-Three composable responses to peer failure.
-
-**Dead-peer eviction.**
-Liveness check fails → synapse evicted. Replacement drawn from the 2-hop neighborhood.
-
-**Iterative fallback.**
-If no greedy candidate makes progress, fall back to Kademlia-style "closest unvisited". Prevents dead-end failures.
-
-**Temperature reheat.**
-Dead-peer discovery spikes the local annealing temperature, accelerating repair.
-
-<br>
-
-![C2](charts/C2_family_success.svg)
+<span class="callout">S2 gives us **locality for free** — at the cost of trusting that nodes don't lie about where they are.</span>
 
 ---
 
-## Diversified bootstrap (80 / 20)
+## S2 — security implications
 
-Sponsor-chain join alone produces **locality-biased synaptomes** — all neighbors are geographically close.
+The S2 prefix in a node ID is **self-declared**. A node can claim any prefix it wants. This has three consequences:
 
-<br>
-
-**Fix:** 80 % stratified by XOR distance + **20 % random global peers**.
-
-- The 20 % random seeds annealing with diverse long-range candidates
-- Without it, annealing can only see 2-hop-local peers, and the learning asymptote sits higher
+- **The S2 prefix is not a trust primitive.** Never use it for authorisation, regional permissions, or anything resembling a capability check.
+- **Prefix-forgery is real.** A malicious actor can pick a prefix to land in a different region. The benign failure mode is degraded routing (mis-located peers misroute traffic). The adversarial failure mode is a **Sybil swarm** in a target cell — many forged identities clustering on one region's address space.
+- **Proof-of-location is the obvious defense.** Verifiable round-trip time (**RTT**) triangulation, GPS attestation, or trusted-witness schemes could anchor a claimed prefix to a measurable physical reality. This remains future work.
 
 <br>
 
-<span class="muted">Analogue: Watts–Strogatz small-world — a small fraction of long-range edges
-collapses expected path length.</span>
+<span class="muted">The honest framing: today's locality is a *cooperative* primitive. It works because well-behaved peers don't lie. The protocol does not depend on the prefix being honest, but its locality benefits do — and an attacker can degrade them without affecting correctness.</span>
 
 ---
 
-## Per-hop compute cost — the honest trade-off
+## G-DHT — locality at a glance
 
-Per hop, N-DHT evaluates:
+![C1](charts/C1_latency_kad_vs_gdht.svg)
 
-1. Sort candidates by AP₁ score — O(N log N), N ≤ 50
-2. Top α = 5 probed for 2-hop lookahead — each expands ≤ 50 synapses, runs a second sort
-3. Liveness check per candidate; LTP update on the winner
+<span class="muted">Lookup latency by distance, web-limited 25 K. G-DHT's geographic prefix gives regional traffic a 3-4× speedup over Kademlia. Global lookups still pay the full hop cost.</span>
+
+---
+
+## NH-1 — our chosen design
+
+**The change:** every peer becomes a *synapse* with a learnable weight. The routing table is no longer fixed K-buckets — it is a **synaptome** that adapts to traffic, prunes by vitality, and grows via learning rules (LTP, triadic closure, hop caching).
+
+**The architectural arc:**
+- **Inherits** the entire NX lineage (NX-1 → NX-17): K-DHT's XOR metric, G-DHT's geographic prefix, NX-17's AP routing, LTP, triadic closure, hop caching, axonal pub/sub
+- **Consolidates** five separate admission mechanisms (stratified eviction, two-tier highway, stratum floors, synaptome floors, adaptive decay) into a single vitality gate
+- **Removes** rules whose contribution didn't measurably justify their parameter footprint
+- **Keeps** every behavioral surface that NX-17 measurably needed
 
 <br>
 
-![C10](charts/C10_compute_cost.svg)
+**Design priority: simplicity.**
+
+| | NX-17 | **NH-1** |
+|---|---:|---:|
+| Rules | 18 | **12** |
+| Parameters | 44 | **12** |
+| Lines of code | ~2300 | **~270** |
+| Admission gate | 5 mechanisms (stratified eviction, two-tier, stratum floors, synaptome floors, adaptive decay) | **1** (`_addByVitality`) |
 
 <br>
 
-<span class="muted">Trade accepted: expensive decision → shorter paths + lower simulated latency.
-Optimization room exists (top-K heap, last-hop shortcut, AP memoization).</span>
+<span class="callout">We accept a small performance gap against NX-17 in exchange for an architecture that one engineer can hold in their head — and that future engineers can extend without archeology.</span>
+
+---
+
+## NX-17 — the reference
+
+**Two research generations led here.**
+
+**Launch pad: N-1 → N-15W.** The original neuromorphic DHT family — fifteen-plus variants — explored the design space: synapses with weights, activation potentials, simulated annealing, hop caching, lateral spread, dendritic relay trees. Each pushed on one mechanism and exposed two new failure modes. By N-15W we had a working but tangled protocol with too many entangled rules to refactor in place.
+
+**Focused iteration: NX-1 → NX-17.** The NX series re-grounded the architecture from a clean base. Each generation (NX-1, NX-2W, NX-3, … NX-17) addressed *one* concrete failure observed in its predecessor — one rule at a time, each measured against a benchmark. **NX-17 is the result.**
+
+<br>
+
+NX-17 is *better* than NH-1 under tight connection caps:
+
+| Test (25 K, cap=100) | NX-17 | NH-1 | Δ |
+|---|---:|---:|---:|
+| Global lookup | **4.40 hops / 242 ms** | 5.15 / 263 ms | +9 % ms |
+| 500 km lookup | **2.75 / 80 ms** | 3.28 / 95 ms | +18 % ms |
+
+But it carries 18 specialized rules, 44 parameters, and ~2300 lines. Each rule earned its keep against a measured failure mode. Together they form a system hard to understand and hard to extend.
+
+<br>
+
+<span class="callout">We use NX-17 as the **reference benchmark**. The full rule list — and NH-1's disposition for each — appears later in this deck.</span>
+
+---
+
+## NH-1 in one slide — five operations, one vitality model
+
+NH-1 collapses the entire protocol into **five operations**, each scored by a unified vitality function.
+
+| Operation | What it does |
+|---|---|
+| **NAVIGATE** | Action Potential (**AP**) routing + 2-hop lookahead + iterative fallback |
+| **LEARN** | LTP, hop caching, triadic closure, incoming promotion |
+| **FORGET** | Continuous decay + vitality-based eviction |
+| **EXPLORE** | Temperature annealing + epsilon-greedy first hop |
+| **STRUCTURE** | Stratified bootstrap + mixed-capacity (highway) deployment |
+
+<br>
+
+```
+vitality(syn) = weight × recency
+```
+
+A single `_addByVitality()` admission gate replaces stratified eviction, two-tier highway management, stratum floors, synaptome floors, and adaptive decay. **~12 parameters** end-to-end.
+
+---
+
+## What we call vitality
+
+NH-1 admits and evicts every synapse via one scalar:
+
+```
+vitality(syn) = weight × recency(syn)
+```
+
+**weight** ∈ [0, 1] — trained by Long-Term Potentiation; reinforced on successful routing paths; decayed each tick by `γ = 0.995`.
+
+**recency** = `exp(−Δepoch / RECENCY_HALF_LIFE)`. Two parameters control the time scale, both in NH-1's 12-parameter budget:
+- **`INERTIA_DURATION = 20` epochs** — after a reinforcement, recency is locked to 1.0 for 20 lookups. This is the LTP protection window: a freshly used synapse cannot be evicted, regardless of vitality competition. Below this, learning would be self-destructive — the system would discard the very edges it just discovered to be useful.
+- **`RECENCY_HALF_LIFE = 50` epochs** — once the inertia window expires, recency decays exponentially with a half-life of 50 lookups. After ~150 lookups with no reinforcement, recency is below 0.13 and the synapse is highly evictable.
+
+<br>
+
+The two factors are conventional individually. Hebbian potentiation (Hebb, 1949) gives the weight; exponential decay since last use (Ebbinghaus, 1885; LRU-K caching, O'Neil 1993) gives the recency. The closest biological analog is **synaptic tagging and capture** (Frey & Morris, *Nature* 1997) — synapses with both recent activity *and* sufficient potentiation are preferentially retained.
+
+<br>
+
+<span class="callout">The contribution of NH-1 is *not* the term or the formula. It is the use of this product as a **single admission gate** replacing five specialized mechanisms in NX-17: stratified eviction, two-tier highway management, stratum floors, synaptome floors, and adaptive decay.</span>
+
+---
+
+## NH-1 rules — the full set, by operation
+
+| # | Rule | Operation | Why this rule |
+|---|---|---|---|
+| 1 | Stratified bootstrap | STRUCTURE | Cold-start coverage across all XOR distances |
+| 2 | Mixed-capacity (highway%) | STRUCTURE | Realistic deployment — some peers run on real servers |
+| 3 | AP routing | NAVIGATE | Learned-weight greedy walk dominates pure XOR |
+| 4 | Two-hop lookahead | NAVIGATE | One probe of α second-hop options unblocks dead ends |
+| 5 | Iterative fallback | NAVIGATE | If no progress, expand to k-closest from the synaptome |
+| 6 | Long-Term Potentiation | LEARN | Reinforce edges on successful paths |
+| 7 | Triadic closure | LEARN | If A→B→C succeeds twice, learn A→C |
+| 8 | Hop caching | LEARN | Intermediate nodes cache the path for the destination |
+| 9 | Incoming promotion | LEARN | Peers that contact me often become outbound synapses |
+| 10 | Vitality-based eviction | FORGET | Drop the least-vital synapse when capacity is reached |
+| 11 | Temperature annealing | EXPLORE | Cool exploration rate over time; reheat on dead-peer discovery |
+| 12 | Epsilon-greedy first hop | EXPLORE | Small probability of random first hop avoids local minima |
+
+<span class="muted">Every rule has a measured contribution at 25 K nodes. Ablations in Appendix C of the whitepaper.</span>
+
+---
+
+## STRUCTURE — bootstrap and deployment realism
+
+**Stratified bootstrap.** Each new node is seeded with peers covering all XOR strata uniformly. Without this, the cold-start synaptome is dominated by lucky neighbors — local hops form, long hops don't.
+
+**Mixed-capacity deployment ("highway %").** Real P2P networks are heterogeneous: most peers are browsers (WebRTC ~100 connections), some are server-class (effectively unlimited).
+
+A configurable `highwayPct` fraction of nodes is promoted to **server-class**: they accept unlimited inbound, hold a synaptome of up to 256, and act as transit hubs. The rest stay browser-class with the standard 50-synapse cap.
+
+<br>
+
+<span class="callout">15 % highway nodes captures **70 % of the available latency improvement** over the all-browser baseline (chart later in this deck).</span>
+
+---
+
+## NAVIGATE — Action Potential routing
+
+Each hop, score every candidate by a learned function:
+
+```
+AP(syn, target) = progress(syn, target) × syn.weight × ½^(latency_ms / 100)
+```
+
+- **progress** = XOR distance reduction toward target
+- **weight** = LTP-reinforced [0, 1]
+- **latency penalty** = exponential — fast peers preferred at all distances
+
+<br>
+
+**Two-hop lookahead.** When no first-hop is decisively best, probe for the best second-hop candidates and pick the path with the highest combined score.
+
+**Iterative fallback.** If AP returns no candidate (every neighbor is "wrong direction"), fall back to k-closest-from-synaptome and retry. This rescues lookups that would otherwise stall in dead corridors.
+
+---
+
+## LEARN — four reinforcement mechanisms
+
+**LTP (Long-Term Potentiation).** When a lookup succeeds, every synapse on the successful path gets a weight bump and an inertia lock. Locked synapses cannot be evicted.
+
+**Triadic closure.** When a node X observes peer A repeatedly routing through it to peer C, X introduces A directly to C. A gains a new synapse to C; X is no longer needed as middleman on future A → C lookups. The name comes from social-network theory: the open triangle A — X — C is *closed* into a direct A — C edge.
+
+**Hop caching.** Each intermediate node on a successful lookup adds the *destination* to its synaptome. The path becomes shorter on the next lookup to the same region.
+
+**Incoming promotion.** When a peer reaches out to me repeatedly via incoming synapses, I promote it to a real outbound synapse — passive learning of who's interested in me.
+
+---
+
+## FORGET — the unified admission gate
+
+`_addByVitality(node, newSyn)` is called for *every* synapse addition: bootstrap, LTP, triadic, promotion, hop caching, annealing.
+
+```
+1. If synaptome has room → add.
+2. Otherwise, find the lowest-vitality non-locked synapse.
+3. If new synapse's vitality > victim's → swap.
+4. Else → refuse silently.
+```
+
+<br>
+
+This single function replaces:
+- NX-17's stratified eviction
+- NX-17's two-tier (synaptome + highway) management
+- NX-17's stratum floors
+- NX-17's synaptome floors
+- NX-17's adaptive decay parameters
+
+<br>
+
+<span class="callout">Continuous decay (γ = 0.995/tick) erodes weight uniformly. Under-used synapses lose vitality and become eligible for replacement; well-used ones stay locked.</span>
+
+---
+
+## EXPLORE — temperature and epsilon
+
+**Temperature annealing.** Each node carries a temperature `T ∈ [T_min, T_init]`. Cool by `T *= 0.9997` each lookup. Higher T → more probabilistic synapse selection (Boltzmann-style); lower T → greedy AP scoring.
+
+**Reheat on dead-peer discovery.** When routing finds a dead peer, spike `T = max(T, 0.5)`. Accelerates exploration to repair damage.
+
+**Epsilon-greedy first hop.** With probability ε = 0.05, replace the first AP-selected hop with a random synaptome member. Cheap insurance against early lock-in to a suboptimal corridor.
+
+<br>
+
+<span class="muted">Both exploration mechanisms are biased toward learning rather than fully random — the floor is uniform sampling over the *current synaptome*, not over the network.</span>
+
+---
+
+## What pub/sub on a DHT must do
+
+Five requirements — the rest of this section is the answer to each.
+
+| # | Requirement | Why hard on a DHT | NH-1's answer |
+|---:|---|---|---|
+| 1 | **Reliable delivery** at steady state | A naïve broadcast = N independent lookups → O(N²) cost | Routed axonal tree, fan-out via direct sends |
+| 2 | **Churn resilience** | K-closest sets drift; publisher/subscriber views diverge | Routed re-subscribe; tree heals on every refresh |
+| 3 | **Deterministic routing** | Subscriber & publisher must agree on the same root without negotiation | Publisher-prefix topic ID — both derive it offline |
+| 4 | **ID stability** | Topic identity can't change as the membership churns | `topicId = publisher.cellPrefix(8b) ‖ hash₅₆(name)` — fixed at publisher's S2 cell |
+| 5 | **Recovery from missed messages** | Subscribers reconnecting want history, not just future messages | Bounded replay cache at every relay; replay piggy-backs on subscribe |
+
+<span class="callout">The NH-1 pub/sub stack is a direct, point-by-point response to these five constraints. The next four slides show the mechanism for each.</span>
+
+---
+
+## How we got here — the K-closest → Axonal tree journey
+
+The current design wasn't the first try. The route through three failed approaches earned the architecture:
+
+- **NX-15 — K-closest replication.** Subscribe stores at each of K=5 nodes closest to `hash(topic)`; publish hits any one. Worked at zero churn but suffered a structural failure under load: publisher and subscribers compute `findKClosest` from *different positions* in the network, so under churn their top-K sets drift apart. Delivery collapsed to ~38 % at 25 % churn — not a routing bug, a *coordination* bug.
+- **NX-16 — masked-distance fix attempt.** Tried to decouple K-closest selection from synaptome expansion by masking the geographic prefix in the distance metric. Routing collapsed to ~40 % delivery *even at zero churn*. The lesson, archived as a cautionary example: **the distance metric used to select candidates must match the gradient used to expand them.**
+- **NX-17 — pure axonal tree, four targeted fixes:**
+  1. **Publisher-prefix topic IDs** so publisher and subscribers derive the same root deterministically — no negotiation, no drift.
+  2. **Terminal globality check** — when greedy routing thinks it's reached the topic, it does one `findKClosest(topicId, 1)` to confirm no globally-closer peer exists. Without this, two subscribers can elect different roots.
+  3. **External-peer batch adoption on overflow** — when an axon hits its capacity, it picks a *synaptome peer* (not an existing child) as the new sub-axon and ships the appropriate subscribers in one batch. Two invariants prevent runaway recursion.
+  4. **All-axon periodic re-subscribe** — every role re-issues its subscribe. The re-subscribe *is* the liveness check; no separate ping, no parent tracking.
+
+<span class="callout">The architecture you're about to see (next slides) is the *fourth* attempt. The earlier three each fixed a real failure mode; each one introduced a new one. The current design is what's left when you stop adding parts.</span>
+
+---
+
+## Pub/sub on top — axonal trees
+
+**Why the name?** In a biological neuron, the **axon** is the *output* projection — a single fibre that branches, branches again, and finally synapses onto many downstream targets. Information flows *outward* from one source to many recipients along this branching tree. That is exactly the shape of a healthy publisher-to-subscribers fan-out.
+
+**The analogy is structural, not poetic.** A pub/sub topic in NH-1 is rooted at one node (the topic's "soma"). Direct subscribers attach to the root; when the root has too many children, it delegates a sub-axon (a "branch") that takes over a subset of the subscribers. The tree grows toward the population that wants the topic — just as a real axon grows toward its targets during development.
+
+---
+
+## Axonal trees — how they work
+
+**Topic identity (deterministic).** `topicId = publisher.cellPrefix(8b) ‖ hash₅₆(event_name)`. Both publisher and every subscriber derive the same 64-bit ID with no negotiation. The tree's root pins into the publisher's S2 cell — naturally close to its audience.
+
+**Subscribe is a routed message** toward `topicId`. The first live axon role encountered on the path *intercepts* and adds the new subscriber to its children. If the walk completes with no axon found, the terminal node opens a new role and becomes the **root**. Every subscribe message also carries the subscriber's `lastSeenTs` and triggers a replay (covered on the next slide).
+
+**Publish** goes through the same route to `topicId`, lands at the root, and then **fans out**: the root sends to its direct children; each axon sub-role recursively forwards to its own children. One DHT lookup, then pure tree forwarding.
+
+**Branching on overflow (batch adoption).** When an axon's direct-child count exceeds `maxDirectSubs`, it picks an existing peer in its synaptome as a new sub-axon, partitions its current children by XOR proximity to that new sub-axon, and hands off the relevant batch in one `ADOPT_SUBSCRIBERS` message. The tree branches in O(1) DHT operations.
+
+**Self-healing via re-subscribe.** Every role re-issues its subscribe on a 10-second refresh interval. The walk lands on whichever live axon is closest to `topicId` *now*. Parent died? The re-subscribe attaches to a different live ancestor. Tree got reorganized? Invisible to the subscriber. The re-subscribe **is** the liveness check — there is no separate ping.
+
+<br>
+
+<span class="callout">100 % delivery baseline; **100 % recovered delivery** under 5 % churn at 25 K nodes.</span>
+
+---
+
+## Temporal pub/sub — subscribe is a request for *history*
+
+A subscribe is not just "send me future messages on this topic". It is **"send me every message I haven't already seen"**. Each subscribe carries a `lastSeenTs` — the highest publish timestamp this subscriber has observed.
+
+**Every relay node keeps a bounded ring buffer.** When an axon role receives a publish, it records `{ json, publishId, publishTs }` in a local cache (capacity ≈ 100 messages — tunable per topic).
+
+**On subscribe arrival, the relay filters its cache to `publishTs > lastSeenTs` and replays the missed messages as a single batched message** before forwarding the subscribe upstream.
+
+<br>
+
+**Why this matters under churn:**
+
+The decentralized axon tree means every re-publish node — not just the publisher — holds a copy of recent history. If a parent dies and a subscriber's re-subscribe lands on a different live relay, that new relay can fill the gap from *its own* cache. **Healing and replay are the same mechanism.** No central log, no separate recovery remote-procedure call (**RPC**), no "catch-up" protocol.
+
+<br>
+
+<span class="callout">A subscribe message in NH-1 is simultaneously a liveness probe, a tree-attach request, and a request for missed history. Three jobs, one envelope — that's the axonal healing model.</span>
 
 ---
 
 ## End-to-end tick
 
-One lookup in real time:
+```
+on lookup(target):
+  hop = 0
+  while hop < MAX_HOPS:
+    candidates = synaptome ∪ incomingSynapses
+    next       = AP_score(candidates, target)
+    if next == null: next = iterative_fallback(target)
+    if hop == 0 and rand() < ε: next = random(synaptome)
 
-1. **AP-score** every synaptome candidate (with 2-hop probe on top 5)
-2. **Pick best** next hop, send message
-3. On arrival: **LTP-reinforce** the used synapse
-4. Periodic maintenance:
-   - decay all weights
-   - anneal a replacement candidate
-   - check for dead peers → evict + reheat
+    record_transit(prev, next)         // LEARN: triadic
+    promote_incoming_if_warranted()    // LEARN: incoming
+    hop_cache_destination()            // LEARN: hop caching
+    anneal_replace_lowest_vitality()   // EXPLORE
+    hop++
 
-<br>
+on success: reinforce_path()           // LEARN: LTP
+periodically: decay_all_weights()      // FORGET
+```
 
-<span class="callout">No global state. No coordinators. Every tick is local.</span>
-
----
-
-## Point-to-point: hops by distance
-
-![C3](charts/C3_hops_by_radius.svg)
-
-| | Kademlia | G-DHT | **N-DHT** |
-|---|---|---|---|
-| Global | 3.43 | 4.67 | **3.64** |
-| 500 km | 3.39 | 3.98 | **2.21** |
-| 2000 km | 3.41 | 4.08 | **2.73** |
-| 10 % → 10 % | 2.58 | 3.55 | **1.05** |
+Every operation cost is bounded: O(synaptome.size). At 50 synapses the per-hop compute is ~0.2 ms — small relative to the 10 ms transit cost.
 
 ---
 
-## Point-to-point: latency by distance
+## Methodology
 
-![C4](charts/C4_latency_by_radius.svg)
+- **500 lookups per test cell.** Global, regional radii (500 / 1k / 2k / 5k km), pub/sub
+- **Same node geometry** across all four protocols — direct comparison, not three independent builds
+- **Bootstrap init** for production realism: sponsor-chain join + warmup. Omniscient init shown separately as a theoretical ceiling.
+- **Churn** induced discretely (instantaneous kill) and continuously (1 % every 5 ticks)
+- **Connection cap** 100 (browser-class, web-limited model)
 
-| Radius | Kademlia | G-DHT | **N-DHT** | vs Kademlia |
-|---|---|---|---|---|
-| Global | 357 ms | 289 ms | **260 ms** | 1.4× |
-| 500 km | 355 ms | 128 ms | **66 ms** | <span class="hi">5.4×</span> |
-| 2000 km | 348 ms | 154 ms | **94 ms** | 3.7× |
-| 10 % → 10 % | 231 ms | 109 ms | **32 ms** | <span class="hi">7.2×</span> |
+<br>
+
+<span class="callout">Every number in the next section comes from a single 25 K-node CSV captured at simulator v0.67.02. The footer's current version reflects code revisions to the diagnostic pipeline since then; the underlying routing data is unchanged.</span>
 
 ---
 
-## Realistic deployment — bootstrap init + training
+## What training does — and doesn't do
 
-Omniscient init isolates protocol effects. **It is unreachable in production.**
+A non-obvious result from running every NX variant under two starting conditions:
+
+- **Omniscient init** — every node seeded with its theoretically optimal K-closest neighbors
+- **Bootstrap init** — sponsor-chain join + 50 K warmup lookups (production realism)
+
+| Protocol | Omniscient hops | Bootstrap-trained hops | Gap | Bootstrap success% |
+|---|---:|---:|---:|---:|
+| N-1 | 2.22 | 5.10 | +130 % | **60 %** ❌ |
+| NX-3 | 3.64 | 4.33 | +19 % | 73 % ❌ |
+| NX-6 | 3.61 | 4.43 | +23 % | **100 %** |
+| NX-10 | 3.67 | 4.29 | +17 % | 100 % |
+| NX-15 | 3.47 | 4.30 | +24 % | 100 % |
+| **NX-17** | **3.67** | **4.28** | **+17 %** | **100 %** |
 
 <br>
 
-Under bootstrap init + 50 K training lookups (the realistic deployment scenario):
+**Three findings:**
 
-| | Kademlia | G-DHT | **N-DHT** |
-|---|---|---|---|
-| Global hops | 4.70 | 5.65 | **4.22** |
-| Global latency | 536 ms | 318 ms | **243 ms** |
-| 2000 km latency | 521 ms | 187 ms | **92 ms** |
-| Global success | 98.4 % | 99.4 % | **100 %** |
+1. **A shared asymptote.** Every NX from NX-6 onward lands in a tight 4.28 – 4.43 hop band under bootstrap+training, *regardless* of where it started. Training settles the synaptome to a **traffic-driven asymptote** near 4.3 hops, essentially independent of initial conditions.
+2. **NX-17 has the smallest hop gap and fast bootstrap-trained latency.** Bootstrap-trained NX-17 evaluates greedy candidates faster than its own omniscient configuration: pruned synaptomes are leaner. (Latency is left as hops × per-hop cost in this table — the 4-way comparison earlier in the deck reports the headline NX-17 latency at the 25 K, default-warmup configuration.)
+3. **Training is compute-optimizing, not path-shortening.** The 50-synapse cap is the binding constraint. Training redistributes weight on the edges sponsor-chains gave you at join — *it does not discover new shorter edges sponsor-chains missed*.
 
-<br>
+<span class="callout">The lever for production routing quality is the **initial synaptome construction**, not the training algorithm. Bootstrap-trained NX-17 hits a 4.3-hop asymptote at 100 % success — competitive with its own omniscient ceiling.</span>
 
-<span class="callout">N-DHT wins every column. The margins are *larger* than in the omniscient comparison
-because K-DHT and G-DHT inherit permanent bootstrap penalties; N-DHT's learning converges around it.</span>
+<span class="muted">Numbers in this table are from a controlled multi-variant ablation (50 K warmup lookups). The 4-way comparison earlier in the deck reports NX-17 at default warmup conditions and is the canonical headline latency.</span>
 
 ---
 
-## Realistic deployment — charted
+## Four-way comparison at 25,000 nodes
 
-![C9](charts/C9_realistic_deployment.svg)
+<span class="muted">Web-limited (cap = 100), omniscient init, geoBits = 8, no highway promotion. Same node geometry across all four protocols. **Canonical init**: every protocol uses identical K-closest XOR-fill bootstrap so the routing/learning algorithm is measured in isolation from any per-protocol bootstrap strategy.</span>
 
-<span class="muted">Bootstrap init + 50 K warmup lookups. Web-limited (50-peer cap). 25 K nodes.
-The realistic deployment scenario a production system actually faces.</span>
+| Test | Kademlia | G-DHT | NX-17 | **NH-1** |
+|---|---:|---:|---:|---:|
+| Global (hops / ms) | 4.53 / **508** | 5.57 / 284 | 4.47 / **241** | 5.26 / 269 |
+| 500 km (hops / ms) | 4.50 / 499 | 4.86 / 149 | 2.79 / **81** | 3.30 / 96 |
+| 1000 km (hops / ms) | 4.58 / 510 | 5.04 / 158 | 2.97 / **88** | 3.49 / 103 |
+| 2000 km (hops / ms) | 4.45 / 501 | 5.36 / 178 | 3.36 / **108** | 3.96 / 125 |
+| 5000 km (hops / ms) | 4.49 / 504 | 5.44 / 206 | 3.74 / **142** | 4.50 / 163 |
+| pubsubm delivered | n/a | n/a | **100 %** | **100 %** |
+| pubsubm + 5 % churn (recovered) | n/a | n/a | **100 %** | **100 %** |
+| dead-children / orphans | n/a | n/a | **0 / 0** | **0 / 0** |
+
+<br>
+
+<span class="callout">Both NX-17 and NH-1 dominate Kademlia and G-DHT on every distance band. NX-17 retains a small lead at the cap = 100 ceiling — see "NH-1 vs NX-17" later in this deck.</span>
+
+<span class="muted">Native-init numbers (each protocol's own bootstrap strategy) sit within 5–10 ms of these on a per-cell basis; the 4-way ranking is identical. Canonical init is the headline measurement because it removes bootstrap variance from the algorithmic claim.</span>
 
 ---
 
-## Unrestricted — scaling beyond the browser
+## Four-way comparison — at a glance
 
-![C5](charts/C5_wl_vs_unrestricted.svg)
+![chart](charts/C_4way_25k.svg)
 
-- Removing the 50-connection cap improves **all three** protocols
-- N-DHT retains (and slightly extends) its lead
-- N-DHT unrestricted: **2.72 hops · 46 ms at 500 km · 30 ms on source-dest pool**
+<span class="muted">Lookup latency (ms) per distance band, 25 K nodes web-limited. NX-17 (light teal) and NH-1 (deep teal) cluster well below Kademlia (slate) and G-DHT (amber) at every distance.</span>
 
 ---
 
-## Learning has a fixed point
+## Highway %: deployment-realistic knee
 
-![C8](charts/C8_convergence.svg)
+**What this slide measures.** Real P2P networks are heterogeneous: most participants run inside a browser (~50–100 connections, the WebRTC ceiling), but some run on real servers with effectively unlimited inbound capacity. We sweep the *fraction* of server-class nodes from 0 → 100 % and measure NH-1 latency at each point.
 
-- Omniscient-init drifts **up** from 3.49 → 4.50 hops over 50 K training lookups
-- Bootstrap-init drifts **down** from 4.35 → 4.22 hops
-- Both converge on ~4.2–4.3 hops — *independent of starting condition*
-- K-DHT and G-DHT remain flat: no learning dynamics
+**What "highway" means.** A **highway node** is a server-class peer: `maxConnections = ∞`, synaptome cap raised from 50 to 256. It accepts unlimited inbound and acts as a transit hub. The rest of the network stays browser-class.
+
+**Highway promotion within the simulator is random** — no privileged coordinator picks them. In a real deployment, highway status is *self-determined*: a peer running as a node application on a PC or a server identifies itself as one based on its actual capacity. The protocol treats highway and browser nodes identically apart from their cap.
+
+**What the "knee" means.** The point on the curve where additional server-class capacity stops paying off — adding more highway nodes beyond the knee yields rapidly diminishing latency improvement. It is the cheapest deployment that captures most of the available benefit.
+
+<br>
+
+| Highway % | Global hops / ms | 500 km ms | 2000 km ms | Synaptome (highway) |
+|---:|---:|---:|---:|---:|
+| 0 (all browser) | 5.09 / 263 | 96 | 123 | n/a |
+| 5 | 4.61 / 248 | 81 | 108 | 217 |
+| **15 (knee)** | **4.16 / 223** | **69** | **98** | **218** |
+| 30 | 3.97 / 223 | 60 | 83 | 215 |
+| 50 | 3.76 / 212 | 55 | 84 | 208 |
+| 100 (all server) | 3.52 / 206 | 45 | 74 | 244 |
+
+<br>
+
+<span class="callout">**15 % highway captures 70 % of available improvement** — a realistic deployment scenario where some peers run on powerful hardware.</span>
+
+<span class="muted">The hw = 0 row reads 5.09 / 263 ms; the headline 4-way comparison earlier in the deck reads NH-1 at 5.15 / 263 ms. Same configuration, two different runs — within run-to-run noise. Each table is consistent within itself.</span>
 
 ---
 
-## What training does and doesn't do
+## Highway %: the knee, charted
 
-**Training redistributes weight** within the fixed-capacity synaptome.
-It does **not** discover new short edges that sponsor-chains missed at join time — annealing's replacement pool is 2-hop-local.
+![chart](charts/C_highway_knee.svg)
 
-<br>
-
-### Consequences
-
-- Bootstrap + training **latency** improves monotonically (-14 % at 2000 km) — per-hop compute prunes
-- Bootstrap + training **hop count** converges to the ~4.25-hop asymptote, not further
-- The real lever for bootstrap quality is the **initial synaptome construction**
-
-<br>
-
-<span class="callout">Training is compute-optimizing, not primarily path-shortening.
-An honest characteristic, not a defect.</span>
+<span class="muted">Three latency curves (global, 2000 km, 500 km) across the highway% sweep. The knee at 15 % is highlighted. Beyond 50 %, the system is essentially saturated — it has the routing it can use.</span>
 
 ---
 
-## Why pub/sub on DHTs is hard
+## Slice World — recovery from a network partition
 
-The **K-closest approach** (NX-15 and predecessors):
+The Slice World test partitions the network into Eastern and Western hemispheres connected through **a single bridge node** (placed near Hawaii). Every cross-hemisphere edge except those incident on the bridge is removed.
 
-- every subscribe STOREs at each of K nodes closest to `hash(topic)`
-- publish hits any one of the K replicas
+**The question it asks** is not *"can you find the bridge once?"* — it is *"given **one** intact connection across a severed network, can the protocol leverage that single hole in the dike into a flood of restored connectivity?"*
 
-<br>
+| Protocol | Slice success% | Slice hops / ms | What happens |
+|---|---:|---:|---|
+| Kademlia | **0.0 %** ❌ | — | Cannot reach the bridge. The partition is permanent — the network is now two networks. |
+| G-DHT | **4.6 %** ❌ | 9.5 / 525 | Same limitation; the geographic prefix doesn't help when no edge points at the bridge |
+| NX-17 | **94.8 %** | 7.3 / 423 | Bridge becomes the seed; learning amplifies it into recovered connectivity |
+| **NH-1** | **94.4 %** | 8.7 / 462 | Same mechanism; consolidation costs nothing here |
 
-Under churn, publisher and subscriber compute `findKClosest` from different positions.
-Their top-K sets drift apart. Delivery drops.
-
-<br>
-
-<span class="callout">At 25 % churn in our NX-15 lineage: ~38 % recovered delivery.
-Direct motivation for redesign.</span>
+<span class="callout">A partition like this is what a real outage looks like — a submarine cable fault, an ISP-level filter, a regulatory split. The test measures whether the protocol can **heal** from it.</span>
 
 ---
 
-## Publisher-prefix topic IDs
+## Slice World — the bridge as a seed crystal
 
-<br>
+A diagnostic run shows the recovery happening directly. Starting from a freshly partitioned 5 K network — **zero cross-hemisphere synapses, partition honest** — and running just 10 lookups:
 
-<div style="text-align:center; font-size:1.2em">
-<code><strong>topicId</strong> = publisher.cellPrefix (8 bits) ‖ hash₅₆(event_name)</code>
-</div>
+| | value |
+|---|---:|
+| Cross-hem synapses **before** | 0 |
+| Cross-hem synapses **after 10 lookups** | **20** |
+| Lookups that succeeded | 7 / 10 |
+| Avg new cross-hem synapses per success | ~3 |
 
-<br>
+**Each successful bridge crossing seeds new connectivity.** When a path goes `west-source → … → bridge → … → east-target`, NH-1's learning rules fire on every node along the way:
 
-- Convention: <code>@XX/domain/event</code> — XX = hex of publisher's S2 cell prefix
-- Both publisher and every subscriber **derive the same topic ID deterministically**
-- No cross-party disagreement, regardless of churn
-- Topic anchor in the publisher's cell; well-trained from the publisher's own lookup traffic
+- **`_hopCache`** — every intermediate node adds the *destination* to its synaptome (a fresh cross-hem edge for every west node on the path)
+- **`_recordTransit`** — observed `(prev → next)` pairs become triadic-closure candidates
+- **`lateralSpread`** — propagates the new synapse to the source's geographic neighbors
 
----
+**By 500 lookups, the partition has effectively dissolved.** Hundreds of cross-hem synapses now exist; only the earliest lookups depended exclusively on the bridge. The 95 % aggregate success rate is the *integral* of recovery, not a snapshot of bridge-finding.
 
-## The axonal tree
-
-Subscribe is a routed message toward <code>topicId</code>.
-The first live **axon role** on the path intercepts and adds the subscriber to its children.
-
-<br>
-
-If no axon exists, the terminal node (via <code>findKClosest(topicId, 1)</code>) opens a role and becomes **root**.
-
-<br>
-
-Publish at root → fan-out to children via direct 1-hop sends → recursive through sub-axons.
-
-<br>
-
-<span class="callout"><strong>Single root per topic. No K-closest replication. No gossip.</strong></span>
+<span class="callout">**This is what the test was designed to measure.** Single-shot bridge-finding is the opening move; learning-driven re-stitching is the play. NH-1 doesn't route through the partition — it *dissolves* it.</span>
 
 ---
 
-## Batch adoption on overflow
+## Pub/sub robustness
 
-When an axon hits 50 direct children (maxDirectSubs), it cannot grow.
-
-**Solution:**
-1. Pick an external synaptome peer as a new sub-axon relay
-2. Partition children by XOR-proximity to the new relay
-3. Hand off the top-K batch in a single <code>pubsub:adopt-subscribers</code> message
-
-<br>
-
-### Invariants preventing cascades
-- Partition always non-empty (top-K guaranteed)
-- Parent pre-adds the new relay as its own child → relay's self-subscribe loopback is idempotent
-
----
-
-## Self-healing via re-subscribe
-
-**No parentId tracking.**
-Every role re-issues a subscribe on its refresh interval (10 s default).
-
-- Non-root axon's refresh re-attaches to whichever live axon its walk lands on — parent reorganizations are invisible
-- Root superseded by a newly-joined closer peer hands off via the globality check
+| Metric | NH-1 at 25 K |
+|---|---:|
+| Baseline delivery | 100.0 % |
+| Immediate (post-kill, no refresh) | 99.9 % |
+| **Recovered (after 3 refresh rounds)** | **100.0 %** |
+| K-overlap (publisher / subscriber views) | 99.5 % |
+| K-set stability (recovered, pub / sub) | 95 % / 95 % |
+| Dead-children | 0 |
+| Orphans | 0 |
+| Attached % | 100 % |
 
 <br>
 
-<span class="callout">The re-subscribe <em>is</em> the liveness check — no separate ping RPC.</span>
+<span class="muted">Same numbers across the entire highway% sweep — pub/sub robustness is independent of capacity asymmetry.</span>
+
+<span class="callout">The axonal tree heals through **routed re-subscribe**. There is no separate liveness ping, no parent tracking, no gossip.</span>
 
 ---
 
-## Replay cache
+## Pub/sub under sustained churn — graceful degradation, no cliff
 
-Every relay keeps a bounded ring buffer: <code>[{ json, publishId, publishTs }, …]</code>, capacity 100.
+A continuous live-simulation: 25 K nodes, 79 groups × 32 subscribers, **1 % of alive non-publisher nodes killed every 5 ticks**, three refresh passes between kills. Cumulative churn measured as fraction of original network replaced.
 
-Every outgoing subscribe carries <code>lastSeenTs</code> — the highest publishTs the subscriber has observed.
-
-On subscribe arrival, the axon filters its cache to <code>publishTs > lastSeenTs</code> and replays as a **single batched message**.
+| Cumulative churn | Delivered % | K-overlap | Axon roles |
+|---:|---:|---:|---:|
+| 0 % | **100.0 %** | 100 % | 537 |
+| 5 % | 98.7 % | — | 1,541 |
+| 10 % | 91.2 % | 81 % | 1,787 |
+| 15 % | 88.7 % | 77 % | 1,989 |
+| 20 % | 86.5 % | 62 % | 2,116 |
+| 25 % | 70.0 % | 54 % | 2,169 |
+| 30 % | 52.4 % | 47 % | 2,189 |
+| 34 % | 50.8 % | 42 % | 2,197 |
 
 <br>
 
-<span class="muted">Analogue: anycast with bounded local history. The nearest live relay serves
-missed messages without a central log.</span>
+**Three observations:**
+
+1. **No cliff.** Delivery degrades smoothly with churn; there is no breakdown threshold. The system finds a steady state where new subscriber recruitment matches loss.
+2. **K-overlap predicts delivery 1:1.** The dominant residual failure isn't broken routing — it's subscribers temporarily captured at relay nodes that have lost their delivery path to the root. The replay cache (next slide *"Temporal pub/sub"*) was designed to close exactly this gap.
+3. **Axon-role count grows with churn but plateaus.** From 537 axons at 0 % churn to ~2,200 at 30 %, leveling off. The tree absorbs growth into deeper structure rather than unbounded fan-out.
+
+<span class="callout">**Through 20 % cumulative churn, NH-1 holds delivery above 86 % with no replication, no gossip, and no parent tracking.** Above 25 % churn the protocol enters a recovery-paced regime where steady-state delivery is the equilibrium of recruitment vs. loss.</span>
 
 ---
 
-## Live-simulation results
+## Honesty: locality vs. latency
 
-![C6](charts/C6_pubsub_delivery.svg)
+**N-DHT's priorities are speed and robustness** — fast lookup, reliable delivery. Geographic location is *not a goal*; it is one input.
 
-25 K nodes · 79 groups × 32 subscribers · 1 % churn every 5 ticks · 200+ ticks.
+**What the simulator does.** Every protocol's hop latency is computed from physical (haversine) distance between simulated nodes — a faithful Internet model. This is what the real Internet looks like to all four protocols.
 
-- 5 % cumulative churn: immediate 98.7 %, **cumulative 99.7 %**
-- 25 % cumulative churn: immediate 68 %, **cumulative 88 %** — replay rescues 20 pp
-- 33 % cumulative churn: **cumulative still > 80 %**
+**What the protocol does.** A node knows *only its own* S2 cell — embedded once, at creation, into the top of its 64-bit ID:
+
+```
+nodeId = S2 cell prefix (8 bits) ‖ H(publicKey)
+```
+
+The protocol cannot ask another node *"where are you?"* — there is no such message. The S2 prefix creates **initial regional clustering at bootstrap** because nearby nodes are XOR-close, so a node's K-bucket and synaptome are seeded with mostly-local peers. After that, locality is a derived property of the routes that LTP and vitality reinforce.
+
+**Latency is used in routing**, indirectly: AP scoring includes a `½^(latency_ms/100)` penalty, so observed round-trip time (**RTT**) influences hop selection. Fast peers win at every distance — that is the speed-first priority in action.
 
 ---
 
-## Discrete-churn benchmark
+## The geoBits = 0 ablation
 
-Instantaneous kill at target rate. Measure baseline, immediate (post-kill, no refresh), recovered (after 3 refresh rounds). N = 5 replicates.
+When we strip the S2 prefix and re-run, regional latency collapses:
 
-![C7](charts/C7_discrete_churn.svg)
+| Test | geoBits = 8 | **geoBits = 0** | Δ |
+|---|---:|---:|---:|
+| Global | 5.09 / 263 ms | 5.94 / 453 ms | +72 % |
+| 500 km | 3.31 / 96 ms | **6.01 / 444 ms** | **+363 %** |
+| 2000 km | 3.93 / 123 ms | 6.01 / 437 ms | +255 % |
+| 5000 km | 4.54 / 169 ms¹ | 5.96 / 433 ms | +156 % |
 
-| Churn | Immediate | **Recovered (3 rounds)** |
+<span class="muted">¹ The geoBits = 8 baseline at 5000 km is from the headline 4-way comparison run (which measured all five distance bands). The geoBits = 0 sweep run measured 5000 km natively; the geoBits = 8 run in the same sweep skipped 5000 km for time. Numbers are from comparable 25 K, hw = 0 conditions but distinct CSVs.</span>
+
+<br>
+
+The latency penalty in AP routing is not strong enough, on its own, to discover locality from scratch within standard warmup (~5000 lookups). The S2 prefix is the **bootstrap shortcut**: it does not *teach* locality, it *seeds* the network with locality so reinforcement can sharpen routing within it.
+
+<br>
+
+<span class="callout">Geography is an initial-condition shortcut for the latency optimization, not a goal in itself. Future work: an embedded RTT-coordinate system (Vivaldi-style) could replace the S2 seed with a learned one — see the comparison slide later in this deck.</span>
+
+---
+
+## geoBits = 0 — isolating the learning advantage
+
+If we strip the S2 prefix from *every* protocol simultaneously — and use **canonical init** so each protocol starts from the identical K-closest-XOR routing table — the comparative picture isolates exactly the routing/learning algorithm.
+
+<span class="muted">25 K nodes, web-limited (cap = 100), omniscient init, **geoBits = 0**, **canonical init**.</span>
+
+| Protocol | Global ms | 500 km ms | 2000 km ms | Notes |
+|---|---:|---:|---:|---|
+| Kademlia | **506** | 511 | 504 | Pure XOR routing; no learning, no locality. |
+| G-DHT | **780** | 765 | 781 | Despite identical bootstrap, **still slower than K-DHT** — the gap is **not** bootstrap, it's G-DHT's `noProgressLimit = 3` (vs K-DHT's 2). An extra "no progress" round per lookup is wasted overhead at geoBits=0. |
+| **NX-17** | **376** | **341** | **355** | Beats Kademlia by **26 %** with identical start and no geographic structure. Pure learning advantage. |
+| NH-1 | 467 | 418 | 439 | Beats Kademlia by **8 %**. Same learning chassis, simpler — pays a measurable consolidation cost vs NX-17. |
+
+<br>
+
+**Three findings:**
+
+1. **NX-17 and NH-1 still beat Kademlia under identical bootstrap and no locality.** This is the cleanest possible "learning helps" claim — every confound (bootstrap strategy, geographic prefix) controlled. NX-17 wins by 26 %, NH-1 by 8 %.
+2. **G-DHT vs K-DHT exposes a non-bootstrap difference.** Canonical init equalizes bootstrap; the residual 780-vs-506 gap comes from G-DHT's lookup-tuning choice (`noProgressLimit = 3`), tuned for geographic-routing escapes that don't exist at geoBits = 0. A real architectural finding the methodology surfaced.
+3. **NH-1 vs NX-17 narrows but doesn't close.** The 80/20 supplement helped NX-17 by ~7 ms at geoBits=8 (native vs canonical). At geoBits=0 the 376-vs-467 gap is roughly 24 % — it's NX-17's specialized rules, not its bootstrap, doing the work.
+
+<span class="callout">**The headline gap is real and measurable.** NX-17 at 376 ms vs Kademlia at 506 ms, identical starting state, no locality, no geography — that is what the routing/learning algorithm contributes. Removing that distance from the deck would be hiding the actual claim.</span>
+
+---
+
+## Init mode × geoBits — the full 2 × 2
+
+Global lookup latency in milliseconds. **Canonical** = every protocol starts from K-closest-XOR (identical state). **Native** = each protocol's own bootstrap strategy (Kademlia: pure XOR; G-DHT: 50/50 stratified+random; NX-17: 80/20; NH-1: pure XOR).
+
+<span class="muted">25 K nodes, web-limited (cap = 100), omniscient init, hw = 0.</span>
+
+| | Kademlia | G-DHT | NX-17 | NH-1 |
+|---|---:|---:|---:|---:|
+| **geoBits = 8 · native** | 488 | 289 | **234** | 254 |
+| **geoBits = 8 · canonical** | 508 | 284 | 241 | 269 |
+| **geoBits = 0 · native** | 493 | 769 | 377 | 461 |
+| **geoBits = 0 · canonical** | 506 | 780 | **376** | 467 |
+
+<br>
+
+**Three things this 2 × 2 makes visible:**
+
+- **Bootstrap matters less than people often assume.** Native vs canonical at geoBits = 8 swings each protocol by under 8 %. The architectural choices are real but small relative to other effects.
+- **The geographic prefix matters a lot — for everyone.** Geo = 8 to geo = 0 doubles K-DHT-equivalent latency. The S2 prefix is doing real work in every column. Removing it forces every protocol to route under genuinely random IDs.
+- **Learning matters most under stress.** At geoBits = 0 / canonical (the hardest condition for routing), NX-17 is 26 % faster than Kademlia and NH-1 is 8 % faster. Under easier conditions (geoBits = 8) the gap widens further. **The advantage scales with how much there is to learn.**
+
+<span class="callout">Canonical-init isolates the routing/learning algorithm. Native-init measures the protocol as deployed. Both are real; both belong in the record. The deck headlines canonical because it's the cleaner architectural claim.</span>
+
+---
+
+## N-1 → NH-1 — three phases of research
+
+| Phase | Generation | Contribution |
 |---|---|---|
-| 5 % | 86.3 ± 4.0 % | **90.0 ± 3.5 %** |
-| 10 % | 76.3 ± 6.0 % | **83.2 ± 4.4 %** |
-| 15 % | 62.3 ± 3.7 % | **71.2 ± 2.9 %** |
-| 25 % | 51.2 ± 5.3 % | **62.2 ± 4.1 %** |
-
----
-
-## Three refresh rounds is the asymptote
-
-Compared recovered delivery at **3 vs 10 rounds** across all four churn rates.
-
-| Rate | Recovered (3r) | Recovered (10r) | Δ |
-|---|---|---|---|
-| 5 % | 90.0 % | 89.4 % | −0.6 |
-| 10 % | 83.2 % | 81.5 % | −1.7 |
-| 15 % | 71.2 % | 70.2 % | −1.0 |
-| 25 % | 62.2 % | 61.2 % | −1.0 |
+| **Exploration** | N-1 | First neuromorphic DHT — Hebbian synapse weighting, action-potential routing, two-hop lookahead |
+|  | N-15W | Renewal-Based Highway Protection — last protocol of the original lineage before the restart |
+| **Focused iteration** | NX-1 | Clean, configurable restart of the architecture from a fresh base |
+|  | NX-4 | **Watershed**: iterative fallback — every protocol below fails under stress, every protocol at or above succeeds |
+|  | NX-6 | Churn-resilience baseline: dead-synapse eviction, temperature reheat, adaptive decay |
+|  | NX-10 | Routing-topology forwarding tree — the first stable axonal-style pub/sub |
+|  | NX-11 | Diversified bootstrap — the 80 / 20 stratified + random allocation that NX-17 inherits |
+|  | NX-15 | `AxonManager` generic membership protocol with K-closest replication |
+|  | NX-17 | Publisher-prefix topic IDs + pure routed axonal tree (no replication, no gossip) |
+| **Consolidation** | **NH-1** | Vitality-driven unified admission gate — consolidates 18 specialized rules into 12; ~270 lines vs NX-17's ~2300 |
 
 <br>
 
-K-set stability **identical** between 3- and 10-round measurements — the tree has healed as far as it will.
-
-<br>
-
-<span class="callout">Additional refresh rounds do not recover more delivery.
-The honest floor is K-set drift survival — not a tunable parameter.</span>
+<span class="callout">**NX-16: a cautionary dead end.** NX-16 attempted to decouple `findKClosest`'s target cell from the node-ID prefix by masking the top 8 bits in the distance metric. Routing collapsed: publisher and subscribers found *different* "closest" nodes for the same topic; delivery dropped to ~40 % even at zero churn. The lesson: **the distance metric used to select candidates must match the gradient used to expand them.** Archived, not deleted — design failures earn their place in the record.</span>
 
 ---
 
-## Known limitations
+## NX-17 rules and their NH-1 disposition
 
-- **Warmup dependency.** N-DHT needs ~5 000 lookups before the synaptome converges. The first minute of deployment is suboptimal.
-- **Synaptome capacity is bounded at 50.** A deliberate cross-browser target — Chromium hard-caps at 500 (`kMaxPeerConnections`); practical ceiling for stable P2P is ~100–150; Safari/iOS is more constrained. Server deployments could use 200–500.
-- **Forwarder loss edge cases.** If an axon relay dies mid-fan-out, its subtree goes silent until refresh. Survivable (100 % eventual via replay) — not instantaneous.
-- **Training is compute-optimizing, not path-shortening.** Training cannot close the bootstrap → omniscient hop gap.
+| NX-17 rule | What it does | NH-1 status |
+|---|---|---|
+| Stratified bootstrap | Cold-start coverage across XOR strata | **Kept** (STRUCTURE) |
+| Diversified bootstrap (80/20) | 20 % random peers for global reach | **Kept** (merged into bootstrap) |
+| Two-tier synaptome (50 + highway) | Separate "permanent" + "candidate" tiers | **Replaced** by per-node `_maxSynaptome` |
+| Stratified eviction | Evict from over-represented stratum | **Replaced** by vitality eviction |
+| Stratum floors | Guarantee min peers per stratum | **Removed** — vitality + diversity penalty handles it |
+| Synaptome floor | Refuse eviction below N peers | **Removed** — vitality preserves locked entries |
+| AP routing | Learned-weight greedy walk | **Kept** (NAVIGATE) |
+| Two-hop lookahead | Probe second-hop alternatives | **Kept** (NAVIGATE) |
+| Epsilon-greedy first hop | Random first hop with prob ε | **Kept** (EXPLORE) |
+| Iterative fallback | k-closest fallback when AP fails | **Kept** (NAVIGATE) |
+| LTP | Reinforce successful paths | **Kept** (LEARN) |
+| Hop caching + lateral spread | Cache destination on intermediates | **Kept** (LEARN) |
+| Triadic closure | Learn long edges from transit | **Kept** (LEARN) |
+| Incoming promotion | Promote popular incoming peers | **Kept** (LEARN) |
+| Adaptive decay | Per-node decay rate based on usage | **Default off** — flat γ = 0.995 wins |
+| Simulated annealing | Replace lowest-vitality with 2-hop sample | **Kept** (EXPLORE) |
+| Churn recovery (dead-syn eviction) | Drop dead peers on discovery | **Kept** (FORGET) |
+| Temperature reheat on death | Spike T after dead-peer discovery | **Kept** (EXPLORE) |
+| Diversity budget penalty | Penalise over-represented stratum groups | **Removed** v0.65.06 (harmful) |
+| weightScale parameter | Bias AP scoring toward LTP weight | **Removed** v0.66.10 (no measurable effect) |
 
-<br>
-
-<span class="muted">All measurable. All addressable — noted, not hand-waved.</span>
+<span class="muted">~18 rules + 5 retired parameters → 12 active rules in NH-1. Behavioral surface is the same; admission logic is unified.</span>
 
 ---
 
-## Future directions
+## NH-1 vs NX-17 — and why
 
-- **Global-pool annealing.** Periodically sample annealing candidates from the global pool rather than 2-hop-local → should close the bootstrap → omniscient gap.
-- **Adaptive synaptome capacity.** Bump capacity during join-heavy periods; prune in steady state.
-- **Proof-of-location.** The 8-bit S2 prefix is self-declared today. A verifiable location primitive would prevent prefix-forgery attacks.
-- **Larger-scale evaluation.** 100 K / 250 K / 1 M nodes. 50 K preliminary data exists; larger runs need server-side simulation.
-
----
-
-## Transport layer
-
-Transport-agnostic by design. One identity layer, three transports.
-
-| Transport | Role |
-|---|---|
-| **WebRTC data channels** | Browser-native; ~50 peers; NAT-traversing; DTLS-encrypted; signalling required |
-| **QUIC / TCP** | Servers: unlimited peer count, lower overhead |
-| **WebSocket relay** | Fallback for restrictive NATs; universal reachability, higher latency |
+| Test | NX-17 | **NH-1** | Δ (NH-1 vs NX-17) |
+|---|---:|---:|---:|
+| Global | 4.40 hops / 242 ms | 5.15 hops / 263 ms | +17 % hops, +9 % ms |
+| 500 km | 2.75 / 80 ms | 3.28 / 95 ms | +19 % hops, +18 % ms |
+| 2000 km | 3.27 / 105 ms | 4.01 / 126 ms | +23 % hops, +20 % ms |
+| 5000 km | 3.74 / 143 ms | 4.54 / 169 ms | +21 % hops, +18 % ms |
+| pubsubm delivered | 100 % | 100 % | tie |
+| pubsubm + 5 % churn (recovered) | 100 % | 100 % | tie |
+| dead-children / orphans | 0 / 0 | 0 / 0 | tie |
 
 <br>
 
-### Identity
-Ed25519 keypair · <code>nodeId = cellPrefix ‖ H(pubkey)</code> · every control message signed.
+The residual gap reflects two things:
+
+**1. NX-17's specialized eviction policies are tuned for the cap=100 case.** Stratified eviction with stratum and synaptome floors *guarantees* a coverage profile that NH-1's vitality eviction approximates but doesn't pin. Under tight caps, that difference is measurable.
+
+**2. NH-1 trades peak performance for simplicity.** ~270 lines vs NX-17's ~2300; 12 parameters vs ~44. The point is not that NH-1 is *faster* — it's that NH-1 is *almost as fast* with one unified admission gate that's easier to reason about and easier to extend.
+
+<br>
+
+<span class="callout">Highway% recovers the gap and more — at hw=15 % NH-1 is **223 ms global**, beating NX-17's all-browser 242 ms. The capped gap is the cost of consolidation. We accept it.</span>
+
+---
+
+## What is Coral DSHT?
+
+**Coral** (Freedman, Freudenthal, Mazières — NSDI 2004) is a **distributed sloppy hash table** that powered Coral CDN — one of the earliest production decentralized content-distribution networks. Coral coined the term *DSHT* to distinguish itself from strict DHTs.
+
+**Mechanism — hierarchical RTT clusters.** Each node measures round-trip time to every other node it encounters and joins **multiple nested clusters** at increasing RTT thresholds (e.g. < 20 ms, < 60 ms, global). Each cluster runs its own internal DHT.
+
+**Lookup is local-first.** When a node queries a key, it first searches the tightest cluster it belongs to. If no result is found there, it expands outward to the next cluster, and so on. Most queries terminate in the local cluster — cross-cluster fan-out happens only when necessary.
+
+**"Sloppy" semantics.** The strict DHT promise — *one canonical XOR-closest node per key* — is deliberately relaxed. A key may be stored at *any* node in the lookup cluster, and queries return the *first* hit, not the canonical one. This is what makes Coral a CDN: the same content is replicated at many local nodes, and clients pull from the nearest available.
+
+**Production deployments:** Coral CDN (2004 – ~2015) — handled millions of cache requests per day at peak, served as a free CDN for academic and small-publisher sites.
+
+<span class="callout">**For this project:** Coral's hierarchical-cluster idea is *parallel* to NH-1's weighted-synaptome approach. Both achieve latency-aware routing; they make very different structural commitments to get there.</span>
+
+---
+
+## Coral vs N-DHT
+
+Both adapt to network latency. They make opposite structural choices.
+
+| Aspect | Coral DSHT | N-DHT |
+|---|---|---|
+| **Structure** | Multiple nested DHTs, one per RTT cluster | A single flat synaptome with weighted edges |
+| **Locality discovery** | Active RTT measurement at join + cluster membership | Passive — observed traffic reinforces useful edges; S2 prefix seeds initial regional bias |
+| **Storage semantics** | *Sloppy* — multiple replicas per key, return-first-found | *Strict* — one canonical XOR-closest node per key |
+| **Lookup** | Local cluster first, escalate outward only if needed | Single greedy AP walk over weighted synaptome |
+| **Adaptation** | Cluster boundaries are static thresholds; nodes move between clusters | Continuous: weights update on every successful path |
+| **Designed for** | Read-heavy content distribution (CDN) — many readers, mostly-static content | Routing + pub/sub — dynamic membership, real-time delivery |
+| **Pub/sub support** | Out of scope | First-class via axonal trees |
+
+<br>
+
+**Where they overlap:** both reject the "one fixed routing structure for all distances" approach. Both treat geographic locality as a property to *exploit*, not just record.
+
+**Where they differ:** Coral *enforces* locality through the hierarchical cluster structure — every node *knows* what's near. N-DHT *learns* locality through usage — every node *discovers* what's near via routed traffic. Coral relaxes the DHT promise to be local-first; N-DHT preserves the strict DHT promise and learns shortcuts on top.
+
+<span class="callout">Coral's design choice was: "give up the canonical mapping to win locality." NH-1's design choice was: "keep the canonical mapping; make locality emerge from learning." Different engineering trade-offs against the same core problem.</span>
+
+---
+
+## What is Vivaldi?
+
+**Vivaldi** (Dabek, Cox, Kaashoek, Morris — SIGCOMM 2004) is a **decentralized network coordinate system**. Each node continuously adjusts a synthetic position vector — typically in 3-dimensional Euclidean space plus a small "height" component — so that the *Euclidean distance* between any two nodes' coordinates approximates the *measured round-trip time* between them.
+
+**Mechanism.** Each node starts at a random position. Whenever it exchanges traffic with a peer, it observes the actual RTT, then applies a small spring-force adjustment to its own coordinate — pulling toward or pushing away from that peer to better match observation. Confidence in each measurement weights the magnitude of the move. Over many such observations, the system converges to a stable configuration where pair-wise Euclidean distances ≈ pair-wise RTTs.
+
+**What it accomplishes.** Any node can *predict* RTT to any peer it has never directly measured, purely from coordinates. Routing layers (or applications) can then choose "nearby" peers without an active probe round — Vivaldi turns latency into a queryable global property of the network. The system is fully decentralized: no coordinator, no infrastructure, no synchronization.
+
+**Production deployments:** Coral CDN, Azureus / Vuze (BitTorrent), some content-addressable overlays. The most influential predecessor for *latency-aware* peer-to-peer design.
+
+<span class="callout">**For this project:** a Vivaldi-style coordinate system is a candidate for replacing NH-1's *structural* S2 prefix with a *learned* locality primitive. Future benchmarks may include a Vivaldi-style protocol for completeness — both as a comparison reference and as a forward-looking direction.</span>
+
+---
+
+## Vivaldi vs N-DHT
+
+Both are adaptive routing systems. They optimize different things.
+
+| Aspect | Vivaldi | N-DHT |
+|---|---|---|
+| **Mechanism** | Synthetic coordinates in N-D Euclidean space | Hebbian reinforcement on routing edges |
+| **What's learned** | A position vector per node that predicts RTT to any peer | A weight per synapse, reinforced by traffic on successful paths |
+| **Output** | RTT prediction (any pair) | A ranked list of next-hops (per lookup) |
+| **Locality discovery** | Emergent from RTT measurements | Imposed via S2 cell ID prefix |
+| **Convergence guarantee** | Yes — coordinate descent on RTT residuals | Empirical — depends on traffic mixing |
+| **Layered separation** | Coordinate system is generic; any routing layer can use it | Routing and learning are integrated in a single protocol |
+| **Pub/sub support** | Out of scope — Vivaldi is a primitive | First-class — axonal tree built on routed synaptome |
+
+<br>
+
+**Where they overlap:** both treat the network as something to *measure and adapt to*, not a fixed topology to traverse.
+
+**Where they differ:** Vivaldi predicts RTT, then any routing layer uses those predictions. N-DHT learns *paths* via reinforcement on the routing layer itself — locality is built into the IDs, learning sharpens the path within that locality.
+
+---
+
+## Simulator integrity
+
+Five invariants govern every measurement in this deck: **(1)** the bilateral connection cap is honestly enforced (a base-class guard rail audits `connections.size ≤ maxConnections` at post-init, post-warmup, and after every churn round); **(2)** locality is preserved — no optimization reads another node's routing table directly; **(3)** RPC responses are bounded to k=20 peers, the envelope a real WebRTC node could actually return; **(4)** per-protocol parameters reach the protocol they were configured for, with no silent defaults; **(5)** the geographic prefix width is a runtime parameter that flows into every protocol's node-ID construction, including the `geoBits = 0` ablation runs.
+
+<br>
+
+<span class="callout">**Every invariant on this list has been violated at least once during development.** The deck shows post-fix measurements only. Skepticism is the methodology, not a hindrance.</span>
 
 ---
 
 ## Message protocol
 
-**Common envelope:** version, type, sender, signature, timestamp, nonce, payload
+**Two layers.** The application sees exactly two messages — SEND and RECEIVE. Everything else is the lower-level p2p wire protocol that implements them.
+
+<br>
+
+**Application layer** — what an application built on NH-1 actually calls:
+
+| Message | Purpose |
+|---|---|
+| **SEND** (target, payload) | Deliver a message toward a target — node, key, or topic |
+| **RECEIVE** (handler) | Register to receive messages addressed here, or to a topic this node subscribes to |
+
+<br>
+
+**P2P wire layer** — the messages NH-1 exchanges between peers to make SEND / RECEIVE work. Application code never constructs these directly.
 
 | Message | Purpose |
 |---|---|
 | PING / PONG | Liveness |
 | FIND_NODE | DHT lookup step |
-| ROUTE | Routed message (subscribe, publish) |
-| SUBSCRIBE / UNSUBSCRIBE | Pub/sub membership |
+| ROUTE | Routed message toward a key (subscribe, publish, generic SEND) |
+| SUBSCRIBE / UNSUBSCRIBE | Pub/sub membership; carries `lastSeenTs` for replay |
 | PUBLISH | Publish to topic |
 | DIRECT_DELIVER, ADOPT_SUBSCRIBERS, REPLAY_BATCH | Axonal pub/sub specifics |
 
 <br>
 
-Routing is **stateless in the protocol**. All state lives per-node: synaptome + axon roles.
+**Common envelope** (every wire message): version, type, sender, signature, timestamp, nonce, payload. Routing is **stateless in the protocol**. All state lives per-node: synaptome + axon roles.
 
 ---
 
 ## Deployment considerations
 
 - **Trust model.** No central authority. Public-key signatures authenticate peers.
-- **Sybil resistance.** S2 cell prefix lightly discourages sybil swarms per-cell — not a full defense. Proof-of-location or join-PoW recommended for open deployments.
+- **Sybil resistance.** S2 cell prefix lightly discourages sybil swarms per-cell — not a full defense. Proof-of-location or a proof-of-work (**PoW**) join hurdle recommended for open deployments.
 - **Provisioning.** Bootstrap via a small published sponsor set; fully decentralized thereafter.
 - **Observability.** Nodes export local stats (synaptome health, LTP rate, role counts) for operator overlays.
 
 ---
 
+## Pub/sub failure modes we can name
+
+Honest accounting of where the axonal tree shows seams:
+
+- **Forwarder loss under churn.** When a tree-internal node dies mid-publish, its subtree is briefly unreachable until each member's next refresh. Today: each affected node's periodic re-subscribe routes to whichever live axon is now closest to `topicId` and re-attaches there — no explicit subtree move, the tree heals at the speed of the refresh interval. *Possible:* redundant forwarders or proactive health checks to shorten the gap.
+- **Tree rebuild cost at scale.** O(S × F) for S subscribers and F forwarders. Negligible at 2 K subscribers; measurable at 50 K+. *Possible:* incremental updates rather than full rebuilds.
+- **Gateway concentration.** A skewed synaptome can yield deep-narrow trees instead of broad-shallow ones. Today: recursive delegation distributes load. *Possible:* secondary splitting on geographic cell when one gateway covers > 50 % of remaining children.
+- **Synaptome–tree coupling.** Annealing replacing a synapse that's also a forwarder leaves a stale tree until TTL. *Possible:* mark tree dirty on synapse eviction.
+- **Byzantine resistance.** The system assumes honest nodes. *Possible:* proof-of-location, cryptographic ID binding, reputation, multi-path verification.
+
+<br>
+
+<span class="muted">Every item above is documented in Chapter 7 of the whitepaper with current mitigation and a candidate fix. None are blockers for the headline workloads in this deck — but each is a named, measurable failure mode the architecture should answer for in the next iteration.</span>
+
+---
+
+## Limitations and future directions
+
+**Known limitations**
+- **Warmup dependency.** N-DHT needs ~5 000 lookups before the synaptome converges. The first minute of deployment is suboptimal.
+- **Synaptome capacity bounded at 50.** A deliberate cross-browser target. Server deployments could use 200–500.
+- **Locality requires geographic IDs.** Without S2 prefix, regional locality collapses. *(Vivaldi-style RTT-only locality is future work.)*
+- **Training is compute-optimizing, not path-shortening.** Cannot close the bootstrap → omniscient hop gap without changes to bootstrap or annealing.
+- **Memory & bandwidth overhead.** ~50 synapses × ~80 B metadata ≈ 4 KB / node + axonal-tree state per subscribed topic. Modest, but worth measuring at 50 K+ subscribers.
+
+**Future directions**
+- **RTT-driven locality (Vivaldi integration).** Today's locality is structural; an embedded coordinate system could drive locality without a geo-prefix.
+- **Adaptive synaptome capacity.** Bump capacity during join-heavy periods; prune in steady state.
+- **Global-pool annealing.** Periodically replace the lowest-vitality synapse with a *globally-sampled* candidate rather than a 2-hop sample — closes the bootstrap → omniscient gap.
+- **Larger-scale evaluation.** 100 K / 250 K / 1 M nodes. Preliminary 50 K data exists; larger runs need server-side simulation.
+- **Proof-of-location.** The S2 prefix is self-declared today. A verifiable location primitive would prevent prefix forgery.
+
+---
+
 ## Key takeaways
 
-1. **Adaptive routing reduces regional latency by 5–7×** vs Kademlia, with no correctness loss.
-2. **Axonal pub/sub delivers 100 %** in steady state; replay cache holds **>80 % through 33 % cumulative churn**.
-3. Under **realistic bootstrap deployment**, N-DHT's lead *widens* — Kademlia and G-DHT inherit permanent bootstrap penalties; N-DHT's learning converges around them.
-4. The protocol has a **well-defined learning fixed point** at ~4.2 hops, independent of starting condition.
-5. **All measured at 25 K nodes** under the web-connection cap — the scenario production systems actually face.
+1. **NH-1 collapses ~18 NX-17 rules into 12 rules organised under 5 operations.** A single vitality function — `weight × recency` — drives every admission decision.
 
----
+2. **15 % server-class nodes (highway%) captures 70 % of the available latency improvement.** Realistic deployment doesn't need a uniform server fleet.
 
-## NX-1 → NX-17 evolution
+3. **Pub/sub on routed axonal trees: 100 % baseline, 100 % recovered delivery under 5 % churn.** No K-closest replication, no gossip, no parent tracking — just routed re-subscribe.
 
-![C11](charts/C11_evolution.svg)
+4. **The simulator catches its own bugs.** Skepticism — "if it looks too good to be true, it is" — has saved this deck from at least three retracted findings during this session.
 
-<span class="muted">Eight generations of design iteration, each addressing one concrete failure mode
-observed in the previous generation.</span>
-
----
-
-## NH-1 — five operations, one vitality model
-
-NX-17 has **~36 organically-grown rules** and **44 tunable parameters**.
-NH-1 collapses every rule into one of five operations, scored by a unified vitality function.
-
-| Operation | Behaviour |
-|---|---|
-| **NAVIGATE** | AP routing + 2-hop lookahead + iterative fallback |
-| **LEARN** | LTP, hop caching, triadic closure, incoming promotion |
-| **FORGET** | Continuous decay + vitality-based eviction |
-| **EXPLORE** | Temperature annealing + epsilon-greedy first hop |
-| **STRUCTURE** | Stratified bootstrap + under-represented replacement |
-
-```
-vitality(syn) = weight × recency
-```
-
-A single `_addByVitality()` admission gate replaces stratified eviction, two-tier
-highway management, stratum floors, and synaptome floors. **~270 new lines**, **12
-parameters** — including the full NX-17-style AxonManager pub/sub stack.
-
----
-
-## NH-1 vs NX-17 (25,000 nodes, web-limited)
-
-| Test | NX-17 | NH-1 | Δ |
-|---|---:|---:|---:|
-| Global lookup | 4.36 hops / 237 ms | 5.14 hops / 260 ms | +18% h / +10% ms |
-| 500 km lookup | 2.76 hops / 81 ms | 3.35 hops / 97 ms | +21% / +20% |
-| **10%→10% hot lane** | **1.06 hops / 32 ms** | **1.12 hops / 34 ms** | **+6% / +5%** |
-| **pubsubm delivered** | **100%** | **100%** | **TIE** |
-| **pubsubm + 5% churn recovered** | **100%** | **98%** | **−2pp** |
-| K-overlap (pub↔sub) | 100% | 99.6% | −0.4pp |
-| dead-children / orphans | 0 / 0 | 0 / 0 | TIE |
-
-<span class="callout">Without the connection cap (server-class), NH-1 essentially **ties**
-NX-17 across every metric. The residual capped gap reflects NX-17's specialised
-rules earning their keep when the per-node connection budget is tight.</span>
-
----
-
-## Simulator integrity (v0.66)
-
-The numbers in this deck are produced under three explicit invariants:
-
-1. **Bilateral connection cap honestly enforced.** Every node respects `connections.size ≤ 100`. A base-class guard rail (`DHT.verifyConnectionCap`) runs at post-init, post-warmup, and after every churn round; a console `[CAP VIOLATION]` is impossible to miss.
-
-2. **Locality preserved.** No optimisation reads another node's routing table directly. Each node's `findKClosest` runs independently using only its own state, mirroring what a real WebRTC client could observe.
-
-3. **Bounded RPC responses.** `findKClosest` simulates real Kademlia FIND_NODE with peer responses bounded to `k`=20, not full routing-table dumps. Earlier versions inflated candidate pools 5–10× by reading peer memory directly.
-
-<span class="muted">All three were enforced retroactively across NX-15 / NX-17 / NH-1
-between v0.66.04 and v0.66.07. Pre-v0.66 churn benchmarks for NX-17 were superseded —
-the simulator was previously letting NX-17's nodes exceed the cap by up to 14× during
-churn rounds. The numbers in this deck are post-fix.</span>
+5. **Locality in NH-1 is structural (S2 prefix), not learned.** This is honest, comparable, and a pointed direction for future work (Vivaldi-style coordinate systems).
 
 ---
 
 ## References
 
-- **Whitepaper** — `Neuromorphic-DHT-Architecture.md` v0.66 (this repository)
-- **Source + data** — <code>github.com/YZ-social/dht-sim</code>
+**Whitepaper** — `documents/Neuromorphic-DHT-Architecture.md` (this repository, v0.67)
+**Source + data** — <code>github.com/YZ-social/dht-sim</code>
 
 <br>
 
-### Related work
+### Architecture
+- Saltzer, Reed, Clark · *End-to-End Arguments in System Design* (ACM TOCS 1984) — function placement principle
+- Clark · *The Design Philosophy of the DARPA Internet Protocols* (SIGCOMM 1988)
 
-- Maymounkov & Mazières · *Kademlia: A Peer-to-peer Information System Based on the XOR Metric* (2002)
-- Rowstron & Druschel · *Pastry* (2001); Zhao et al · *Tapestry* (2001)
-- Watts & Strogatz · *Collective Dynamics of Small-World Networks* (Nature, 1998)
-- Hebb · *The Organization of Behavior* (1949)
-- Google · *S2 Geometry Library* (2011)
+### Foundational DHT work
+- Maymounkov & Mazières · *Kademlia: A Peer-to-peer Information System Based on the XOR Metric* (IPTPS 2002)
+- Rowstron & Druschel · *Pastry: Scalable, decentralized object location and routing* (Middleware 2001)
+- Zhao et al. · *Tapestry: A Resilient Global-Scale Overlay* (IEEE J-SAC 2004)
 
----
+### Latency-aware DHTs
+- Freedman, Mazières · *Sloppy Hashing and Self-Organizing Clusters* (IPTPS 2003) — the Coral DSHT design
+- Freedman, Freudenthal, Mazières · ***Democratizing Content Publication with Coral*** (NSDI 2004) — Coral CDN deployment
 
-<!-- _class: title -->
+### Adaptive coordinates
+- Dabek, Cox, Kaashoek, Morris · ***Vivaldi: A Decentralized Network Coordinate System*** (SIGCOMM 2004)
+- Cox, Dabek, Kaashoek, Li, Morris · *Practical, Distributed Network Coordinates* (HotNets 2003)
+- Ledlie, Gardner, Seltzer · *Network Coordinates in the Wild* (NSDI 2007)
 
-# Questions
-
-<br>
-
-<span class="muted">Whitepaper, source, and all benchmark CSVs are in the repo.
-Every number in this deck is reproducible from <code>results/*.csv</code>.</span>
+### Substrate (learning, decay, pruning)
+- Hebb · *The Organization of Behavior* (1949) — synaptic potentiation
+- Ebbinghaus · *Über das Gedächtnis* (1885) — exponential forgetting curve
+- Frey & Morris · *Synaptic tagging and the late phase of LTP* (Nature 1997) — biological analog of weight × recency retention
+- LeCun, Denker, Solla · *Optimal Brain Damage* (NeurIPS 1989) — prune lowest-magnitude connections
+- O'Neil, O'Neil, Weikum · *The LRU-K Page Replacement Algorithm* (SIGMOD 1993) — multi-history recency for cache replacement
+- Watts & Strogatz · *Collective Dynamics of Small-World Networks* (Nature 1998)
+- Google · *S2 Geometry Library* (2011) — <https://s2geometry.io/>

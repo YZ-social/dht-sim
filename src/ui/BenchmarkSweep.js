@@ -302,6 +302,33 @@ export class BenchmarkSweep {
       // Clear any prior override so subsequent runs use defaults
       if (window.__sim) delete window.__sim._nh1RulesOverride;
     }
+
+    // Directional sub-caps (v0.67.02). Same override pattern — main.js
+    // reads window.__sim._max{Outgoing,Incoming}Override before falling
+    // back to params from Controls. Default Infinity means "no directional
+    // gate", preserving backward-compat with single-cap experiments.
+    if (run.maxOutgoing !== undefined) {
+      window.__sim ??= {};
+      window.__sim._maxOutgoingOverride = run.maxOutgoing;
+    } else if (window.__sim) {
+      delete window.__sim._maxOutgoingOverride;
+    }
+    if (run.maxIncoming !== undefined) {
+      window.__sim ??= {};
+      window.__sim._maxIncomingOverride = run.maxIncoming;
+    } else if (window.__sim) {
+      delete window.__sim._maxIncomingOverride;
+    }
+
+    // initMode override (v0.68.00). 'canonical' forces every protocol's
+    // buildRoutingTables down a single shared XOR-fill path, eliminating
+    // bootstrap-strategy variance from cross-protocol comparisons.
+    if (run.initMode !== undefined) {
+      window.__sim ??= {};
+      window.__sim._initModeOverride = run.initMode;
+    } else if (window.__sim) {
+      delete window.__sim._initModeOverride;
+    }
   }
 
   _updateSweepStatus() {

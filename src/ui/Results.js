@@ -48,7 +48,20 @@ export class Results {
       rows.push(`ID bits,${p.bits ?? ''}`);
       rows.push(`Node delay (ms),${p.nodeDelay ?? ''}`);
       if (p.webLimit != null) rows.push(`Web limit,${p.webLimit ? 'yes' : 'no'}`);
+      if (p.maxConnections != null && p.webLimit) rows.push(`Max connections,${p.maxConnections}`);
+      if (p.highwayPct  != null) rows.push(`Highway %,${p.highwayPct}`);
       if (p.geoBits  != null) rows.push(`G-DHT Bits,${p.geoBits}`);
+      // Directional sub-caps (v0.67.02). Only emitted when set via sweep
+      // override or future UI control.
+      const _maxOutOv = (typeof window !== 'undefined') ? window.__sim?._maxOutgoingOverride : null;
+      const _maxInOv  = (typeof window !== 'undefined') ? window.__sim?._maxIncomingOverride  : null;
+      if (_maxOutOv != null) rows.push(`Max outgoing,${_maxOutOv}`);
+      if (_maxInOv  != null) rows.push(`Max incoming,${_maxInOv}`);
+      // Init mode (v0.68.00). 'canonical' forces shared XOR-fill bootstrap
+      // for cross-protocol comparison; 'native' lets each protocol use its
+      // own bootstrap strategy (G-DHT 50/50, NX-11 80/20, etc.).
+      const _initOv = (typeof window !== 'undefined') ? window.__sim?._initModeOverride : null;
+      if (_initOv != null) rows.push(`Init mode,${_initOv}`);
     }
     for (const [k, v] of extraRows) rows.push(`${k},${v}`);
     return rows.join('\r\n');
@@ -1360,6 +1373,7 @@ export class Results {
                          : s.type === 'srcdest'       ? `srcdest_${s.srcPct}_${s.destPct}`
                          : s.type === 'churn'         ? `churn_${s.rate}`
                          : s.type === 'continent'     ? `cont_${s.src}_${s.dst}`
+                         : s.type === 'slice'         ? 'slice'
                          : s.type === 'pubsub'        ? 'pubsub'
                          : s.type === 'pubsubm'       ? 'pubsubm'
                          : s.type === 'pubsubm-local' ? 'pubsubm-local'
@@ -1371,6 +1385,7 @@ export class Results {
                          : s.type === 'srcdest'       ? `${s.srcPct}%→${s.destPct}%`
                          : s.type === 'churn'         ? `${s.rate}% churn`
                          : s.type === 'continent'     ? `${contName[s.src]??s.src}→${contName[s.dst]??s.dst}`
+                         : s.type === 'slice'         ? 'Slice World'
                          : s.type === 'pubsub'        ? 'Pub/Sub'
                          : s.type === 'pubsubm'       ? 'Pub/Sub (Membership)'
                          : s.type === 'pubsubm-local' ? `Pub/Sub (Local ${s.radius ?? 2000}km)`
@@ -1692,6 +1707,7 @@ export class Results {
                             : s.type === 'srcdest'    ? `${s.srcPct}%→${s.destPct}%`
                             : s.type === 'churn'      ? `${s.rate}%churn`
                             : s.type === 'continent'  ? `${s.src}→${s.dst}`
+                            : s.type === 'slice'      ? 'slice'
                             : s.type === 'pubsub'     ? 'pubsub'
                             : s.type === 'pubsubm'    ? 'pubsubm'
                             : s.type === 'pubsubm-local' ? `pubsubm-local-${s.radius ?? 2000}km`
@@ -1703,6 +1719,7 @@ export class Results {
                             : s.type === 'srcdest'    ? `srcdest_${s.srcPct}_${s.destPct}`
                             : s.type === 'churn'      ? `churn_${s.rate}`
                             : s.type === 'continent'  ? `cont_${s.src}_${s.dst}`
+                            : s.type === 'slice'      ? 'slice'
                             : s.type === 'pubsub'     ? 'pubsub'
                             : s.type === 'pubsubm'    ? 'pubsubm'
                             : s.type === 'pubsubm-local' ? 'pubsubm-local'

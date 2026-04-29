@@ -98,18 +98,40 @@ export class GeographicDHT extends KademliaDHT {
    *   Inter-cell: k peers per bucket
    *   Random: k additional random global peers
    */
-  buildRoutingTables({ bidirectional = true, maxConnections = Infinity } = {}) {
+  buildRoutingTables({
+    bidirectional  = true,
+    maxConnections = Infinity,
+    initMode       = 'native',
+  } = {}) {
     this.bidirectional  = bidirectional;
     this.maxConnections = maxConnections;
+    this.initMode       = initMode;
 
-    const k            = this.k;
-    const intraBuckets = 64 - this.geoBits;   // geo8 → 56, geo16 → 48
-    const sorted       = [...this.nodeMap.values()]
+    const k      = this.k;
+    const sorted = [...this.nodeMap.values()]
       .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-    const allNodes     = [...this.nodeMap.values()];
 
     // Propagate global connection cap to every node
     for (const node of sorted) node.maxConnections = maxConnections;
+
+    // ── CANONICAL INIT (v0.68.00) ────────────────────────────────────────────
+    // Skip G-DHT's stratified 3-layer allocation. Use pure K-closest XOR
+    // fill instead — same starting state as Kademlia and NH-1. Measures
+    // the routing layer in isolation from the bootstrap strategy.
+    if (initMode === 'canonical') {
+      const processingOrder = [...sorted].sort(() => Math.random() - 0.5);
+      for (const node of processingOrder) {
+        for (const peer of buildXorRoutingTable(node.id, sorted, k, maxConnections)) {
+          node.addToBucket(peer);
+          if (bidirectional) peer.addToBucket(node);
+        }
+      }
+      return;
+    }
+
+    // ── NATIVE INIT — G-DHT's stratified 3-layer allocation ──────────────────
+    const intraBuckets = 64 - this.geoBits;   // geo8 → 56, geo16 → 48
+    const allNodes     = [...this.nodeMap.values()];
 
     for (const node of sorted) {
       const selected = new Set([node.id]);

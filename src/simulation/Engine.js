@@ -1,5 +1,6 @@
 import { randomU64, computeStats, haversine, continentOf, buildXorRoutingTable } from '../utils/geo.js';
 import { PubSubAdapter, topicIdFor, topicIdForPrefixed } from '../pubsub/PubSubAdapter.js';
+import { applySliceWorldPartition, findNodeNearest } from '../dht/sliceWorld.js';
 
 /**
  * SimulationEngine – orchestrates lookup tests and churn tests on a DHT.
@@ -416,6 +417,7 @@ export class SimulationEngine {
                          : s.type === 'srcdest'   ? `srcdest_${s.srcPct}_${s.destPct}`
                          : s.type === 'churn'     ? `churn_${s.rate}`
                          : s.type === 'continent' ? `cont_${s.src}_${s.dst}`
+                         : s.type === 'slice'     ? 'slice'
                          : s.type === 'pubsub'    ? 'pubsub'
                          : 'global';
     const specLabel = s => s.type === 'regional'  ? `${s.radius} km`
@@ -424,6 +426,7 @@ export class SimulationEngine {
                          : s.type === 'srcdest'   ? `${s.srcPct}%→${s.destPct}%`
                          : s.type === 'churn'     ? `${s.rate}% churn`
                          : s.type === 'continent' ? `${s.src}→${s.dst}`
+                         : s.type === 'slice'     ? 'Slice World'
                          : s.type === 'pubsub'    ? 'Pub/Sub'
                          : 'Global';
 
@@ -1465,6 +1468,151 @@ export class SimulationEngine {
           continue;
         }
 
+        // ── Slice World (network partition with single bridge node) ─────────
+        // Adversarial topology: prune every cross-hemisphere edge except those
+        // through the Hawaii-equivalent bridge, then run cross-hemisphere
+        // lookups.
+        //
+        // v0.67.07 — single-phase test with rich diagnostics:
+        //   • cross-hem synapse count BEFORE the test (should be 0)
+        //   • cross-hem synapse count AFTER the test — non-zero means the
+        //     protocol's learning rules re-stitched the partition during
+        //     the run. This is the smoking gun for whether 94 % is "raw
+        //     bridge-finding" or "learning recovery".
+        //   • bridge-on-path % per successful lookup
+        //   • cross-hem leak-edges (cross-hem hops not touching the bridge)
+        //
+        // No per-lookup re-partition: that variant was prohibitively slow at
+        // 25 K nodes (each re-prune walks every synaptome). The post-Phase
+        // cross-hem count gives us the same answer at a fraction of the cost.
+        if (spec.type === 'slice') {
+          // v0.67.08 — minimal bisection diagnostic. Each step posts a
+          // checkpoint to research.log so we can see exactly where the
+          // hang occurs.
+          const log = (msg) => {
+            const entry = `[SLICE-STEP ${def.key}] ${msg}`;
+            if (typeof console !== 'undefined') console.log(entry);
+            if (typeof fetch !== 'undefined') {
+              try {
+                fetch('/api/log', {
+                  method:  'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body:    JSON.stringify({ entry }),
+                }).catch(() => {});
+              } catch {}
+            }
+          };
+
+          log('A: entered slice block');
+
+          const bridge = findNodeNearest(dht, 19.82, -155.47);
+          if (!bridge) {
+            data[def.key][specKey(spec)] = { unsupported: true, reason: 'no nodes' };
+            onStep(`${tag} · Slice World — n/a`);
+            continue;
+          }
+          log(`B: bridge found, applying partition`);
+
+          applySliceWorldPartition(dht, bridge.id);
+          log('C: partition applied');
+
+          // Cross-hem count BEFORE any further work.
+          let preCount = 0;
+          for (const node of dht.nodeMap.values()) {
+            if (!node.alive || node.id === bridge.id) continue;
+            const nodeWest = node.lng < 0;
+            if (node.synaptome) {
+              for (const peerId of node.synaptome.keys()) {
+                if (peerId === bridge.id) continue;
+                const peer = dht.nodeMap.get(peerId);
+                if (peer && (peer.lng < 0) !== nodeWest) preCount++;
+              }
+            }
+            if (node.buckets) {
+              for (const bucket of node.buckets) {
+                for (const peer of bucket.nodes) {
+                  if (peer.id === bridge.id) continue;
+                  if ((peer.lng < 0) !== nodeWest) preCount++;
+                }
+              }
+            }
+          }
+          log(`D: pre-test cross-hem count = ${preCount}`);
+
+          const alive   = dht.getNodes().filter(n => n.alive);
+          const western = alive.filter(n => n.lng <  0 && n.id !== bridge.id);
+          const eastern = alive.filter(n => n.lng >= 0 && n.id !== bridge.id);
+          log(`E: pools built (western=${western.length}, eastern=${eastern.length})`);
+
+          // Hard cap of 10 lookups for diagnostic purposes — we just want to
+          // know whether each lookup terminates and how long it takes. Will
+          // raise to 500 once we know the per-lookup latency profile.
+          const SLICE_LIMIT = 10;
+          let ok = 0, fail = 0;
+          const hops = [];
+          const time = [];
+          for (let i = 0; i < SLICE_LIMIT; i++) {
+            if (!this.running) break;
+            const src = western[Math.floor(Math.random() * western.length)];
+            const dst = eastern[Math.floor(Math.random() * eastern.length)];
+            const t0 = Date.now();
+            try {
+              const r = await dht.lookup(src.id, dst.id);
+              const dt = Date.now() - t0;
+              if (r && r.found) {
+                ok++;
+                hops.push(r.hops);
+                time.push(r.time);
+                log(`F${i}: lookup ok (wall=${dt}ms, sim-hops=${r.hops}, sim-ms=${r.time?.toFixed(1) ?? '?'})`);
+              } else {
+                fail++;
+                log(`F${i}: lookup FAILED (wall=${dt}ms, found=${r?.found ?? '?'})`);
+              }
+            } catch (e) {
+              const dt = Date.now() - t0;
+              fail++;
+              log(`F${i}: lookup THREW (wall=${dt}ms, err=${e?.message ?? String(e)})`);
+            }
+            // Yield to the event loop after EVERY lookup so the heartbeat
+            // polling interval has a chance to fire.
+            await this._yield();
+          }
+          log(`G: lookup loop done (ok=${ok}, fail=${fail})`);
+
+          // Cross-hem count AFTER.
+          let postCount = 0;
+          for (const node of dht.nodeMap.values()) {
+            if (!node.alive || node.id === bridge.id) continue;
+            const nodeWest = node.lng < 0;
+            if (node.synaptome) {
+              for (const peerId of node.synaptome.keys()) {
+                if (peerId === bridge.id) continue;
+                const peer = dht.nodeMap.get(peerId);
+                if (peer && (peer.lng < 0) !== nodeWest) postCount++;
+              }
+            }
+            if (node.buckets) {
+              for (const bucket of node.buckets) {
+                for (const peer of bucket.nodes) {
+                  if (peer.id === bridge.id) continue;
+                  if ((peer.lng < 0) !== nodeWest) postCount++;
+                }
+              }
+            }
+          }
+          log(`H: post-test cross-hem count = ${postCount} ${postCount > preCount ? '(re-stitched!)' : '(no re-stitch)'}`);
+
+          const total = ok + fail;
+          data[def.key][specKey(spec)] = {
+            hops:        computeStats(hops),
+            time:        computeStats(time),
+            successRate: total > 0 ? ok / total : 0,
+            totalRuns:   total,
+          };
+          onStep(`${tag} · Slice ✓ (ok=${ok}/${total}, cross-hem ${preCount}→${postCount})`);
+          continue;
+        }
+
         const cellLabel = `${tag} · ${specLabel(spec)}`;
         onStart(`${cellLabel}…`);
 
@@ -1475,7 +1623,7 @@ export class SimulationEngine {
           regionalRadius:  spec.type === 'regional' ? spec.radius : 2000,
           destNodes:       sharedDestNodes,    // pre-built pool (null for non-dest/source specs)
           sourceNodes:     sharedSourceNodes,  // pre-built pool (null for non-source specs)
-          destRandom:      spec.type === 'continent', // random dst for continent, XOR-nearest for dest
+          destRandom:      spec.type === 'continent' || spec.type === 'slice',
           hotPct:          100,
           managed:         true,  // don't let runLookupTest reset this.running
         });

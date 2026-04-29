@@ -90,8 +90,13 @@ export class NeuromorphicDHTNH1 extends DHT {
     this.T_INIT              = 1.0;
     this.T_MIN               = 0.05;
     this.T_REHEAT            = 0.5;
-    this.GEO_BITS            = 8;
-    this.GEO_REGION_BITS     = r.geoRegionBits ?? 4;
+    // GEO_BITS controls how many top bits of the 64-bit node ID encode the
+    // S2 Hilbert-curve cell prefix for the node's lat/lng. Read from the
+    // user's `geoBits` config (defaulting to 8) — previously hardcoded to 8,
+    // which silently ignored geoBits=0 ablation requests and made
+    // "without geo-prefix" benchmarks dishonest. v0.66.14 fix.
+    this.GEO_BITS            = config.geoBits ?? 8;
+    this.GEO_REGION_BITS     = r.geoRegionBits ?? Math.min(4, this.GEO_BITS);
     this.STRATA_GROUPS       = 16;
     this.ANNEAL_LOCAL_SAMPLE = 50;
     this.RECENCY_HALF_LIFE   = r.recencyHalfLife ?? 50;
@@ -161,8 +166,28 @@ export class NeuromorphicDHTNH1 extends DHT {
   // STRUCTURE: Bootstrap
   // ═══════════════════════════════════════════════════════════════════════════
 
-  buildRoutingTables({ bidirectional = true, maxConnections = Infinity } = {}) {
-    super.buildRoutingTables({ bidirectional, maxConnections });
+  buildRoutingTables({
+    bidirectional  = true,
+    maxConnections = Infinity,
+    maxOutgoing    = Infinity,
+    maxIncoming    = Infinity,
+    highwayPct     = 0,
+    initMode       = 'native',
+  } = {}) {
+    // v0.67.01 fix: forward highwayPct to super so DHT.buildRoutingTables can
+    // run the highway-promotion pass.
+    // v0.67.02: forward maxOutgoing / maxIncoming directional caps too.
+    // v0.68.00: forward initMode. NH-1's bootstrap is canonical-by-construction
+    // (pure XOR fill via buildXorRoutingTable), so no behavioral change here —
+    // the flag is accepted for API parity and recorded in this.initMode.
+    super.buildRoutingTables({
+      bidirectional,
+      maxConnections,
+      maxOutgoing,
+      maxIncoming,
+      highwayPct,
+      initMode,
+    });
     if (isFinite(maxConnections) && maxConnections < this.MAX_SYNAPTOME) {
       this.MAX_SYNAPTOME = maxConnections;
     }
@@ -178,11 +203,23 @@ export class NeuromorphicDHTNH1 extends DHT {
     const processingOrder = [...sorted].sort(() => Math.random() - 0.5);
 
     for (const node of processingOrder) {
-      for (const peer of buildXorRoutingTable(node.id, sorted, k, maxConnections)) {
+      // ── Per-node bootstrap budget (v0.66.13: highway-aware) ─────────────
+      // Use the node's OWN maxConnections (set by DHT.buildRoutingTables
+      // based on highwayPct) as the bootstrap cap. Highway nodes have
+      // Infinity, so buildXorRoutingTable takes the sequential-fill branch
+      // and returns ~280 candidates; capped nodes get the stratified
+      // branch with ~maxConnections candidates. This is the fix that
+      // makes highway% actually matter — previously every node bootstrapped
+      // from the same global stratified-100 plan regardless of highway
+      // status, which is why the v0.66.12 sweep was completely flat.
+      const nodeBootstrapCap = node.maxConnections ?? maxConnections;
+      // Per-node synaptome cap: highway nodes can grow up to 256 synapses
+      // (NX-6 uncapped parity); capped nodes use the global MAX_SYNAPTOME.
+      node._maxSynaptome = isFinite(nodeBootstrapCap)
+        ? Math.min(nodeBootstrapCap, this.MAX_SYNAPTOME)
+        : 256;
+      for (const peer of buildXorRoutingTable(node.id, sorted, k, nodeBootstrapCap)) {
         // Bilateral physical-cap gate: silently refuse if either side is full.
-        // This is the connection-management discipline that all NX-series
-        // protocols use; bypassing it leaves the connections Set empty so
-        // runtime tryConnect calls always succeed regardless of true load.
         if (!node.tryConnect(peer)) continue;
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz64(node.id ^ peer.id);
@@ -196,12 +233,71 @@ export class NeuromorphicDHTNH1 extends DHT {
     }
     // Cap-enforcement audit happens via DHT.verifyConnectionCap in main.js
     // after this method returns, so every protocol gets the same check.
+    this._logSynaptomeStats('post-bootstrap');
+  }
+
+  // ── Diagnostic: synaptome size distribution ─────────────────────────────────
+  // Posts a one-line summary to /api/log so we can verify the per-node
+  // _maxSynaptome cap is actually being honored in mixed-capacity sweeps.
+  // Called at end of buildRoutingTables (post-bootstrap state) and at start
+  // of dispose (post-training / post-benchmark state).
+  _logSynaptomeStats(label) {
+    if (!this.nodeMap || this.nodeMap.size === 0) return;
+    const acc = (bucket, size, atCap, outD, inD) => {
+      bucket.n++;
+      bucket.sum += size;
+      if (size > bucket.max) bucket.max = size;
+      if (size < bucket.min) bucket.min = size;
+      if (atCap) bucket.atCap++;
+      bucket.outSum += outD;
+      bucket.inSum  += inD;
+      if (outD > bucket.outMax) bucket.outMax = outD;
+      if (inD  > bucket.inMax)  bucket.inMax  = inD;
+    };
+    const newBucket = () => ({ n: 0, sum: 0, max: 0, min: Infinity, atCap: 0, outSum: 0, inSum: 0, outMax: 0, inMax: 0 });
+    const norm = newBucket();
+    const hwy  = newBucket();
+    for (const node of this.nodeMap.values()) {
+      const size = node.synaptome?.size ?? 0;
+      const cap  = node._maxSynaptome ?? this.MAX_SYNAPTOME;
+      const at   = size >= cap;
+      const outD = node._outboundConns?.size ?? 0;
+      const inD  = (node.connections?.size ?? 0) - outD;
+      if (node.isHighway) acc(hwy, size, at, outD, inD);
+      else                acc(norm, size, at, outD, inD);
+    }
+    const fmt = (b, capLabel) => b.n === 0
+      ? `none`
+      : `n=${b.n} syn=${(b.sum/b.n).toFixed(1)} synMax=${b.max} atCap=${(100*b.atCap/b.n).toFixed(0)}% out=${(b.outSum/b.n).toFixed(1)}/${b.outMax} in=${(b.inSum/b.n).toFixed(1)}/${b.inMax} synCap=${capLabel}`;
+    const entry = `[NH-1 SYN ${label}] ` +
+      `hwPct=${this.highwayPct ?? 0} maxConn=${this.maxConnections} ` +
+      `maxOut=${this.maxOutgoing} maxIn=${this.maxIncoming} ` +
+      `MAX_SYNAPTOME=${this.MAX_SYNAPTOME} | ` +
+      `normal{${fmt(norm, this.MAX_SYNAPTOME)}} | ` +
+      `highway{${fmt(hwy, 256)}}`;
+    // Browser-only side channel: post to /api/log for offline inspection.
+    if (typeof fetch !== 'undefined') {
+      try {
+        fetch('/api/log', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entry }),
+        }).catch(() => {});
+      } catch { /* non-browser environment */ }
+    }
+    if (typeof console !== 'undefined') console.log(entry);
   }
 
   bootstrapNode(newNode, sorted, k = 20) {
     if (!sorted?.length || !newNode?.alive) return;
     const bidir = this.bidirectional;
-    for (const peer of buildXorRoutingTable(newNode.id, sorted, k, this.MAX_SYNAPTOME)) {
+    // Per-node synaptome cap (v0.66.13): use newNode.maxConnections
+    // (highway-aware), capped at protocol MAX_SYNAPTOME or 256 if highway.
+    const newNodeCap = newNode.maxConnections ?? Infinity;
+    newNode._maxSynaptome = isFinite(newNodeCap)
+      ? Math.min(newNodeCap, this.MAX_SYNAPTOME)
+      : 256;
+    for (const peer of buildXorRoutingTable(newNode.id, sorted, k, newNodeCap)) {
       if (!newNode.tryConnect(peer)) continue;  // bilateral cap
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
@@ -221,10 +317,19 @@ export class NeuromorphicDHTNH1 extends DHT {
     if (!newNode || !sponsor) return 0;
 
     const k = this._k, alpha = this._alpha;
+    // Per-node synaptome cap (v0.66.13): churn-replacement nodes get the
+    // same per-node cap they would have received at full bootstrap.
+    if (newNode._maxSynaptome == null) {
+      const c = newNode.maxConnections ?? Infinity;
+      newNode._maxSynaptome = isFinite(c)
+        ? Math.min(c, this.MAX_SYNAPTOME)
+        : 256;
+    }
+    const newNodeCap = newNode._maxSynaptome;
 
     const addPeer = (peer) => {
       if (peer.id === newNodeId || newNode.synaptome.has(peer.id)) return;
-      if (newNode.synaptome.size >= this.MAX_SYNAPTOME) return;
+      if (newNode.synaptome.size >= newNodeCap) return;
       if (!newNode.tryConnect(peer)) return;     // bilateral cap
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz64(newNode.id ^ peer.id);
@@ -491,7 +596,12 @@ export class NeuromorphicDHTNH1 extends DHT {
     const peer = this.nodeMap?.get(newSyn.peerId);
     if (peer && !node.tryConnect(peer)) return false;
 
-    if (node.synaptome.size < this.MAX_SYNAPTOME) {
+    // Per-node synaptome cap (v0.66.13): highway nodes get a larger cap
+    // so they can act as transit hubs. Falls back to the global default
+    // for nodes that don't have _maxSynaptome set (e.g. churn replacements
+    // before they pick up their per-node cap).
+    const cap = node._maxSynaptome ?? this.MAX_SYNAPTOME;
+    if (node.synaptome.size < cap) {
       node.addSynapse(newSyn);
       return true;
     }
@@ -1290,6 +1400,7 @@ export class NeuromorphicDHTNH1 extends DHT {
   // ── Dispose: release pub/sub state along with synaptic state ─────────────
 
   dispose() {
+    this._logSynaptomeStats('pre-dispose');
     this._axonsByNode?.clear();
     this._routedHandlers?.clear();
     this._directHandlers?.clear();

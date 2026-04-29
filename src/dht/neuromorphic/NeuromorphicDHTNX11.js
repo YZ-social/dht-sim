@@ -32,7 +32,19 @@ export class NeuromorphicDHTNX11 extends NeuromorphicDHTNX10 {
 
   // ── Diversified Bootstrap ──────────────────────────────────────────────────
 
-  buildRoutingTables({ bidirectional = true, maxConnections = Infinity } = {}) {
+  buildRoutingTables({
+    bidirectional  = true,
+    maxConnections = Infinity,
+    initMode       = 'native',
+  } = {}) {
+    // v0.68.00 — canonical init bypasses the 80/20 random supplement and
+    // runs the full NX-3 XOR-fill at maxConnections. Equivalent starting
+    // state to Kademlia / NH-1.
+    if (initMode === 'canonical') {
+      super.buildRoutingTables({ bidirectional, maxConnections, initMode });
+      return;
+    }
+
     // Let the full NX chain (NX-6 → NX-5 → NX-4 → NX-3 → ...) run first.
     // Under web-limit, NX-3 will wire synaptomes via buildXorRoutingTable
     // using the full maxConnections budget.  We then supplement with random
@@ -40,7 +52,7 @@ export class NeuromorphicDHTNX11 extends NeuromorphicDHTNX10 {
 
     if (!isFinite(maxConnections)) {
       // Uncapped: standard three-layer init is optimal — no change needed.
-      super.buildRoutingTables({ bidirectional, maxConnections });
+      super.buildRoutingTables({ bidirectional, maxConnections, initMode });
       return;
     }
 
@@ -51,7 +63,7 @@ export class NeuromorphicDHTNX11 extends NeuromorphicDHTNX10 {
     // First, run the super chain to set up config and node structures,
     // but with a reduced budget for the stratified core.
     const coreBudget = Math.floor(maxConnections * 0.8);
-    super.buildRoutingTables({ bidirectional, maxConnections: coreBudget });
+    super.buildRoutingTables({ bidirectional, maxConnections: coreBudget, initMode });
 
     // Now supplement each node's synaptome with random global peers.
     const randomBudget = maxConnections - coreBudget;

@@ -59,6 +59,27 @@ export class DHTNode {
     this.connections    = new Set();     // bigint peerIds with a live link
     this.maxConnections = Infinity;      // set by DHT.buildRoutingTables
 
+    /**
+     * Directional sub-caps on top of the bilateral total (Interpretation B,
+     * v0.67.02). `_outboundConns` is the subset of `connections` that this
+     * node initiated via tryConnect(). The complement (connections −
+     * _outboundConns) is the inbound subset.
+     *
+     * - maxOutgoing : cap on how many connections THIS node may initiate
+     * - maxIncoming : cap on how many connections THIS node may accept
+     *
+     * Both default to Infinity so the existing single-cap behavior is
+     * preserved when these are not configured. Highway nodes also get
+     * Infinity/Infinity so the "server backbone" semantics carry over.
+     *
+     * Models a P2P deployment where browser-class nodes voluntarily limit
+     * outbound dial concurrency (CPU/bandwidth cost of NAT-traversal) but
+     * keep more inbound headroom (reachability / pull from popular peers).
+     */
+    this._outboundConns = new Set();
+    this.maxOutgoing    = Infinity;
+    this.maxIncoming    = Infinity;
+
     // Injected by the DHT implementation
     this.routingTable = null;
 
@@ -92,23 +113,39 @@ export class DHTNode {
     if (other === this) return false;
     if (this.connections.has(other.id)) return true;
 
+    // Bilateral total cap (always enforced).
     const myFull    = this.connections.size  >= this.maxConnections;
     const theirFull = other.connections.size >= other.maxConnections;
 
-    // Fast path: both sides have room.
-    if (!myFull && !theirFull) {
+    // Directional sub-caps (Interpretation B, v0.67.02). When both default
+    // to Infinity these are no-ops and behavior is identical to the
+    // single-cap model. When set, they enforce in/out balance per node.
+    const myOutFull   = this._outboundConns.size                              >= this.maxOutgoing;
+    const otherInSize = other.connections.size - other._outboundConns.size;
+    const otherInFull = otherInSize                                            >= other.maxIncoming;
+
+    // Fast path: every gate has room.
+    if (!myFull && !theirFull && !myOutFull && !otherInFull) {
       this.connections.add(other.id);
+      this._outboundConns.add(other.id);
       other.connections.add(this.id);
       return true;
     }
 
-    // My side full — attempt a value-based swap to free a slot.
+    // Directional caps don't have a swap policy — once you've initiated 45
+    // connections, you can't initiate a 46th regardless of how many you'd
+    // evict (the cap is on dial concurrency, not on stored peers). Refuse
+    // outright. The total-cap swap policy still kicks in below.
+    if (myOutFull || otherInFull) return false;
+
+    // My total full — attempt a value-based swap to free a slot.
     if (myFull && !this._trySwapIn(other)) return false;
 
-    // Other side full — they run the same policy from their perspective.
+    // Other total full — they run the same policy from their perspective.
     if (theirFull && !other._trySwapIn(this)) return false;
 
     this.connections.add(other.id);
+    this._outboundConns.add(other.id);
     other.connections.add(this.id);
     return true;
   }
@@ -152,8 +189,12 @@ export class DHTNode {
     // find no live path and trigger protocol-specific cleanup (e.g.
     // dead-peer eviction in N-DHT).
     this.connections.delete(victimId);
+    this._outboundConns.delete(victimId);  // safe even if victim was inbound
     const victimNode = this._network?.nodes?.get(victimId);
-    if (victimNode) victimNode.connections.delete(this.id);
+    if (victimNode) {
+      victimNode.connections.delete(this.id);
+      victimNode._outboundConns.delete(this.id);
+    }
     return true;
   }
 
@@ -183,7 +224,9 @@ export class DHTNode {
   disconnect(other) {
     if (!other) return;
     this.connections.delete(other.id);
+    this._outboundConns?.delete(other.id);    // safe — only fires if outbound
     other.connections?.delete(this.id);
+    other._outboundConns?.delete(this.id);    // safe — only fires if outbound
   }
 
   /**

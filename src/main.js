@@ -339,6 +339,7 @@ async function onInit() {
   } else {
     globe.setNodes([]);  // clear any leftover nodes from a previous smaller run
   }
+  globe.clearSliceMode?.();   // v0.68.01: leaving Slice World palette on a fresh init
   controls.setStatus(
     `Network ready: ${nodes.length} nodes, ${params.protocol} ` +
     `(k=${params.k}, α=${params.alpha}, ${params.bits}-bit IDs)` +
@@ -438,13 +439,21 @@ async function onSliceWorld() {
 
   if (nodes.length <= GLOBE_NODE_LIMIT) {
     globe.setNodes(dht.getNodes());
+    // v0.68.03 — Slice World coloring: yellow = West, white = East,
+    // green = node has at least one NON-BRIDGE peer in the opposite
+    // hemisphere. Initially only Hawaii itself meets this; merely
+    // *knowing* Hawaii doesn't make a non-bridge node a bridge.
+    // Refreshed periodically in onLookupTest as learning re-stitches
+    // the partition with new direct cross-hem synapses.
+    globe.setSliceWorldColors(dht, hawaiiId);
   } else {
     globe.setNodes([]);
   }
 
   controls.setStatus(
     `Slice World ready: ${nodes.length} nodes (${westCount} West, ${eastCount} East), ` +
-    `Hawaii bridge, ${params.protocol}`,
+    `Hawaii bridge, ${params.protocol}. Yellow = West, white = East, green tint = ` +
+    `non-bridge cross-hem peers (intensity scales with count; partition dissolves as routing learns).`,
     'success'
   );
   controls.updateNodeCount(nodes.length);
@@ -565,6 +574,7 @@ async function onBootstrap() {
   } else {
     globe.setNodes([]);
   }
+  globe.clearSliceMode?.();   // v0.68.01: leaving Slice World palette
   controls.setStatus(
     `Network bootstrapped: ${nodes.length} nodes, ${params.protocol} ` +
     `(k=${params.k}, α=${params.alpha}, ${params.bits}-bit IDs)` +
@@ -696,6 +706,13 @@ async function onLookupTest() {
         `avg time: ${partial.time.mean.toFixed(1)} ms`,
         'info'
       );
+    }
+    // v0.68.01 — Slice World live recolor. As routing progresses, learning
+    // rules (hop caching, triadic closure, lateral spread) deposit new
+    // cross-hem synapses on path-touched nodes; those nodes turn green.
+    // Visualizes the partition dissolving in real time.
+    if (globe.isSliceMode?.() && dht) {
+      globe.setSliceWorldColors(dht);
     }
   };
 
@@ -1002,6 +1019,16 @@ async function onTrainNetwork() {
     });
 
     if (!trainingActive) break;   // stopped during the run
+
+    // v0.68.06 — live recolor in Slice World mode. Each session of training
+    // runs ~msgCount lookups; for neuromorphic protocols, those lookups
+    // deposit cross-hem synapses (hop caching, triadic closure, lateral
+    // spread) that should turn nodes green. For Kademlia / G-DHT the
+    // count should stay at 1 (Hawaii) forever — no learning to deposit
+    // anything. Either way, refreshing here makes the dynamic visible.
+    if (globe.isSliceMode?.()) {
+      globe.setSliceWorldColors(dht);
+    }
 
     trainingEpoch += params.msgCount;
 

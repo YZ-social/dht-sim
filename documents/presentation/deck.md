@@ -4,7 +4,7 @@ theme: default
 size: 16:9
 paginate: true
 header: "Neuromorphic DHT — NH-1"
-footer: "v0.3.22 · sim v0.68.00 · 2026-04-29"
+footer: "v0.3.35 · sim v0.69.00 · 2026-04-29"
 style: |
   section {
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
@@ -40,6 +40,15 @@ style: |
   section::after { color: #999; }
   header { color: #888; font-size: 11px; }
   footer { color: #888; font-size: 11px; }
+  /* Dense reference tables — fits a 20-row table inside the slide
+     without overlapping the Marp header / footer. */
+  section.dense {
+    font-size: 13px;
+    padding: 22px 32px 30px 32px;
+  }
+  section.dense table { font-size: 9.5px; line-height: 1.15; }
+  section.dense th, section.dense td { padding: 1.5px 5px; }
+  section.dense h2 { font-size: 18px; margin-bottom: 0.15em; }
 ---
 
 <!-- _class: title -->
@@ -70,15 +79,13 @@ davidasmith@gmail.com
 
 <br>
 
-**Privacy and security are not in tension.** That framing is a lie, and it is a lie on purpose.
+**Privacy is the precondition for free expression and association.** A communication channel that always passes through a trusted intermediary leaks the *fact* of the conversation even when the contents are encrypted. Knowing *who talked to whom, when, from where* is, on its own, a powerful surveillance signal — used commercially for advertising and behavioral inference, used institutionally for law enforcement and intelligence.
 
-**Privacy is the precondition for freedom.** A person who can be watched cannot dissent. A person whose every word passes through a custodian does not have a private thought. A person whose identity, location, and associations are legible to power is not free — they are *permitted*.
+**End-to-end encryption is not enough.** Encryption protects message contents but not metadata. As long as the routing fabric belongs to a single party — a server, a federation, an ISP — that party retains visibility into the network's *shape*, and that visibility is itself the asset.
 
-**Governments want surveillance because surveillance is state power.** **Corporations want surveillance because surveillance is the product.** Neither wants freedom. Both have learned to call compliance "safety."
+**A peer-to-peer routing fabric removes the custodian.** No server, no privileged peer, no trusted coordinator: the routing layer itself becomes a participant-symmetric primitive in which no one party has a privileged view of the traffic.
 
-**Encryption over a watching network is not enough.** We need a network that *cannot watch*, by intention.
-
-<span class="callout">The DHT is the minimum viable substrate. Without it, every "decentralized" service is one trusted server away from being centralized again — and every promise of privacy is provisional on the custodian's current ideology.</span>
+<span class="callout">The DHT is the minimum viable substrate for that property. Without it, every "decentralized" service is one trusted server away from being centralized again.</span>
 
 ---
 
@@ -93,15 +100,59 @@ A **distributed hash table** is the foundation for finding *anything* in a decen
 | BitTorrent Mainline DHT | 2005+ | Kademlia variant — millions of simultaneous nodes |
 | Ethereum devp2p | 2015+ | Modified Kademlia — peer discovery for blockchain consensus |
 | IPFS / libp2p | 2015+ | Kademlia + content routing — CID → provider mapping |
-| Mastodon / ActivityPub | 2016+ | Federation-level peer discovery |
-| Coral DSHT | 2004 | Latency-aware proximity clusters (research predecessor) |
+| Tor v3 hidden services | 2017+ | HSDir DHT — onion-service descriptor lookup |
+| Coral DSHT | 2004 | Latency-aware proximity clusters — production CDN 2004 – ~2015 |
 | S/Kademlia | 2007 | Security-hardened Kademlia (sibling broadcast, disjoint paths) |
 
-**Why we *desperately* need the next generation now:**
+**Why a next generation now:**
 
-Centralized platforms have become single points of surveillance, censorship, and outage. Secure communication can no longer assume a trustworthy intermediate. Sovereignty over identity, location, and routing requires a substrate that **no one party can compromise**.
+The systems above were designed for one workload at a time — file-sharing, blockchain peer discovery, content addressing — on networks of stable nodes. **NH-1 targets a different deployment**: heterogeneous device classes (browser to server), high churn, integrated pub/sub, and locality awareness as a first-class property of routing rather than a layered afterthought.
 
-<span class="callout">A DHT is the minimum viable substrate. Without it, every "decentralized" service is one trusted server away from being centralized again.</span>
+<span class="callout">The next-generation DHT is not "Kademlia plus locality." It is a routing fabric that **adapts** — that learns from the traffic it carries and survives the network it actually lives on.</span>
+
+---
+
+## Long-Term Potentiation — the biology behind the design
+
+The brain and a DHT face the **same engineering problem**: a node with a fixed budget of connections, a flood of competing signals, and a need to remember which paths actually carry useful traffic. Evolution solved it once. We borrow the solution.
+
+**Long-Term Potentiation (LTP)** is the canonical mechanism for synaptic learning, discovered by Bliss & Lømo in rabbit hippocampus (1973). When two neurons fire together repeatedly across the same synapse, that synapse **persistently strengthens** — change that outlasts the stimulus by hours, days, a lifetime.
+
+<br>
+
+**The molecular cascade, simplified:**
+
+- **NMDA receptors** act as coincidence detectors — glutamate from the pre-synaptic neuron only opens them if the post-synaptic neuron is *already* depolarized. The signal is "I fired *and* you fired."
+- Calcium influx triggers **AMPA receptor insertion** into the post-synaptic membrane, increasing sensitivity for next time.
+- Within ~30 minutes the change is consolidated: gene transcription, new protein synthesis, sometimes new dendritic spines. The synapse is durably re-weighted.
+
+**The opposing process is LTD** (Long-Term Depression): low-frequency stimulation *weakens* synapses. LTP and LTD together are the brain's way of *learning* — adjusting which routes among neurons are easy to traverse.
+
+<br>
+
+The intuitive summary, from Donald Hebb's *Organization of Behavior* (1949):
+
+<span class="callout">**"Neurons that fire together, wire together."**<br>This is the **Hebbian rule** — and it's what every weight in every artificial neural network ultimately abstracts. The Neuromorphic DHT applies it not to perception, but to *routing*.</span>
+
+---
+
+## From neuron to routing table
+
+The translation is direct, not metaphorical. The brain and a peer-to-peer overlay are both networks of capacity-limited nodes that must learn from traffic which edges to keep.
+
+<br>
+
+| Neuroscience | N-DHT |
+|---|---|
+| **Synapse** — a connection between neurons | A peer entry in the routing table (`Synapse` class) |
+| **Synaptic weight** — readiness to fire next time | `weight ∈ [0, 1]` |
+| **LTP** — co-firing strengthens the connection | Successful lookup increments weights along the traversed edges (`_reinforceWave`) |
+| **LTD** — disuse weakens | Time-based decay each tick (`weight *= decayGamma`) |
+| **NMDA coincidence detection** — both ends must participate | Weight only increments when the synapse actually carried successful traffic, not on every probe |
+| **Synaptic tagging** (Frey & Morris 1997) — recently potentiated synapses are protected from overwriting | NH-1's `inertiaDuration` epochs prevent eviction of recently reinforced synapses |
+| **Pruning** — neurons with weak / unused connections lose them | `_addByVitality` evicts the lowest-vitality (`weight × recency`) edge to make room |
+
+<span class="callout">**The N-DHT is the Hebbian rule applied to overlay routing.** Every "weight," every "synapse," every "potentiation" in this deck refers to a precise, measurable mechanism in the source code — see *NeuronNode.js*, *Synapse.js*, and the `_reinforceWave` / `_addByVitality` methods that implement LTP and pruning directly.</span>
 
 ---
 
@@ -109,20 +160,23 @@ Centralized platforms have become single points of surveillance, censorship, and
 
 Traditional DHTs (Kademlia, Pastry, Tapestry) treat the routing table as a **static data structure**: fixed buckets, one rule for replacement, no awareness of the traffic flowing through. They were designed in 2001-2002 for stable nodes — and they do not adapt to the network they live in.
 
-The **Neuromorphic DHT** treats every peer as a *synapse*: a learnable edge with a weight that grows with successful traffic and decays without it. Routing consults those weights. Eviction picks the least-vital edge. The table changes as the network changes.
+The **Neuromorphic DHT** treats every peer as a *synapse*: a learnable edge with a weight that grows with successful traffic (LTP) and decays without it (LTD). Routing consults those weights. Eviction picks the least-vital edge. The table changes as the network changes.
 
 | | Traditional DHT | Neuromorphic DHT |
 |---|---|---|
-| Routing table | Fixed K-bucket per stratum | Weighted synaptome |
+| Routing table | Fixed K-bucket per stratum | Weighted **synaptome** *(the per-node set of weighted outgoing edges)* |
 | Edge state | Live / dead | Weight ∈ [0, 1], recency, locked-on-use |
 | Routing decision | Greedy XOR | Action Potential (XOR × weight × latency) |
 | Adapts to traffic? | No | Yes — Long-Term Potentiation (**LTP**), triadic closure, hop caching |
 | Adapts to churn? | Lazy bucket refresh | Active dead-peer eviction + temperature reheat |
 | Pub/sub | Layered on top | Integrated as axonal delivery trees |
+| **Global lookup at 50 K** (× Dabek 3δ floor) | Kademlia **548 ms (2.65×)** — worsens with N | NX-17 **243 ms (1.18×)** — plateaus at the floor |
 
 <br>
 
-The trade is "fixed and analytical" → "adaptive and empirical". The whitepaper-correctness of K-buckets gives way to *measured* behavior — which is why the rest of this talk is about measurement.
+The trade is "fixed and analytical" → "adaptive and empirical". The whitepaper-correctness of K-buckets gives way to *measured* behavior — which is why the rest of this presentation is about measurement.
+
+<span class="callout">**Headline result.** On 50 K nodes, NX-17 sits within 36 ms of the analytical lower bound that Dabek et al. (NSDI 2004) proved for *any* recursive O(log N) DHT — `total ≈ 3δ` where δ is the median pairwise one-way round-trip time. Kademlia is 2× further from that floor. The full 3δ floor analysis appears later in the deck (the *3δ floor* section).</span>
 
 ---
 
@@ -189,6 +243,16 @@ Purpose-built simulator · ~25 K lines of JavaScript · open-source.
 
 ---
 
+## Simulator integrity
+
+Five invariants govern every measurement in this deck: **(1)** the bilateral connection cap is honestly enforced (a base-class guard rail audits `connections.size ≤ maxConnections` at post-init, post-warmup, and after every churn round); **(2)** locality is preserved — no optimization reads another node's routing table directly; **(3)** RPC responses are bounded to k=20 peers, the envelope a real WebRTC node could actually return; **(4)** per-protocol parameters reach the protocol they were configured for, with no silent defaults; **(5)** the geographic prefix width is a runtime parameter that flows into every protocol's node-ID construction, including the `geoBits = 0` ablation runs.
+
+<br>
+
+<span class="callout">**Every invariant on this list has been violated at least once during development.** The deck shows post-fix measurements only. Skepticism is the methodology, not a hindrance.</span>
+
+---
+
 ## Naming as compact vocabulary
 
 Four terms from neuroscience, each mapping to a specific data structure.
@@ -208,6 +272,28 @@ The vocabulary is descriptive, not metaphorical. Every term has one and only one
 
 ---
 
+## Glossary — terms used across this deck
+
+This work spans DHT engineering, reinforcement-learning ideas, and neuroscience. A reader expert in one domain may not know the others' vocabulary. Each term has a fuller treatment later in its dedicated slide.
+
+| Term | Domain | One-line definition |
+|---|---|---|
+| **K-bucket** | DHT (Kademlia) | Per-stratum routing-table slot, holding up to K=20 peers at a given XOR distance |
+| **XOR distance** | DHT | The Kademlia metric `d(a,b) = a ⊕ b` — symmetric, halving-friendly |
+| **Stratum** | DHT | One XOR-distance level. Stratum *b* = peers whose IDs first differ from yours at bit *b*. Higher *b* = farther in ID-space |
+| **K-closest** | DHT | The K nodes whose XOR distance to a target is smallest — used in routing and replication |
+| **Churn** | DHT | Nodes joining and leaving; measured here as % of original network replaced |
+| **Sponsor-chain bootstrap** | DHT | A new node joins by routing through an existing peer; its routing table fills from observed traffic |
+| **AP score** *(Action Potential)* | N-DHT | The learned-weight ranking on candidate next-hops — combines XOR progress, weight, and latency. See *NAVIGATE* |
+| **Anneal / annealing** | RL | Gradually reduce randomness over time, transitioning from exploration to exploitation. Temperature ↓ over lookups |
+| **Epsilon-greedy** | RL | With probability ε take a random action; otherwise take the best-known. Cheap insurance against premature lock-in |
+| **Vitality** | N-DHT | The unified `weight × recency` score that drives every admission and eviction decision. See *FORGET* |
+| **Synapse / Synaptome / Neuron / Axon** | Neuro → N-DHT | The four mapping anchors — see the *Naming* slide above |
+
+<span class="muted">If a term in this deck reads as opaque later, it is almost certainly defined here or on the slide it first appears in.</span>
+
+---
+
 ## Protocols we will examine
 
 We benchmark four DHTs at 25 K nodes under identical conditions. Each builds on its predecessor:
@@ -215,7 +301,7 @@ We benchmark four DHTs at 25 K nodes under identical conditions. Each builds on 
 | Protocol | What it adds | Inherits from |
 |---|---|---|
 | **K-DHT** (Kademlia, 2002) | XOR distance metric, K-buckets, α-parallel lookup | — |
-| **G-DHT** (geographic) | S2 cell prefix in node IDs ⇒ regional locality | K-DHT |
+| **G-DHT** (geographic, this work, 2025) | S2 cell prefix in node IDs ⇒ regional locality | K-DHT |
 | **NX-17** (predecessor state of the art, **SOTA**) | 18 specialized rules, peak performance under tight cap | G-DHT *(via NX-1 … NX-15)* |
 | **NH-1** (this work, 2026) | Vitality-driven synaptome, unified admission gate | **NX-17** *(consolidation)* |
 
@@ -279,7 +365,7 @@ But still a *static* routing algorithm. No learning. No dynamics. The geographic
 
 **S2 (Google, 2011)** is a hierarchical decomposition of the sphere onto a Hilbert space-filling curve, projected through six cube faces. Every point on Earth maps to a 64-bit cell ID; every prefix length defines a successively coarser tile.
 
-- **Top 8 bits** — face + a few subdivisions. ≈ **256 tiles** worldwide, each ≈ **continent-scale** (e.g. "western North America", "South-East Asia"). This is what we embed in every node ID.
+- **Top 8 bits** — 3 bits encode the cube face (values 0 – 5; six faces, two unused encodings) and the next 5 bits subdivide that face along the Hilbert curve. **6 × 32 = 192 tiles** worldwide, each ≈ **continent-scale** (e.g. "western North America", "South-East Asia"). This is what we embed in every node ID.
 - **Hilbert curve property** — geographically adjacent points have numerically close cell IDs. XOR distance in ID space ≈ physical distance, *for free*.
 - **Sub-cell hierarchy** — refining the prefix bit-by-bit subdivides the tile in half along the Hilbert curve. 30 bits ≈ city block; 40+ bits ≈ metres.
 
@@ -305,7 +391,7 @@ The S2 prefix in a node ID is **self-declared**. A node can claim any prefix it 
 
 ![C1](charts/C1_latency_kad_vs_gdht.svg)
 
-<span class="muted">Lookup latency by distance, web-limited 25 K. G-DHT's geographic prefix gives regional traffic a 3-4× speedup over Kademlia. Global lookups still pay the full hop cost.</span>
+<span class="muted">Lookup latency by distance, web-limited 25 K. G-DHT's geographic prefix gives regional traffic a 3× speedup over Kademlia. Global lookups still pay the full hop cost.</span>
 
 ---
 
@@ -346,18 +432,13 @@ The S2 prefix in a node ID is **self-declared**. A node can claim any prefix it 
 
 <br>
 
-NX-17 is *better* than NH-1 under tight connection caps:
+NX-17 is *better* than NH-1 under tight connection caps — by a small but real margin (~9 % global ms, ~18 % regional ms; head-to-head numbers in the *NH-1 vs NX-17* slide later in the deck).
 
-| Test (25 K, cap=100) | NX-17 | NH-1 | Δ |
-|---|---:|---:|---:|
-| Global lookup | **4.40 hops / 242 ms** | 5.15 / 263 ms | +9 % ms |
-| 500 km lookup | **2.75 / 80 ms** | 3.28 / 95 ms | +18 % ms |
-
-But it carries 18 specialized rules, 44 parameters, and ~2300 lines. Each rule earned its keep against a measured failure mode. Together they form a system hard to understand and hard to extend.
+It carries 18 specialized rules, 44 parameters, and ~2300 lines. Each rule earned its keep against a measured failure mode. Together they form a system hard to understand and hard to extend.
 
 <br>
 
-<span class="callout">We use NX-17 as the **reference benchmark**. The full rule list — and NH-1's disposition for each — appears later in this deck.</span>
+<span class="callout">We use NX-17 as the **reference benchmark**. The full rule list — and NH-1's disposition for each — appears in the *NX-17 → NH-1 disposition* table later in the deck.</span>
 
 ---
 
@@ -418,7 +499,7 @@ The two factors are conventional individually. Hebbian potentiation (Hebb, 1949)
 | 5 | Iterative fallback | NAVIGATE | If no progress, expand to k-closest from the synaptome |
 | 6 | Long-Term Potentiation | LEARN | Reinforce edges on successful paths |
 | 7 | Triadic closure | LEARN | If A→B→C succeeds twice, learn A→C |
-| 8 | Hop caching | LEARN | Intermediate nodes cache the path for the destination |
+| 8 | Hop caching + lateral spread | LEARN | Intermediate nodes cache the destination; the new edge is also propagated to the source's geographic neighbors |
 | 9 | Incoming promotion | LEARN | Peers that contact me often become outbound synapses |
 | 10 | Vitality-based eviction | FORGET | Drop the least-vital synapse when capacity is reached |
 | 11 | Temperature annealing | EXPLORE | Cool exploration rate over time; reheat on dead-peer discovery |
@@ -438,7 +519,7 @@ A configurable `highwayPct` fraction of nodes is promoted to **server-class**: t
 
 <br>
 
-<span class="callout">15 % highway nodes captures **70 % of the available latency improvement** over the all-browser baseline (chart later in this deck).</span>
+<span class="muted">The deployment-realism implications — including the cheapest highway% that captures most of the available improvement — are quantified later in the *Highway %* section.</span>
 
 ---
 
@@ -460,6 +541,8 @@ AP(syn, target) = progress(syn, target) × syn.weight × ½^(latency_ms / 100)
 
 **Iterative fallback.** If AP returns no candidate (every neighbor is "wrong direction"), fall back to k-closest-from-synaptome and retry. This rescues lookups that would otherwise stall in dead corridors.
 
+<span class="callout">AP routing is *not* greedy XOR with weights bolted on. The latency penalty makes nearby fast peers preferred over slightly-better-XOR distant ones — this is what makes the protocol *latency-aware* rather than purely *distance-aware*.</span>
+
 ---
 
 ## LEARN — four reinforcement mechanisms
@@ -468,9 +551,11 @@ AP(syn, target) = progress(syn, target) × syn.weight × ½^(latency_ms / 100)
 
 **Triadic closure.** When a node X observes peer A repeatedly routing through it to peer C, X introduces A directly to C. A gains a new synapse to C; X is no longer needed as middleman on future A → C lookups. The name comes from social-network theory: the open triangle A — X — C is *closed* into a direct A — C edge.
 
-**Hop caching.** Each intermediate node on a successful lookup adds the *destination* to its synaptome. The path becomes shorter on the next lookup to the same region.
+**Hop caching + lateral spread.** Each intermediate node on a successful lookup adds the *destination* to its synaptome — and the new edge is also propagated laterally to the source's geographic neighbors. The path becomes shorter on the next lookup to the same region; nearby peers see the shortcut on their *first* lookup, not just after they generate one themselves.
 
 **Incoming promotion.** When a peer reaches out to me repeatedly via incoming synapses, I promote it to a real outbound synapse — passive learning of who's interested in me.
+
+<span class="callout">Together these four mechanisms turn *every successful lookup* into structural learning: shorter paths, new direct edges, promoted incoming peers. The routing table is rewritten by the traffic flowing through it — not by a separate maintenance pass.</span>
 
 ---
 
@@ -512,6 +597,8 @@ This single function replaces:
 
 <span class="muted">Both exploration mechanisms are biased toward learning rather than fully random — the floor is uniform sampling over the *current synaptome*, not over the network.</span>
 
+<span class="callout">Exploration is bounded *and* targeted. Epsilon-greedy at the first hop costs at most one detour per lookup; annealing replaces only the lowest-vitality synapse. Neither mechanism risks the routing structure that LTP has already proven valuable.</span>
+
 ---
 
 ## What pub/sub on a DHT must do
@@ -532,17 +619,26 @@ Five requirements — the rest of this section is the answer to each.
 
 ## How we got here — the K-closest → Axonal tree journey
 
-The current design wasn't the first try. The route through three failed approaches earned the architecture:
+**The current pub/sub architecture is the fourth attempt.** Each earlier attempt fixed a real failure mode and introduced a new one. The design that follows is what was left when we stopped adding parts.
 
-- **NX-15 — K-closest replication.** Subscribe stores at each of K=5 nodes closest to `hash(topic)`; publish hits any one. Worked at zero churn but suffered a structural failure under load: publisher and subscribers compute `findKClosest` from *different positions* in the network, so under churn their top-K sets drift apart. Delivery collapsed to ~38 % at 25 % churn — not a routing bug, a *coordination* bug.
-- **NX-16 — masked-distance fix attempt.** Tried to decouple K-closest selection from synaptome expansion by masking the geographic prefix in the distance metric. Routing collapsed to ~40 % delivery *even at zero churn*. The lesson, archived as a cautionary example: **the distance metric used to select candidates must match the gradient used to expand them.**
-- **NX-17 — pure axonal tree, four targeted fixes:**
-  1. **Publisher-prefix topic IDs** so publisher and subscribers derive the same root deterministically — no negotiation, no drift.
-  2. **Terminal globality check** — when greedy routing thinks it's reached the topic, it does one `findKClosest(topicId, 1)` to confirm no globally-closer peer exists. Without this, two subscribers can elect different roots.
-  3. **External-peer batch adoption on overflow** — when an axon hits its capacity, it picks a *synaptome peer* (not an existing child) as the new sub-axon and ships the appropriate subscribers in one batch. Two invariants prevent runaway recursion.
-  4. **All-axon periodic re-subscribe** — every role re-issues its subscribe. The re-subscribe *is* the liveness check; no separate ping, no parent tracking.
+<br>
 
-<span class="callout">The architecture you're about to see (next slides) is the *fourth* attempt. The earlier three each fixed a real failure mode; each one introduced a new one. The current design is what's left when you stop adding parts.</span>
+**The three failed approaches**
+
+- **NX-15 — K-closest replication.** Subscribe stores at each of K=5 nodes closest to `hash(topic)`; publish hits any one. Worked at zero churn. Failed under load: publisher and subscribers compute K-closest from *different positions* in the network, and their top-K sets drift apart under churn. Delivery collapsed to ~38 % at 25 % churn — a coordination bug, not a routing bug.
+- **NX-16 — masked-distance fix.** Tried to decouple K-closest selection from synaptome expansion by masking the top 8 ID bits in the distance metric. Routing collapsed to ~40 % delivery *even at zero churn*. **Lesson, archived as a cautionary example: the distance metric used to select candidates must match the gradient used to expand them.**
+- **NX-15-style replication, generally.** Replication on top of routing tries to *paper over* coordination drift. The next generation removed replication entirely and let routing carry the membership.
+
+<br>
+
+**The four NX-17 fixes that work** (and that NH-1 inherits)
+
+1. **Publisher-prefix topic IDs** — `topicId = publisher.cellPrefix(8b) ‖ hash₅₆(name)`. Publisher and subscribers derive the same root deterministically. No negotiation, no drift.
+2. **Terminal globality check** — when greedy routing thinks it has reached the topic, do one `findKClosest(topicId, 1)` to confirm no globally-closer peer exists. Without this, two subscribers can elect different roots.
+3. **External-peer batch adoption on overflow** — when an axon hits its capacity, pick a *synaptome peer* (not an existing child) as the new sub-axon and ship the appropriate subscribers in one batch. Two invariants prevent runaway recursion.
+4. **All-axon periodic re-subscribe** — every role re-issues its subscribe on a 10 s interval. The re-subscribe *is* the liveness check — no separate ping, no parent tracking.
+
+<span class="callout">**The pattern.** Three approaches that each papered over a coordination problem at the application layer. One approach that pushed coordination back into the routing layer where the DHT could actually do the work. That's the architecture the next slides describe.</span>
 
 ---
 
@@ -615,6 +711,8 @@ periodically: decay_all_weights()      // FORGET
 
 Every operation cost is bounded: O(synaptome.size). At 50 synapses the per-hop compute is ~0.2 ms — small relative to the 10 ms transit cost.
 
+<span class="callout">A complete NH-1 hop fits in this pseudocode. Five operations interleave on every lookup; learning is a side-effect of routing, not a separate phase.</span>
+
 ---
 
 ## Methodology
@@ -627,7 +725,7 @@ Every operation cost is bounded: O(synaptome.size). At 50 synapses the per-hop c
 
 <br>
 
-<span class="callout">Every number in the next section comes from a single 25 K-node CSV captured at simulator v0.67.02. The footer's current version reflects code revisions to the diagnostic pipeline since then; the underlying routing data is unchanged.</span>
+<span class="callout">**Data provenance.** The 4-way comparison and Highway% / Slice World tables come from 25 K-node CSVs captured at simulator v0.67–v0.68. The 3δ floor analysis later in the deck is from fresh v0.69.00 sweeps at 5 K / 25 K / 50 K. Each table self-discloses its source; the footer reflects the most recent simulator version.</span>
 
 ---
 
@@ -692,6 +790,60 @@ A non-obvious result from running every NX variant under two starting conditions
 
 ---
 
+## How fast is fast? — the 3δ floor
+
+Latency comparisons need an absolute reference, not just "lower than Kademlia". **Dabek, Li, Sit, Robertson, Kaashoek & Morris** (MIT — NSDI 2004, *Designing a DHT for low latency and high throughput*) proved that for *any* recursive O(log N) DHT, total lookup latency converges to a hard analytical floor:
+
+<br>
+
+**lookup ms ≈ δ + δ/2 + δ/4 + … = 3δ**
+
+<br>
+
+where **δ** is the median pairwise *one-way* internet latency. Each successive lookup hop covers a geometrically halving fraction of the remaining ID-space, so the second-to-last hop is half the cost of the last, the third-to-last a quarter, and so on. The series sums to 3δ regardless of N. Even an oracle that always picked the lowest-RTT finger could not do better.
+
+**Measuring δ in our simulator.** **δ is a property of the network itself, not of any DHT** — it depends only on (a) the population-weighted geographic placement of nodes and (b) our latency model `propagation = (haversine_km / 20015) × 150 ms + 10 ms` per one-way message. The same δ applies to Kademlia, G-DHT, every NX variant, and NH-1: none of them can route faster than 3δ.
+
+At every benchmark sweep we sample **10 000 random node pairs** from the live population (independently of any protocol) and compute the one-way pairwise latency:
+
+| N | δ_median | δ_p95 | **3δ floor** |
+|---:|---:|---:|---:|
+| 5 K | 67.9 ms | 123.3 ms | **203.6 ms** |
+| 25 K | 68.0 ms | 124.1 ms | **204.0 ms** |
+| 50 K | 68.9 ms | 124.2 ms | **206.6 ms** |
+
+<span class="muted">δ is stable across N — population character doesn't change with sample size. Coincidentally identical to Dabek's measured King-dataset δ = 67 ms, so the simulator's geometric latency model lands on the same point as real-world Internet RTT. The next slide then measures every protocol against this single shared reference line.</span>
+
+<span class="callout">Any honest claim about DHT latency should be expressed as a multiple of 3δ. "Beats Kademlia" is a relative win; **"close to 3δ" is an absolute one.**</span>
+
+---
+
+## N-DHT lives at the floor
+
+Same global lookup test (500 random source/destination pairs). Each cell shows **measured median ms (× the 3δ floor for that N)**, so the reader sees both the absolute latency and how far above the theoretical lower bound it sits:
+
+<br>
+
+| N (3δ floor) | Kademlia | G-DHT | NX-10 | **NX-17** | NH-1 |
+|---:|---:|---:|---:|---:|---:|
+| 5 K (204 ms) | 410 ms (2.01×) | 268 ms (1.32×) | 217 ms (1.07×) | **215 ms (1.06×)** | 240 ms (1.18×) |
+| 25 K (204 ms) | 503 ms (2.46×) | 287 ms (1.41×) | 243 ms (1.19×) | **241 ms (1.18×)** | 254 ms (1.25×) |
+| 50 K (207 ms) | 548 ms (2.65×) | 291 ms (1.41×) | 240 ms (1.16×) | **243 ms (1.18×)** | 264 ms (1.28×) |
+
+<br>
+
+- **N-DHT plateaus at ~1.18 × the floor** between 25 K and 50 K. NX-17 sits at **241 → 243 ms** — only ~36 ms above the 3δ lower bound.
+- **Kademlia worsens with N** (2.01× → 2.65×, **410 → 548 ms**) — its log N hop tax compounds.
+- **NH-1 trails NX-17 by ~10 %** (**~21 ms** at 50 K) — a real but recoverable cost of the 12-parameter simplification vs NX-17's 44.
+
+<br>
+
+The remaining 18 % at NX-17 has a clean structural explanation. NX-17 averages 4.5 hops where an oracle PNS-ideal lookup would take ~3. Each "extra" hop costs ~δ/2 ≈ 34 ms — exactly the geometric tail Dabek's series predicts.
+
+<span class="callout">**Implication.** Latency optimization within the O(log N) routing class is essentially complete. Further annealing / lookahead tweaks move 1.18× → maybe 1.10× at best — diminishing returns. The remaining R&D axes are churn resilience, pub/sub fan-out, and constant-hop variants.</span>
+
+---
+
 ## Highway %: deployment-realistic knee
 
 **What this slide measures.** Real P2P networks are heterogeneous: most participants run inside a browser (~50–100 connections, the WebRTC ceiling), but some run on real servers with effectively unlimited inbound capacity. We sweep the *fraction* of server-class nodes from 0 → 100 % and measure NH-1 latency at each point.
@@ -743,6 +895,26 @@ The Slice World test partitions the network into Eastern and Western hemispheres
 | **NH-1** | **94.4 %** | 8.7 / 462 | Same mechanism; consolidation costs nothing here |
 
 <span class="callout">A partition like this is what a real outage looks like — a submarine cable fault, an ISP-level filter, a regulatory split. The test measures whether the protocol can **heal** from it.</span>
+
+---
+
+## Slice World — visualized
+
+![bg right:55% fit](images/Slice%20World.png)
+
+The simulator after Slice World setup at 5 K nodes.
+
+**Yellow** = Western hemisphere
+**White** = Eastern hemisphere
+**Green** = at least one non-bridge cross-hem peer
+
+<br>
+
+At setup only **Hawaii** is green — it is the sole bridge between the partitioned halves.
+
+With **Kademlia**, that picture stays frozen during training: no learning, no recovery.
+
+With **NX-17** or **NH-1**, green spreads outward as hop caching, triadic closure, and lateral spread deposit new cross-hem synapses on every successful path through the bridge.
 
 ---
 
@@ -837,14 +1009,16 @@ The protocol cannot ask another node *"where are you?"* — there is no such mes
 
 ## The geoBits = 0 ablation
 
-When we strip the S2 prefix and re-run, regional latency collapses:
+When we strip the S2 prefix from **NH-1** and re-run, regional latency collapses:
 
-| Test | geoBits = 8 | **geoBits = 0** | Δ |
+| Test | NH-1 · geoBits = 8 (hops / ms) | NH-1 · **geoBits = 0** (hops / ms) | Δ ms |
 |---|---:|---:|---:|
 | Global | 5.09 / 263 ms | 5.94 / 453 ms | +72 % |
 | 500 km | 3.31 / 96 ms | **6.01 / 444 ms** | **+363 %** |
 | 2000 km | 3.93 / 123 ms | 6.01 / 437 ms | +255 % |
 | 5000 km | 4.54 / 169 ms¹ | 5.96 / 433 ms | +156 % |
+
+<span class="muted">All cells are NH-1 measurements at 25 K nodes, web-limited (cap = 100), hw = 0. The 4-way comparison covering all protocols at geoBits = 0 is on the next slide.</span>
 
 <span class="muted">¹ The geoBits = 8 baseline at 5000 km is from the headline 4-way comparison run (which measured all five distance bands). The geoBits = 0 sweep run measured 5000 km natively; the geoBits = 8 run in the same sweep skipped 5000 km for time. Numbers are from comparable 25 K, hw = 0 conditions but distinct CSVs.</span>
 
@@ -864,12 +1038,14 @@ If we strip the S2 prefix from *every* protocol simultaneously — and use **can
 
 <span class="muted">25 K nodes, web-limited (cap = 100), omniscient init, **geoBits = 0**, **canonical init**.</span>
 
-| Protocol | Global ms | 500 km ms | 2000 km ms | Notes |
-|---|---:|---:|---:|---|
-| Kademlia | **506** | 511 | 504 | Pure XOR routing; no learning, no locality. |
-| G-DHT | **780** | 765 | 781 | Despite identical bootstrap, **still slower than K-DHT** — the gap is **not** bootstrap, it's G-DHT's `noProgressLimit = 3` (vs K-DHT's 2). An extra "no progress" round per lookup is wasted overhead at geoBits=0. |
-| **NX-17** | **376** | **341** | **355** | Beats Kademlia by **26 %** with identical start and no geographic structure. Pure learning advantage. |
-| NH-1 | 467 | 418 | 439 | Beats Kademlia by **8 %**. Same learning chassis, simpler — pays a measurable consolidation cost vs NX-17. |
+| Protocol | geoBits = 8 · Global ms (reference) | geoBits = 0 · Global ms | geoBits = 0 · 500 km | geoBits = 0 · 2000 km | Notes |
+|---|---:|---:|---:|---:|---|
+| Kademlia | 508 | **506** | 511 | 504 | No locality either way — geoBits doesn't matter to pure XOR. |
+| G-DHT | 284 | **780** | 765 | 781 | Geo-prefix carries G-DHT entirely; without it, a `noProgressLimit = 3` overhead leaves it slower than K-DHT. |
+| **NX-17** | 241 | **376** | **341** | **355** | Loses locality but still beats Kademlia by **26 %** at geoBits = 0 — pure learning advantage. |
+| NH-1 | 269 | 467 | 418 | 439 | Beats Kademlia by **8 %** at geoBits = 0. Same learning chassis as NX-17, simpler — pays a measurable consolidation cost. |
+
+<span class="muted">The first column repeats each protocol's geoBits = 8 baseline so the *learning advantage* and *locality contribution* can be read off the same row. Headline finding is the third column (geoBits = 0 global).</span>
 
 <br>
 
@@ -884,6 +1060,8 @@ If we strip the S2 prefix from *every* protocol simultaneously — and use **can
 ---
 
 ## Init mode × geoBits — the full 2 × 2
+
+<span class="muted">*Reference table — the full bootstrap × locality cross-product. The earlier geoBits=0 ablation slide carries the headline finding; this slide is for readers who want to verify the result holds across all four cells.*</span>
 
 Global lookup latency in milliseconds. **Canonical** = every protocol starts from K-closest-XOR (identical state). **Native** = each protocol's own bootstrap strategy (Kademlia: pure XOR; G-DHT: 50/50 stratified+random; NX-17: 80/20; NH-1: pure XOR).
 
@@ -929,7 +1107,11 @@ Global lookup latency in milliseconds. **Canonical** = every protocol starts fro
 
 ---
 
+<!-- _class: dense -->
+
 ## NX-17 rules and their NH-1 disposition
+
+<span class="muted">*Reference table — the full audit trail of which NX-17 rules survived consolidation and which were dropped. Skip on a first read; consult when you want to know what specifically changed.*</span>
 
 | NX-17 rule | What it does | NH-1 status |
 |---|---|---|
@@ -1060,17 +1242,9 @@ Both are adaptive routing systems. They optimize different things.
 
 ---
 
-## Simulator integrity
+## Example Message Protocol
 
-Five invariants govern every measurement in this deck: **(1)** the bilateral connection cap is honestly enforced (a base-class guard rail audits `connections.size ≤ maxConnections` at post-init, post-warmup, and after every churn round); **(2)** locality is preserved — no optimization reads another node's routing table directly; **(3)** RPC responses are bounded to k=20 peers, the envelope a real WebRTC node could actually return; **(4)** per-protocol parameters reach the protocol they were configured for, with no silent defaults; **(5)** the geographic prefix width is a runtime parameter that flows into every protocol's node-ID construction, including the `geoBits = 0` ablation runs.
-
-<br>
-
-<span class="callout">**Every invariant on this list has been violated at least once during development.** The deck shows post-fix measurements only. Skepticism is the methodology, not a hindrance.</span>
-
----
-
-## Message protocol
+<span class="muted">*Reference slide — the wire-level protocol surface. Skim if you only care about results; consult when you want to know what NH-1 actually exchanges between peers.*</span>
 
 **Two layers.** The application sees exactly two messages — SEND and RECEIVE. Everything else is the lower-level p2p wire protocol that implements them.
 
@@ -1155,11 +1329,106 @@ Honest accounting of where the axonal tree shows seams:
 
 4. **The simulator catches its own bugs.** Skepticism — "if it looks too good to be true, it is" — has saved this deck from at least three retracted findings during this session.
 
-5. **Locality in NH-1 is structural (S2 prefix), not learned.** This is honest, comparable, and a pointed direction for future work (Vivaldi-style coordinate systems).
+5. **Locality in NH-1 is structural (S2 prefix), but the latency map is already in the routing decision.** AP scoring already factors observed RTT into next-hop choice; that latency map is a natural seed for a **Vivaldi-style coordinate system** that could replace the S2 prefix with a *learned* locality primitive — a forward direction we plan to explore in later iterations.
 
 ---
 
-## References
+## Red team review
+
+Two independent red-team passes, both deliberately adversarial — *what would break if we shipped this tomorrow?*
+
+- **`docs/red-team-analysis.md`** (2026-04-21, NX-15 / NX-17 era) — focused on transport friction, congestion, and ID-space security. Most findings remain valid because the simulator they targeted hasn't changed.
+- **`docs/red-team-analysis-nh1.md`** (2026-04-29, NH-1 update) — tracks which gaps NH-1's consolidation closed and which environmental "cheats" still remain.
+
+<br>
+
+The combined verdict, in one paragraph:
+
+> The simplification of NH-1 means the team is now perfectly positioned to tackle the environmental realities that were previously masked by NX-17's complexity. The "brain" of the DHT is now production-ready. The next step is to make sure it can survive in a body that experiences real physical friction — connection setup delays, RPC timeouts, bandwidth saturation, jitter, and an adversarial ID space.
+
+<br>
+
+**Three sections follow:**
+
+- **Light** — what the architecture got right (both reviews)
+- **Dark** — environmental and structural gaps the simulator still hides
+- **Action plan** — three phases of remediation, sequenced from highest behavioral impact to security hardening
+
+<span class="callout">**Premise.** A protocol that cannot be understood cannot be secured or maintained in production. NH-1's parameter collapse from 44 → 12 closes one class of vulnerability — opacity. The remaining classes are the subject of these slides.</span>
+
+---
+
+## Red team — what the architecture got right (the Light)
+
+**1. LTP-driven routing affinity.** Reinforcing edges based on *actual usage and measured latency* organically aligns the overlay with the physical network. Nodes build "highways" to reliable, fast peers rather than arbitrary XOR-close ones that may be on poor links. Both reviews flag this as the central architectural win — and it is what the 3δ floor result quantifies.
+
+<br>
+
+**2. Unified admission gate (NX-17 → NH-1).** NX-17 had stratified eviction floors, two-tier highway management, and adaptive decay all interacting. NH-1 replaces them with `_addByVitality` scored by `weight × recency`. ~10 % latency gap under heavy caps in exchange for a robust, predictable rule that prevents parameter over-fitting.
+
+<br>
+
+**3. Publisher-prefix topic IDs.** `topicId = publisher.cellPrefix(8b) ‖ hash₅₆(name)` deterministically pins each pub/sub root inside the publisher's S2 cell. Local traffic stays local; the publisher's synaptome is already LTP-trained for that exact region. Solves the "random-root geometry" problem that K-closest replication had.
+
+<br>
+
+**4. Honest isolation of learning (geoBits = 0 ablation).** Stripping the S2 prefix and re-running shows learning *alone* yields **+26 % (NX-17) / +8 % (NH-1) over Kademlia** — locality and adaptation separated by measurement, not assertion.
+
+<br>
+
+**5. Documented failure modes.** Forwarder loss under churn, tree rebuild cost, gateway concentration, synaptome-tree coupling, byzantine assumptions — every one named with current mitigation and candidate fix. The tree heals at the speed of the 10-second refresh, not magically via gossip.
+
+---
+
+## Red team — remaining gaps (the Dark)
+
+The **protocol** has improved. The **environment** it lives in has not. NH-1 over the real internet today would likely face cascading timeouts and congestion collapse before the routing logic ever gets to demonstrate itself.
+
+<br>
+
+**1. Frictionless connection fantasy.** Nodes use a peer for routing the moment they discover it. Real WebRTC requires ICE + STUN/TURN + DTLS — **1–3 s of blocking setup, two overlay round trips**. Slice World "unzips" elegantly because hundreds of new triadic closures cost nothing; in production, that would trigger hundreds of simultaneous handshakes and drop the bridge offline.
+
+**2. Asynchronous black holes & missing timeouts.** RPCs to dead nodes return instantly because the simulator knows who is alive. **No timeouts, no dropped packets, no asymmetric path failures** (request goes through, reply doesn't). The 100 % pub/sub recovery under 5 % churn assumes instant detection. In the wild, every churn round costs multi-second timeout windows during which messages are lost.
+
+**3. Gateway concentration & infinite bandwidth.** Hop cost is `10 ms + propagation` regardless of load. A highway node carrying 10 K pub/sub messages has the same modeled cost as an idle one. **Buffer saturation is invisible.** AP scoring keeps hammering the "best" nodes — risk of *success disaster*: LTP reinforces a node until it congests, abandons it, then flocks back when it recovers (oscillatory loops).
+
+**4. Jitter-free latency.** Real RTTs fluctuate ±30 % from bufferbloat, asymmetric paths, and queueing. The simulator's distance-derived latency is monotone and clean. The EMA latency tracker has an easy job; high-frequency noise could prematurely decay good synapses or promote lucky-but-unstable ones.
+
+**5. Sybil forgery & cell eclipse.** The S2 prefix is self-declared. **An attacker can pick any prefix** and generate IDs that land in a target cell. Proof-of-location, Vivaldi RTT clustering, and IP-ASN bounding are all unaddressed.
+
+---
+
+## Red team — action plan for next steps
+
+The simplification of NH-1 unlocks the next research phase: stop flattering the protocol with a frictionless simulator. Phases ordered from highest behavioral impact (immediate observability of friction) to security hardening (long-tail correctness).
+
+<br>
+
+**Phase 1 — Friction modeling** *(highest priority — what the simulator is missing)*
+- **`CONNECTION_SETUP_MS = 1500 – 2000 ms`** — new synapses sit in `PENDING` and are excluded from AP scoring until setup elapses.
+- **`RPC_TIMEOUT_MS = 3000 ms`** — sends to silently-dropped nodes stall before iterative fallback or the next AP hop is tried.
+- **Request / reply RPC** — refactor `routeMessage` to trace forward path *and* reverse path. Either failure fails the RPC; reply may take a different path back.
+
+<br>
+
+**Phase 2 — Load & noise dynamics** *(make the protocol measurable under stress)*
+- **Load-dependent latency.** `effective_delay = base_delay × (1 + active_msg_rate / bandwidth_cap)`. Saturating gateways get penalized in AP scoring and shed traffic naturally.
+- **Bandwidth dropping.** When a node exceeds its modeled cap, drop incoming messages instead of forwarding — exposes whether AP routing routes around overload or piles into it.
+- **Jitter injection** — add `Normal(0, JITTER_SIGMA)` to per-hop RTT. Verify the LTP EMA doesn't catastrophically oscillate; tune the EMA constant if it does.
+
+<br>
+
+**Phase 3 — Structural integrity & trustless locality**
+- **Bidirectional eviction agency.** When A connects to B, B independently runs its own stratified eviction to decide whether to keep the reverse edge — closes a small but real asymmetry in the current bilateral cap model.
+- **Vivaldi RTT integration.** Replace the self-declared S2 prefix with organically learned coordinates — Sybil-resistant locality without trusting peers' self-claims.
+- **Geographic proof of work / IP-ASN binding.** Require geo-prefix to align with a node's actual ASN/region or carry a hash-cash stamp — drastically raises the cost of cell eclipse.
+- **Pub/sub gateway-load mitigation.** Secondary splitting on geo / RTT coordinates so an overloaded axon root sheds children rather than buffering them.
+
+<span class="callout">**Bottom line.** The brain is production-ready. The body is not — but the body is now the next *measurable, scopeable* problem rather than a tangle of interacting mechanisms. Each phase above produces falsifiable measurements; the simulator becomes the lab bench for the next iteration.</span>
+
+---
+
+## References — DHT lineage
 
 **Whitepaper** — `documents/Neuromorphic-DHT-Architecture.md` (this repository, v0.67)
 **Source + data** — <code>github.com/YZ-social/dht-sim</code>
@@ -1176,6 +1445,7 @@ Honest accounting of where the axonal tree shows seams:
 - Zhao et al. · *Tapestry: A Resilient Global-Scale Overlay* (IEEE J-SAC 2004)
 
 ### Latency-aware DHTs
+- Dabek, Li, Sit, Robertson, Kaashoek, Morris · ***Designing a DHT for low latency and high throughput*** (NSDI 2004) — DHash++; the **3δ floor** analysis (§ 4.3) anchors our absolute-latency reference
 - Freedman, Mazières · *Sloppy Hashing and Self-Organizing Clusters* (IPTPS 2003) — the Coral DSHT design
 - Freedman, Freudenthal, Mazières · ***Democratizing Content Publication with Coral*** (NSDI 2004) — Coral CDN deployment
 
@@ -1183,6 +1453,14 @@ Honest accounting of where the axonal tree shows seams:
 - Dabek, Cox, Kaashoek, Morris · ***Vivaldi: A Decentralized Network Coordinate System*** (SIGCOMM 2004)
 - Cox, Dabek, Kaashoek, Li, Morris · *Practical, Distributed Network Coordinates* (HotNets 2003)
 - Ledlie, Gardner, Seltzer · *Network Coordinates in the Wild* (NSDI 2007)
+
+---
+
+## References — substrate
+
+The learning, decay, pruning, and topology priors that the N-DHT translates from biology and classical CS into routing-table maintenance.
+
+<br>
 
 ### Substrate (learning, decay, pruning)
 - Hebb · *The Organization of Behavior* (1949) — synaptic potentiation

@@ -481,6 +481,218 @@ export class Globe {
     this._instancedHitMesh = hitMesh;
   }
 
+  /** Color nodes for a Slice World run.
+   *
+   * Yellow = Western hemisphere (lng < 0) with no cross-hem peer in its
+   *          routing structures.
+   * White  = Eastern hemisphere (lng >= 0) with no cross-hem peer.
+   * Green  = Has at least one peer in the OPPOSITE hemisphere via its
+   *          routing tables (synaptome / incomingSynapses for neuromorphic
+   *          protocols, buckets / incomingPeers for Kademlia / G-DHT).
+   *
+   * Idempotent — safe to call repeatedly. Designed to be invoked once after
+   * pruneSliceWorld establishes the partition (only the bridge node is green
+   * at that moment), then periodically as routing progresses (learning
+   * re-stitches the partition; nodes that gain a cross-hem peer turn green
+   * to visualize the recovery dynamics).
+   *
+   * v0.68.01 — added for Slice World visual narrative.
+   */
+  setSliceWorldColors(dht, bridgeId) {
+    if (!dht || !dht.nodeMap) return;
+    const YELLOW = new THREE.Color(0xFFE040);
+    const WHITE  = new THREE.Color(0xF5F5F5);
+    const GREEN  = new THREE.Color(0x00DD66);
+    const DEAD   = new THREE.Color(C.nodeDead);
+
+    // First call sets the bridge id; subsequent refreshes (from the engine
+    // progress callback) reuse it.
+    if (bridgeId !== undefined) this._sliceBridgeId = bridgeId;
+    const bid = this._sliceBridgeId;
+
+    const nodeMap = dht.nodeMap;
+    const nodes = (typeof dht.getNodes === 'function')
+      ? dht.getNodes()
+      : [...nodeMap.values()];
+
+    // Walk routing-table peers, EXCLUDING the bridge node from the
+    // cross-hemisphere test. The bridge is the only sanctioned cross-hem
+    // peer; non-bridge nodes that simply happen to know the bridge aren't
+    // "bridging" the partition themselves — they're just one routing hop
+    // from the bridge. Only nodes that have a NON-bridge peer in the
+    // opposite hemisphere have actually re-stitched the partition (which
+    // initially is only Hawaii itself, and post-learning is wherever
+    // hop-caching / triadic-closure / lateral-spread has deposited new
+    // cross-hem synapses).
+    const hasCrossHemPeer = (node) => {
+      const nodeWest = node.lng < 0;
+      const checkPeerId = (peerId) => {
+        if (peerId === bid) return false;       // skip bridge
+        const peer = nodeMap.get(peerId);
+        if (!peer || !peer.alive) return false;
+        return (peer.lng < 0) !== nodeWest;
+      };
+      const checkPeerObj = (peer) => {
+        if (!peer || !peer.alive) return false;
+        if (peer.id === bid) return false;      // skip bridge
+        return (peer.lng < 0) !== nodeWest;
+      };
+      if (node.synaptome) {
+        for (const peerId of node.synaptome.keys()) {
+          if (checkPeerId(peerId)) return true;
+        }
+      }
+      if (node.incomingSynapses) {
+        for (const peerId of node.incomingSynapses.keys()) {
+          if (checkPeerId(peerId)) return true;
+        }
+      }
+      if (node.buckets) {
+        for (const bucket of node.buckets) {
+          for (const peer of bucket.nodes) {
+            if (checkPeerObj(peer)) return true;
+          }
+        }
+      }
+      if (node.incomingPeers) {
+        for (const [, peer] of node.incomingPeers) {
+          if (checkPeerObj(peer)) return true;
+        }
+      }
+      return false;
+    };
+
+    // Count NON-BRIDGE cross-hem peers per node so we can render a
+    // gradient (yellow/white → green) instead of a binary flip. The
+    // partition-dissolution dynamic is fast — within seconds of training,
+    // every node has at least one cross-hem peer — so a binary check
+    // saturates instantly. A gradient by count lets the visualization
+    // show the wave of green spreading outward from the bridge.
+    const countCrossHemPeers = (node) => {
+      const nodeWest = node.lng < 0;
+      let n = 0;
+      const checkPeerId = (peerId) => {
+        if (peerId === bid) return;
+        const peer = nodeMap.get(peerId);
+        if (!peer || !peer.alive) return;
+        if ((peer.lng < 0) !== nodeWest) n++;
+      };
+      const checkPeerObj = (peer) => {
+        if (!peer || !peer.alive) return;
+        if (peer.id === bid) return;
+        if ((peer.lng < 0) !== nodeWest) n++;
+      };
+      if (node.synaptome) for (const pid of node.synaptome.keys()) checkPeerId(pid);
+      if (node.incomingSynapses) for (const pid of node.incomingSynapses.keys()) checkPeerId(pid);
+      if (node.buckets) for (const b of node.buckets) for (const p of b.nodes) checkPeerObj(p);
+      if (node.incomingPeers) for (const [, p] of node.incomingPeers) checkPeerObj(p);
+      return n;
+    };
+
+    // Mix base (yellow / white) toward GREEN by a factor that saturates
+    // around 5 cross-hem peers. count=0 → 100 % base. count=1 → ~33 %
+    // green tint. count=5 → ~80 %. count≥10 → near-pure green.
+    const tmp = new THREE.Color();
+    const tintToGreen = (base, count) => {
+      const t = 1 - Math.exp(-count / 3);    // 0 → 0, 1 → 0.28, 3 → 0.63, 5 → 0.81, 10 → 0.96
+      tmp.copy(base).lerp(GREEN, t);
+      return tmp;
+    };
+
+    const counts = { yellow: 0, white: 0, green: 0, dead: 0 };
+    const colorFor = (node) => {
+      if (!node.alive) { counts.dead++; return DEAD; }
+      const nXh = countCrossHemPeers(node);
+      const base = node.lng < 0 ? YELLOW : WHITE;
+      if (nXh > 0) counts.green++;
+      else if (node.lng < 0) counts.yellow++;
+      else counts.white++;
+      return tintToGreen(base, nXh);
+    };
+
+    // ── Instanced path — use the official InstancedMesh.setColorAt API.
+    // setColorAt writes through the existing instanceColor attribute and
+    // is the path that reliably triggers the per-instance USE_INSTANCING_COLOR
+    // shader define on every supported three.js version. The lower-level
+    // attr.setXYZ + needsUpdate pattern works in some configurations and
+    // not others (the buffer mutates but the upload is sometimes skipped),
+    // which produced the "everything looks the same color" bug.
+    if (this._instancedMesh) {
+      const tmp = new THREE.Color();
+      const idxMap = this._instancedIndex;
+      for (const n of nodes) {
+        if (!idxMap) break;
+        const idx = idxMap.get(n.id);
+        if (idx === undefined) continue;
+        tmp.copy(colorFor(n));
+        this._instancedMesh.setColorAt(idx, tmp);
+      }
+      // setColorAt creates instanceColor lazily if absent, but doesn't flag
+      // needsUpdate. Without this the GPU buffer keeps its previous values.
+      if (this._instancedMesh.instanceColor) {
+        this._instancedMesh.instanceColor.needsUpdate = true;
+      }
+    } else {
+      // Individual-mesh path — direct material color update.
+      for (const n of nodes) {
+        const mesh = this._nodeObjects.get(n.id);
+        if (!mesh) continue;
+        const c = colorFor(n);
+        mesh.material.color.copy(c);
+        mesh.material.emissive.copy(c);
+      }
+    }
+    this._sliceMode = true;
+    // Diagnostic — routed to /api/log so it's visible in results/research.log
+    // when the dev console is unavailable (e.g. Claude Code preview sandbox).
+    // The line carries the four-color tally and the average / max cross-hem
+    // peer count so we can tell, on sight, whether the visualization matches
+    // the routing-table state.
+    //
+    // Throttled to once per 500 ms because onProgress fires on every yield
+    // (which is every lookup at YIELD_EVERY = 1). Without a throttle we'd
+    // spam the log with hundreds of identical lines per training session.
+    const now = Date.now();
+    if (!this._sliceLastDiagAt || now - this._sliceLastDiagAt >= 500) {
+      this._sliceLastDiagAt = now;
+      // Recompute aggregate cross-hem stats — we discarded the per-node
+      // counts above (we only kept the bucket sums). One more cheap pass
+      // for diagnostic colour: avg + max non-bridge cross-hem peers.
+      let sum = 0, max = 0, n = 0;
+      for (const node of nodes) {
+        if (!node.alive) continue;
+        const c = countCrossHemPeers(node);
+        sum += c;
+        if (c > max) max = c;
+        n++;
+      }
+      const avg = n > 0 ? (sum / n).toFixed(2) : '0';
+      const diagLine = `[SLICE-COLORS] yellow=${counts.yellow}, white=${counts.white}, green=${counts.green}, dead=${counts.dead}, cross-hem-avg=${avg}, cross-hem-max=${max}`;
+      if (typeof console !== 'undefined') console.log(diagLine);
+      if (typeof fetch !== 'undefined') {
+        try {
+          fetch('/api/log', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entry: diagLine }),
+          }).catch(() => {});
+        } catch { /* non-browser environment */ }
+      }
+    }
+  }
+
+  /** Exit Slice World coloring. Subsequent updateNodeState calls revert
+   *  to the standard alive / dead palette. */
+  clearSliceMode() {
+    this._sliceMode = false;
+    this._sliceBridgeId = undefined;
+  }
+
+  /** True if we're currently rendering Slice World colors. */
+  isSliceMode() {
+    return this._sliceMode === true;
+  }
+
   updateNodeState(nodeId, alive) {
     const data = this._nodeDataMap.get(nodeId);
     if (data) data.alive = alive;

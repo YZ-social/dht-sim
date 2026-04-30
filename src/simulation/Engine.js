@@ -1,4 +1,4 @@
-import { randomU64, computeStats, haversine, continentOf, buildXorRoutingTable } from '../utils/geo.js';
+import { randomU64, computeStats, haversine, continentOf, buildXorRoutingTable, messageLatency } from '../utils/geo.js';
 import { PubSubAdapter, topicIdFor, topicIdForPrefixed } from '../pubsub/PubSubAdapter.js';
 import { applySliceWorldPartition, findNodeNearest } from '../dht/sliceWorld.js';
 
@@ -433,6 +433,7 @@ export class SimulationEngine {
     this.running = true;
     const data   = {};
     const totalProtos = protocolDefs.length;
+    let deltaReported = false;  // δ baseline measurement — once per sweep
 
     for (let defIdx = 0; defIdx < totalProtos; defIdx++) {
       const def = protocolDefs[defIdx];
@@ -444,6 +445,37 @@ export class SimulationEngine {
       // Build phase reported by caller via def.buildFn
       const dht = await def.buildFn();
       if (!dht) continue;
+
+      // δ baseline: median pairwise one-way latency for this population.
+      // Used as the Dabek 3δ theoretical floor for lookup latency.
+      // Only measure once per sweep (population identical across protocols).
+      if (!deltaReported) {
+        deltaReported = true;
+        const allNodes = dht.getNodes().filter(n => n.alive);
+        const SAMPLES = 10000;
+        const oneWay = [];
+        for (let s = 0; s < SAMPLES; s++) {
+          const a = allNodes[Math.floor(Math.random() * allNodes.length)];
+          const b = allNodes[Math.floor(Math.random() * allNodes.length)];
+          if (a.id !== b.id) oneWay.push(messageLatency(a, b));
+        }
+        const stats = computeStats(oneWay);
+        const dLine = `[δ baseline] N=${allNodes.length} samples=${oneWay.length} ` +
+          `median=${stats.median.toFixed(2)}ms mean=${stats.mean.toFixed(2)}ms ` +
+          `p25=${stats.p25.toFixed(2)} p75=${stats.p75.toFixed(2)} ` +
+          `p95=${stats.p95.toFixed(2)} max=${stats.max.toFixed(2)} | ` +
+          `3δ_median=${(3 * stats.median).toFixed(1)}ms ` +
+          `3δ_mean=${(3 * stats.mean).toFixed(1)}ms`;
+        try {
+          fetch('/api/log', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entry: dLine }),
+          }).catch(() => {});
+        } catch (_) { /* ignore */ }
+        // Stash on the engine for the CSV writer to pick up
+        this._deltaBaseline = stats;
+      }
 
       // Optional warmup for protocols that need pre-training (e.g. neuromorphic).
       // Runs a burst of hot-node regional lookups so synaptic weights form before
@@ -1647,7 +1679,7 @@ export class SimulationEngine {
     }
 
     this.running = false;
-    return { protocolDefs, testSpecs, data };
+    return { protocolDefs, testSpecs, data, deltaBaseline: this._deltaBaseline ?? null };
   }
 
   // ── Churn Test ───────────────────────────────────────────────────────────

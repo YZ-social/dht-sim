@@ -1841,6 +1841,16 @@ export class Results {
       if (hasType('churn'))
         extra.push(['Churn rate %', params.benchChurnPct]);
     }
+    // δ baseline (Dabek 3δ floor analysis): median pairwise one-way latency
+    // for the simulated population, plus the theoretical lookup-latency floor.
+    const dB = benchResult?.deltaBaseline;
+    if (dB) {
+      extra.push(['δ median (one-way ms)', dB.median.toFixed(2)]);
+      extra.push(['δ mean (one-way ms)',   dB.mean.toFixed(2)]);
+      extra.push(['δ p95 (one-way ms)',    dB.p95.toFixed(2)]);
+      extra.push(['3δ floor — median (ms)', (3 * dB.median).toFixed(2)]);
+      extra.push(['3δ floor — mean (ms)',   (3 * dB.mean).toFixed(2)]);
+    }
     rows.push(this._paramsSection(params, extra));
 
     rows.unshift(`# DHT Benchmark — ${nodeCount?.toLocaleString()} nodes · ${params?.msgCount ?? 500} lookups/cell`);

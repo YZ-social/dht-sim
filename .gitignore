@@ -30,3 +30,15 @@ results/.ready
 # Python virtualenv (used by presentation tooling)
 documents/presentation/venv/
 **/__pycache__/
+
+# Research papers / reference material — kept locally, not redistributed
+documents/references/
+
+# Intermediate deck rebuilds — milestone PDFs are added explicitly via
+# `git add -f "documents/presentation/N-DHT Presentation v0.X.Y.pdf"`.
+# This keeps session rebuilds out of the working-tree status without
+# affecting any PDFs that are already tracked.
+documents/presentation/N-DHT Presentation v*.pdf
+
+# Stray reference PDFs in the slide-images folder (place under documents/references/)
+documents/presentation/images/*.pdf

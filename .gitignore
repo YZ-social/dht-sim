@@ -42,3 +42,11 @@ documents/presentation/N-DHT Presentation v*.pdf
 
 # Stray reference PDFs in the slide-images folder (place under documents/references/)
 documents/presentation/images/*.pdf
+
+# LaTeX / Tectonic build artifacts in the paper directory
+documents/paper/*.aux
+documents/paper/*.log
+documents/paper/*.blg
+documents/paper/*.bbl
+documents/paper/*.out
+documents/paper/*.toc

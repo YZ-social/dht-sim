@@ -4,7 +4,7 @@ theme: default
 size: 16:9
 paginate: true
 header: "Neuromorphic DHT — NH-1"
-footer: "v0.3.35 · sim v0.69.00 · 2026-04-29"
+footer: "v0.3.45 · sim v0.69.00 · 2026-05-01"
 style: |
   section {
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
@@ -253,44 +253,28 @@ Five invariants govern every measurement in this deck: **(1)** the bilateral con
 
 ---
 
-## Naming as compact vocabulary
+## Glossary — vocabulary used across this deck
 
-Four terms from neuroscience, each mapping to a specific data structure.
-
-| Term | Maps to |
-|---|---|
-| **Synapse** | One directed *outgoing* routing edge with a learned weight ∈ [0, 1] |
-| **Synaptome** | The full set of outgoing synapses at a node — bounded at **50** |
-| **Neuron** | A node: synaptome + temperature + message handlers |
-| **Axon** | A directed delivery tree for one pub/sub topic, grown by routed subscribe |
-
-<br>
-
-The vocabulary is descriptive, not metaphorical. Every term has one and only one corresponding artifact in the source code.
-
-<span class="muted">**Capacity note.** 50 is the cap on *outgoing* synapses. The total bilateral connection budget per node is **100** peers (≈ 50 outgoing + 50 inbound) — chosen as a safe cross-browser WebRTC target. Both numbers are pragmatic: they match the practical ceiling of a typical browser, but the precise split is somewhat arbitrary.</span>
-
----
-
-## Glossary — terms used across this deck
-
-This work spans DHT engineering, reinforcement-learning ideas, and neuroscience. A reader expert in one domain may not know the others' vocabulary. Each term has a fuller treatment later in its dedicated slide.
+This work spans DHT engineering, reinforcement-learning ideas, and neuroscience. A reader expert in one domain may not know the others' vocabulary. **Every term has one and only one corresponding artifact in the source code** — the names are descriptive, not metaphorical.
 
 | Term | Domain | One-line definition |
 |---|---|---|
+| **Synapse** | Neuro → N-DHT | One directed *outgoing* routing edge with a learned weight ∈ [0, 1] |
+| **Synaptome** | Neuro → N-DHT | The full set of outgoing synapses at a node — bounded at **50** |
+| **Neuron** | Neuro → N-DHT | A node: synaptome + temperature + message handlers |
+| **Axon** | Neuro → N-DHT | A directed delivery tree for one pub/sub topic, grown by routed subscribe |
+| **Vitality** | N-DHT | The unified `weight × recency` score that drives every admission and eviction decision. See *FORGET* |
+| **AP score** *(Action Potential)* | N-DHT | Learned-weight ranking on candidate next-hops — combines XOR progress, weight, and latency. See *NAVIGATE* |
 | **K-bucket** | DHT (Kademlia) | Per-stratum routing-table slot, holding up to K=20 peers at a given XOR distance |
 | **XOR distance** | DHT | The Kademlia metric `d(a,b) = a ⊕ b` — symmetric, halving-friendly |
-| **Stratum** | DHT | One XOR-distance level. Stratum *b* = peers whose IDs first differ from yours at bit *b*. Higher *b* = farther in ID-space |
+| **Stratum** | DHT | One XOR-distance level. Stratum *b* = peers whose IDs first differ from yours at bit *b* |
 | **K-closest** | DHT | The K nodes whose XOR distance to a target is smallest — used in routing and replication |
 | **Churn** | DHT | Nodes joining and leaving; measured here as % of original network replaced |
-| **Sponsor-chain bootstrap** | DHT | A new node joins by routing through an existing peer; its routing table fills from observed traffic |
-| **AP score** *(Action Potential)* | N-DHT | The learned-weight ranking on candidate next-hops — combines XOR progress, weight, and latency. See *NAVIGATE* |
-| **Anneal / annealing** | RL | Gradually reduce randomness over time, transitioning from exploration to exploitation. Temperature ↓ over lookups |
-| **Epsilon-greedy** | RL | With probability ε take a random action; otherwise take the best-known. Cheap insurance against premature lock-in |
-| **Vitality** | N-DHT | The unified `weight × recency` score that drives every admission and eviction decision. See *FORGET* |
-| **Synapse / Synaptome / Neuron / Axon** | Neuro → N-DHT | The four mapping anchors — see the *Naming* slide above |
+| **Sponsor-chain bootstrap** | DHT | New node joins by routing through an existing peer; routing table fills from observed traffic |
+| **Anneal / annealing** | RL | Gradually reduce randomness over time, transitioning from exploration to exploitation |
+| **Epsilon-greedy** | RL | With probability ε take a random action; otherwise take the best-known — cheap insurance against premature lock-in |
 
-<span class="muted">If a term in this deck reads as opaque later, it is almost certainly defined here or on the slide it first appears in.</span>
+<span class="muted">**Capacity note.** 50 is the cap on *outgoing* synapses. The total bilateral connection budget per node is **100** peers (≈ 50 outgoing + 50 inbound) — chosen as a safe cross-browser WebRTC target. Both numbers are pragmatic ceilings, not architectural commitments.</span>
 
 ---
 
@@ -320,9 +304,19 @@ NH-1 is *not* a fresh parallel design — it is the result of a careful analysis
 
 ## K-DHT — Kademlia, the foundation
 
-**Distance metric:** XOR — `d(a, b) = a ⊕ b`
-**Routing table:** Every node maintains K peers per bucket. Lookup is a greedy walk toward the target in XOR distance, with α=3 parallel queries and K=20.
-**Properties:** O(log N) hops in steady state. Static, predictable, analyzable.
+**Kademlia** (Maymounkov & Mazières, IPTPS 2002) is the routing substrate **every NH-1 node still uses at its bottom layer**. Full mechanism + N-DHT comparison appears later in the deck (*Kademlia vs N-DHT* in the comparison section).
+
+<br>
+
+**Mechanism in one paragraph.** Each node maintains **K=20 peers per XOR-distance bucket** — `d(a, b) = a ⊕ b` interpreted as an integer; symmetric, triangle-inequality. Lookup issues **α=3 parallel asynchronous `FIND_NODE` queries** to the closest known peers and iterates until the K closest are reachable. Bucket eviction is LRU-with-old-bias: live old contacts are kept (Saroiu observation: longer uptime predicts longer uptime), only stale ones replaced. **O(log₂ N) hops** in steady state. Production: BitTorrent Mainline DHT, Ethereum devp2p, IPFS / libp2p, Tor v3 hidden services.
+
+<br>
+
+**Why DHTs are slow.** With **N = 1 million** nodes, log₂ N ≈ **20 hops**. Random IDs spread peers homogeneously across the globe; an average pair sits roughly **half the planet** apart — about **100 ms one-way RTT**. The naïve calculation:
+
+> **Average message time ≈ 20 hops × 100 ms ≈ 2 seconds.**
+
+Too slow for real-time applications. *This is the gap N-DHT exists to close.*
 
 <br>
 
@@ -333,29 +327,37 @@ NH-1 is *not* a fresh parallel design — it is the result of a careful analysis
 | Lazy churn repair | Broken edges persist until next bucket refresh |
 | Broadcast cost O(audience) | Each pub/sub recipient reached by an independent lookup |
 
-<br>
-
-<span class="muted">K-buckets were a 2002 answer to "what's a stable routing table?" — static, predictable, analyzable. We will argue that adaptive weighting does better in practice.</span>
-
-<span class="callout">The data structure is frozen. The network is not.</span>
+<span class="callout">The data structure is frozen. The network is not. K-buckets were a 2002 answer to "what's a stable routing table?" — N-DHT keeps the structure and replaces the eviction policy with vitality.</span>
 
 ---
 
 ## G-DHT — adding geographic locality
 
-**The change:** `nodeId = S2 cell prefix (8 bits) ‖ H(publicKey)`.
-
-XOR in the ID space now approximates XOR in physical distance — the prefix dominates. Same K-bucket routing as Kademlia, no other changes.
+**The change:** `nodeId = S2 cell prefix (8 bits) ‖ H(publicKey)`. XOR in the ID space now approximates physical distance — same K-bucket routing as Kademlia, no other code changes. *(More on the S2 cell prefix on the next slide.)*
 
 <br>
 
-**Result at 25 K:**
+**Why this dramatically improves performance.** Most of a user's connections are *geographically local* — social, transactional, real-time. With a location prefix, **local connections are XOR-close in ID space** as well as physically close, so the metric becomes meaningful for the traffic that actually dominates.
+
+**Back-of-the-envelope.** With ~**10 K nodes in a region** and **~7 ms per hop** within a continental cell: `log₂(10K) ≈ 13` hops × 7 ms ≈ **90 ms** for an in-region message. Compare against Kademlia's ~2 s for the same logical operation on a 1 M-node network.
+
+<br>
+
+**Network of networks.** When communicating with a far-away node, G-DHT first finds *any* peer inside the target's geographic neighborhood; once there, the remaining hops are short and efficient. The architecture is a hierarchy: long-distance edge → short-distance refinement. **This also improves global performance** — long-haul hops happen *once* per lookup, not at every step.
+
+<br>
+
+**Measured result at 25 K (our simulator):**
 - 500 km regional latency: 510 ms → **150 ms** (3.4× faster)
-- Global latency: 498 ms → **287 ms**
+- Global latency: 498 ms → **287 ms** (1.7× faster)
 
 <br>
 
-But still a *static* routing algorithm. No learning. No dynamics. The geographic prefix is a one-time topology decision, not an ongoing adaptation. Pub/sub is still bolted on top via K-closest replication, which drifts under churn.
+**The tradeoff: security vs performance.** A pure-Kademlia public-key ID is a random number — its position in the network reveals nothing about the node holder. A geographic prefix lets an attacker surmise the *approximate region* of the node. The risk is offset by the sheer number of nodes per cell, and a node holder may also spoof their location for added privacy at the cost of routing efficiency. *Failure modes detailed two slides on (S2 — security implications).*
+
+<br>
+
+But G-DHT is still a *static* routing algorithm — no learning, no dynamics. The prefix is a one-time topology decision; pub/sub is still bolted on via K-closest replication, which drifts under churn.
 
 ---
 
@@ -419,6 +421,10 @@ The S2 prefix in a node ID is **self-declared**. A node can claim any prefix it 
 <br>
 
 <span class="callout">We accept a small performance gap against NX-17 in exchange for an architecture that one engineer can hold in their head — and that future engineers can extend without archeology.</span>
+
+<br>
+
+<span class="muted">**Lineage note.** NH-1's synaptome **consolidates Pastry's three-tier routing state** (Rowstron & Druschel 2001) into a single vitality-scored set: high-vitality entries play the role of Pastry's **leaf set** (terminal-hop core), mid-vitality entries play the role of the **routing table R** (XOR-stratum coverage), low-vitality and 2-hop-sample entries play the role of the **neighborhood set M** (annealing replacement pool). The roles persist; the bookkeeping is unified.</span>
 
 ---
 
@@ -511,7 +517,7 @@ The two factors are conventional individually. Hebbian potentiation (Hebb, 1949)
 
 ## STRUCTURE — bootstrap and deployment realism
 
-**Stratified bootstrap.** Each new node is seeded with peers covering all XOR strata uniformly. Without this, the cold-start synaptome is dominated by lucky neighbors — local hops form, long hops don't.
+**Stratified bootstrap.** Each new node is seeded with peers covering all XOR strata uniformly. Without this, the cold-start synaptome is dominated by lucky neighbors — local hops form, long hops don't. **The locality-preservation idea** — *route the join message through an existing nearby peer and fill your routing table from the nodes encountered along the way* — is **Pastry's locality-preserving join** (Rowstron & Druschel, Middleware 2001) carried over to Kademlia-style XOR strata.
 
 **Mixed-capacity deployment ("highway %").** Real P2P networks are heterogeneous: most peers are browsers (WebRTC ~100 connections), some are server-class (effectively unlimited).
 
@@ -539,7 +545,7 @@ AP(syn, target) = progress(syn, target) × syn.weight × ½^(latency_ms / 100)
 
 **Two-hop lookahead.** When no first-hop is decisively best, probe for the best second-hop candidates and pick the path with the highest combined score.
 
-**Iterative fallback.** If AP returns no candidate (every neighbor is "wrong direction"), fall back to k-closest-from-synaptome and retry. This rescues lookups that would otherwise stall in dead corridors.
+**Iterative fallback** *(also known in the P2P literature as **surrogate routing** — Zhao et al. Tapestry, JSAC 2004).* If AP returns no candidate (every neighbor is "wrong direction"), fall back to k-closest-from-synaptome and retry. This rescues lookups that would otherwise stall in dead corridors. The mechanism is canonical; we adopt the established term to make the lineage clear.
 
 <span class="callout">AP routing is *not* greedy XOR with weights bolted on. The latency penalty makes nearby fast peers preferred over slightly-better-XOR distant ones — this is what makes the protocol *latency-aware* rather than purely *distance-aware*.</span>
 
@@ -665,6 +671,10 @@ Five requirements — the rest of this section is the answer to each.
 <br>
 
 <span class="callout">100 % delivery baseline; **100 % recovered delivery** under 5 % churn at 25 K nodes.</span>
+
+<br>
+
+<span class="muted">**Lineage.** This mechanism is structurally **SCRIBE** (Castro, Druschel, Kermarrec, Rowstron — JSAC 2002, layered on Pastry): routed subscribe + reverse-path forwarding multicast tree. NH-1 inherits the recipe and adds two refinements — *adaptive re-subscribe* as the liveness primitive (no separate ping) and *batch adoption on overflow* (axon trees grow in O(1) DHT operations rather than per-subscriber). Bayeux (Zhuang et al. 2001, on Tapestry) is the analogous mechanism in the OceanStore family.</span>
 
 ---
 
@@ -840,7 +850,36 @@ Same global lookup test (500 random source/destination pairs). Each cell shows *
 
 The remaining 18 % at NX-17 has a clean structural explanation. NX-17 averages 4.5 hops where an oracle PNS-ideal lookup would take ~3. Each "extra" hop costs ~δ/2 ≈ 34 ms — exactly the geometric tail Dabek's series predicts.
 
+<br>
+
+<span class="muted">**Cross-reference: Tapestry RDP.** The Berkeley Tapestry paper (Zhao et al., JSAC 2004) reports the same kind of result with a complementary metric — **RDP (Relative Delay Penalty)** = `route latency ÷ direct IP latency` — measured *per pair*, then summarized as median + 90th percentile. Their median wide-area RDP ≈ 1; 90th percentile ~2–3 (with location-pointer optimization). The 3δ floor is **median-only / theory-only**; RDP exposes per-pair tail behavior the median hides. Future work: report RDP-style distributions alongside the 3δ analysis to expose tail latency on bad source / destination pairings.</span>
+
 <span class="callout">**Implication.** Latency optimization within the O(log N) routing class is essentially complete. Further annealing / lookahead tweaks move 1.18× → maybe 1.10× at best — diminishing returns. The remaining R&D axes are churn resilience, pub/sub fan-out, and constant-hop variants.</span>
+
+---
+
+## Learning beats locality — even without geography
+
+A skeptical reader of the 3δ floor result might suspect the **S2 geographic prefix is doing all the work** — that the neuromorphic protocols are just sharpening routes that geography already establishes. To answer this directly, we strip the prefix (`geoBits = 0`, random IDs only, no geographic structure) and re-run.
+
+<br>
+
+**Global lookup latency, 25 K nodes, canonical init** *(every protocol starts from identical K-closest-XOR routing tables — controls bootstrap variance):*
+
+| Protocol | Without geo prefix (geoBits = 0) | With geo prefix (geoBits = 8) | Improvement vs Kademlia (no geo) |
+|---|---:|---:|---:|
+| **K-DHT** (Kademlia) | **506 ms** | 508 ms | — *(baseline; no geo by design)* |
+| **G-DHT** | 780 ms¹ | 284 ms | — *(geo prefix is its only mechanism)* |
+| **NX-17** | **376 ms** | **241 ms** | **−26 % from learning alone** |
+| **NH-1** | 467 ms | 269 ms | **−8 % from learning alone** |
+
+<br>
+
+**The headline.** With *no geographic information whatsoever*, **NX-17 is 26 % faster than Kademlia** and **NH-1 is 8 % faster** — purely from LTP-driven path reinforcement. Add the S2 prefix back in and the gap widens further (NX-17 → 1.18× the 3δ floor at 50 K). **Learning is doing real work**, not just sharpening pre-existing geographic structure.
+
+<span class="callout">**Geography helps; geography is not necessary.** The neuromorphic learning algorithm delivers measurable latency benefit even on a topology with no exploitable structure — the cleanest possible "learning helps" claim. Detail and methodology in the *geoBits = 0 — isolating the learning advantage* slide later in the deck.</span>
+
+<span class="muted">¹ G-DHT's geoBits=0 result reflects its `noProgressLimit = 3` lookup-tuning choice (vs K-DHT's 2). At geoBits=0 with no real geographic gradient, the extra "no progress" rounds are wasted overhead. An architectural finding the methodology surfaced.</span>
 
 ---
 
@@ -1005,6 +1044,10 @@ The protocol cannot ask another node *"where are you?"* — there is no such mes
 
 **Latency is used in routing**, indirectly: AP scoring includes a `½^(latency_ms/100)` penalty, so observed round-trip time (**RTT**) influences hop selection. Fast peers win at every distance — that is the speed-first priority in action.
 
+<br>
+
+<span class="muted">**Lineage note.** *Putting locality in the routing layer itself* is the canonical contribution of the parallel **Tapestry** (Zhao et al., JSAC 2004) and **Pastry** (Rowstron & Druschel, Middleware 2001) lineages — both store the closest match by RTT in each routing-table slot, and Pastry's locality-preserving join carries the property to new nodes without exhaustive search. NH-1 inherits the instinct from both and pushes it further: **structural** (S2 prefix at bootstrap, three-tier role decomposition via vitality) plus **dynamic** (latency penalty in AP scoring, evolving via LTP). Both axes are descended from the Pastry / Tapestry choice; the *learning* is what we add.</span>
+
 ---
 
 ## The geoBits = 0 ablation
@@ -1166,6 +1209,193 @@ The residual gap reflects two things:
 
 ---
 
+## What is Kademlia?
+
+**Maymounkov & Mazières** (NYU — IPTPS 2002, *Kademlia: A Peer-to-peer Information System Based on the XOR Metric*) is **the foundational paper N-DHT is built on**. Every Kademlia idea — the XOR metric, K-buckets, α-parallel lookup, the four-RPC protocol — survives literally inside NH-1. Without Kademlia, there is no N-DHT.
+
+<br>
+
+**The XOR metric.** Distance between two 160-bit IDs is `d(x, y) = x ⊕ y` — the bitwise XOR interpreted as an integer. **Symmetric** (`d(x,y) = d(y,x)`) and obeys the triangle inequality. Symmetry is what makes Kademlia self-organizing: every message a node receives — request *or* reply — conveys useful contact information that updates the recipient's routing table. Asymmetric metrics (Chord's clockwise distance) force one-way table maintenance and rigid finger-table positioning.
+
+**K-buckets.** Each node maintains up to **K=20 peers** per XOR-distance interval `[2^i, 2^(i+1))`. Lists are sorted by last-seen — least-recently-seen at the head. New contacts are inserted at the tail; **live old contacts are never evicted**, only stale ones. This LRU-with-old-bias policy exploits a key empirical observation (Saroiu et al.): *the longer a peer has been up, the more likely it stays up another hour.* Old contacts are the reliable ones.
+
+**α-parallel lookup.** To find the K nodes closest to a target ID, a node issues **α=3 parallel asynchronous `FIND_NODE` RPCs** to its α closest known peers. Each response narrows the candidate set; the node iterates until the K closest seen are all reachable. Parallelism trades a constant-factor bandwidth increase for **delay-free fault tolerance** — if one query times out, two others are already in flight.
+
+**Four RPCs:** `PING`, `STORE`, `FIND_NODE`, `FIND_VALUE`. The entire protocol surface fits in this set.
+
+**Production deployments.** BitTorrent Mainline DHT (millions of simultaneous nodes since 2005), Ethereum devp2p (peer discovery for blockchain consensus), IPFS / libp2p (content routing), Tor v3 hidden services (onion-service descriptor lookup). **The most-deployed DHT family in production.**
+
+<span class="callout">**For this project:** Kademlia is N-DHT's literal substrate. Every learning rule, every vitality calculation, every axonal tree sits *on top of* Kademlia routing. When AP scoring fails (NX-4 iterative fallback), the protocol falls back to *unmodified Kademlia*. The relationship is not analogical — it is **structural inclusion**.</span>
+
+---
+
+## Kademlia vs N-DHT
+
+The most important comparison in this section. **N-DHT does not replace Kademlia — it adds learning on top of it.**
+
+| Aspect | Kademlia | N-DHT |
+|---|---|---|
+| **Distance metric** | XOR, symmetric, triangle-inequality | **Same XOR metric** — inherited unchanged |
+| **Routing-table structure** | K-buckets, K=20 per stratum | **K-buckets become the synaptome** — same per-stratum layout, K capped at 50 total entries |
+| **Eviction policy** | LRU within bucket; live old peers never evicted | **Replaced by vitality** (`weight × recency`) — generalizes the "old-is-better" heuristic to traffic-driven evidence |
+| **Lookup parallelism** | α-parallel async `FIND_NODE` (α=3) | **Same α-parallel pattern** retained for iterative fallback; AP scoring narrows the parallel set |
+| **Routing decision** | Pick α closest by XOR | **Pick best by AP score** = `progress × weight × ½^(latency/100)` — XOR is one of three factors, not the only one |
+| **Self-organization** | Every incoming/outgoing message updates a K-bucket | **Same** — plus LTP reinforcement on successful paths |
+| **Pub/sub** | Out of scope | First-class — axonal trees on top of Kademlia routing |
+| **Locality** | None — IDs are random hashes | S2 prefix at bootstrap + AP latency penalty + LTP reinforcement |
+
+<br>
+
+**Where they overlap.** **Everything below the synaptome layer is Kademlia.** XOR distance, K-buckets, α-parallel lookup, the four-RPC protocol surface, the symmetric-metric self-organization, the "trust old peers" heuristic — all retained literally. NX-4 iterative fallback is the path the protocol takes when learning provides no signal: pure Kademlia.
+
+**Where N-DHT continues.** Three additions, in order of impact: **(1)** synapses carry weights reinforced by LTP (Hebbian learning replaces XOR-only ranking); **(2)** S2 prefix in IDs gives bootstrap locality (Kademlia is locality-blind); **(3)** axonal trees provide a built-in pub/sub primitive (Kademlia has no broadcast).
+
+<span class="callout">**The relationship is structural, not analogical.** N-DHT's value proposition is *"everything Kademlia does, plus learning."* The 3δ-floor result and the Slice World recovery are improvements *on top of* a working Kademlia substrate — not replacements for it. When you read NH-1 source code, you read Kademlia idioms throughout.</span>
+
+---
+
+## What is Pastry / SCRIBE?
+
+**Rowstron & Druschel** (Microsoft Research + Rice — Middleware 2001, *Pastry: Scalable, decentralized object location and routing for large-scale peer-to-peer systems*) is the **direct sibling of Tapestry** — same era, same family (prefix-based + locality-aware), substrate for **PAST** (persistent storage) and **SCRIBE** (pub/sub). Together Pastry and Tapestry are the **two foundational lineages** for any locality-aware adaptive DHT.
+
+<br>
+
+**The defining contribution: three-tier routing state.** Each Pastry node maintains:
+
+| Structure | Purpose | Size at b=4 |
+|---|---|---|
+| **Routing table R** | Prefix-matched routing across `⌈log_(2^b) N⌉` rows × `2^b − 1` entries | ~75 entries at 1 M nodes |
+| **Leaf set L** | Numerically-closest peers; used for the **final routing hop** | 16–32 entries |
+| **Neighborhood set M** | RTT-closest peers; **not routed through** but kept current to maintain locality | 16–32 entries |
+
+**Locality-preserving join.** When a new node X joins, it asks a nearby existing node A to route a "join" message with key=X. Each node along the path sends X its tables; **X takes row n of its routing table from the n-th node along the route**. Triangulation-inequality argument preserves locality without exhaustive search. A second-stage refinement queries each entry's own tables for closer alternatives.
+
+**SCRIBE pub/sub** (Castro, Druschel, Kermarrec, Rowstron — JSAC 2002, layered on Pastry): `topicId = hash(name)` → subscribe routed to the rendezvous point; **every node along the path records subscriber state**; publisher sends to rendezvous; multicast tree formed by the **reverse paths** of all subscribes. **This is structurally identical to NH-1's axonal-tree mechanism** — same recipe, our terminology.
+
+**Headline metrics.** ~5 hops at 100 K nodes (= `⌈log_16 100K⌉`); RDP ~1.3–1.4× the complete-routing-table optimum; locates closest of k=5 replicas 76 % (92 % top-2) of the time; 57 RPCs to repair tables per failed node; ~3000 msg/s per Java node, unoptimized.
+
+<span class="callout">**For this project:** Pastry contributed the **three-tier routing state** that NH-1's vitality-scored synaptome consolidates, and **SCRIBE** is the structural ancestor of axonal-tree pub/sub. Pastry is the *structural* sibling of Tapestry's *architectural* contribution.</span>
+
+---
+
+## Pastry vs N-DHT
+
+The cleanest one-paragraph framing: **NH-1's synaptome is Pastry's R/L/M collapsed into a single tier scored by `weight × recency`. The roles persist; the bookkeeping is unified.**
+
+<br>
+
+| Aspect | Pastry | NH-1 |
+|---|---|---|
+| **Routing state** | **Three explicit tables** (R, L, M) | **One vitality-scored synaptome** that places each peer into its effective tier |
+| **Leaf set role** | Numerically-closest 16–32 peers, terminal-hop guarantee | Synaptome's **high-vitality core** — well-trafficked nearby peers, dominate terminal-hop routing |
+| **Routing table role** | Prefix-matched coverage, ~75 entries | **Mid-vitality** entries distributed across XOR strata |
+| **Neighborhood set role** | RTT-close peers kept for locality maintenance | **Low-vitality entries + 2-hop annealing pool** — candidate replacements, not primary routes |
+| **Locality** | Static after locality-preserving join; lazy repair | Continuously evolved via LTP, triadic closure, hop caching, lateral spread |
+| **Pub/sub** | SCRIBE — routed subscribe + reverse-path forwarding tree, layered on top | **Axonal trees** — same mechanism, built into the protocol; tree adapts via re-subscribe |
+| **Bootstrap** | Locality-preserving join (take row n from n-th hop) | Sponsor-chain join — **directly inherited from Pastry**, generalized to XOR strata |
+
+<br>
+
+**Where they overlap (deeply).** Three concrete inheritances: **(1)** the three-tier routing state, even if NH-1 collapses it; **(2)** locality-preserving join — Pastry formalized it, we still use it; **(3)** SCRIBE → axonal trees — *the same mechanism*, named differently.
+
+**Where N-DHT continues.** Pastry's locality is *static after bootstrap*; ours *evolves* via LTP. SCRIBE trees are *fixed by routing topology*; our axon trees *re-shape* via re-subscribe and incoming promotion. Pastry's leaf set is fixed-size and ID-proximal; our high-vitality core is *traffic-earned*.
+
+<span class="callout">**Pastry is the structural ancestor; Tapestry is the architectural ancestor.** Together they give us the two foundational lineages, and NH-1 sits at the synthesis point: Pastry's three-tier structure (consolidated into vitality), Tapestry's locality-aware routing (made dynamic via AP scoring), Pastry's SCRIBE (made adaptive via re-subscribe), Tapestry's soft-state repair (event-triggered + Patchwork). NH-1 = Berkeley + Cambridge + learning.</span>
+
+---
+
+## What is Tapestry / DOLR?
+
+**Zhao, Huang, Stribling, Rhea, Joseph, Kubiatowicz** (UC Berkeley + MIT — JSAC 2004, *Tapestry: A Resilient Global-Scale Overlay for Service Deployment*) is **the foundational paper on putting locality, soft-state, and resilience in the routing layer itself**. It was the substrate for OceanStore, Bayeux multicast, Mnemosyne steganographic storage, and Spamwatch — the closest-shaped historical ancestor of the entire NH-1 architecture.
+
+<br>
+
+**Two core ideas:**
+
+- **Prefix routing with locality optimization.** Like Pastry, Tapestry routes by progressively matching one more digit of the destination ID per hop (base β=16, log₁₆ N hops). The Tapestry-specific contribution: at each routing-table slot, the entry stored is the **closest node by RTT** that matches the prefix at that level. The routing table is built at node insertion via iterative nearest-neighbor search.
+- **DOLR — Decentralized Object Location and Routing.** A different API from "DHT": `PublishObject`, `RouteToObject`, `RouteToNode`. When a server stores object O at GUID, it routes a *publish* message toward O's deterministic root; **every node along the publish path stores `<GUID, server>` as a soft-state location pointer.** Queries route toward the root and intersect the publish path early. The "tree" of replica locations *emerges from the union of publish paths*, not from explicit construction.
+
+<br>
+
+**Headline metric — RDP (Relative Delay Penalty)** = `Tapestry route latency ÷ direct IP latency`. Median ≈ 1 in the wide area; 90th percentile ~2–3. With `(k backups, l nearest, m hops)` location-pointer optimization, 90th-percentile RDP drops below 4 even at short distances. **~100 % routing success under massive failures (20 % kill, 50 % join) and continuous churn (4-min mean lifetime).**
+
+<span class="callout">**For this project:** Tapestry is *not* a parallel mechanism to compare against — it is the **historical precedent** for three of NH-1's four design pillars (locality, soft-state, resilience). Where it stops, our learning continues; where it ends with Bayeux-on-top, our pub/sub is built-in.</span>
+
+---
+
+## Tapestry vs N-DHT
+
+The closest-shaped ancestor — and the clearest "what we inherit, what we add" comparison.
+
+| Aspect | Tapestry / DOLR | N-DHT |
+|---|---|---|
+| **Routing primitive** | Prefix matching, base β=16 | Kademlia XOR (Kademlia base-2 strata) |
+| **Locality in routing table** | **Closest node by RTT** stored per prefix slot, built at insertion | **Latency-penalized AP score** evaluated dynamically per lookup; S2 prefix in IDs structurally seeds locality |
+| **When locality is set** | Once, at node insertion (RTT-optimized routing table) | Continuously — every successful lookup reinforces locality via LTP |
+| **Replica location** | Soft-state pointers along publish paths; query intersects | Axonal trees rooted at deterministic topic ID; subscribers attach during routed subscribe |
+| **Surrogate routing** *(canonical term — Tapestry's name)* | Built-in: when deterministic root is dead, route to closest live ID | NX-4 *iterative fallback* — same mechanism, different name |
+| **Resilience** | Soft-state mesh repair: event-triggered + Patchwork background probes | Temperature reheat on dead-peer discovery; vitality eviction; iterative fallback |
+| **Pub/sub** | Layered on top — Bayeux multicast | Built-in — axonal delivery trees |
+| **Deployment** | Server-class Java on PlanetLab (~100 machines) | Browser-class WebRTC, simulator targeting 50 K nodes |
+
+<br>
+
+**Where they overlap (deeply).** *Soft-state location pointers along the publish path* is structurally identical to *axonal subscribe-attach along the routed path*. *Surrogate routing* is exactly NX-4 iterative fallback. *Mesh repair* (event + Patchwork) is the same family as our reheat + anneal. *Multiple backup pointers per slot* is what our weighted synaptome candidates do at the slot level. The deeper overlaps are not coincidence — they are *NH-1 inheriting Tapestry's architectural choices and pushing them further with learning*.
+
+**Where N-DHT continues.** Tapestry's locality is *static after bootstrap*; ours is *continuously evolved* via LTP, triadic closure, hop caching, lateral spread. Tapestry's pub/sub was layered (Bayeux); ours is built-in. Tapestry's deployment was server-class; ours targets browser-WebRTC.
+
+<span class="callout">**The lineage is direct.** Tapestry put locality and resilience in the routing layer; NH-1 makes those properties *learn from traffic*. Citing Tapestry prominently doesn't dilute our claim — it positions our work in continuity with two decades of validated foundational research. The Berkeley OceanStore family is the closest-shaped ancestor; we are an evolutionary step on that line, not a clean-room reinvention.</span>
+
+---
+
+## What is adaptive stabilization?
+
+**Ghinita & Teo** (National University of Singapore — IPDPS 2006, *An Adaptive Stabilization Framework for Distributed Hash Tables*) addresses one of the longest-running problems in DHT design: **how often should a peer check that its routing table is still correct?**
+
+Most DHTs (Chord, Pastry, CAN) run **periodic stabilization** — a fixed-interval timer that pings neighbors and refreshes pointers. Their core claim: *a fixed rate is wrong almost everywhere*. Too low → lookup failure spikes during churn bursts (their data: 23.7 % failure at 5 / sec churn). Too high → 400 %+ communication overhead even during quiet periods.
+
+<br>
+
+**Mechanism: each peer estimates local conditions, models pointer staleness probabilistically, and triggers checks only when warranted.** Per peer:
+
+- Estimate **node failure rate μ** and **node join rate λ** locally (rolling window of observations)
+- Estimate **network size N** from successor-list density
+- Compute **`P_dead(p) = 1 − exp(−μ × Δt)`** (probability pointer p's target died) and **`P_inacc(p)`** (probability a new joiner now sits between p and its ideal target)
+- **Split stabilization into two channels with very different costs:**
+  - **Liveness check** — O(1) ping, fires when `P_dead × P_fwd > threshold`
+  - **Accuracy check** — O(log N) lookup, fires when `P_inacc > threshold`
+- Operate against a single tunable knob: **target lookup failure rate `Pf`**
+
+**Headline result.** On Chord with variable churn (peak-hour pattern), Adaptive Stabilization (AS) hits **2.2 % peak failure at 172 % overhead** — vs Periodic Stabilization's **7.5 % failure at 420 % overhead**. **3.4× lower failure, 2.4× lower overhead** simultaneously, by self-tuning rather than hand-picking a rate.
+
+<span class="callout">**For this project:** this is the closest match in *mechanism family* of any DHT comparison we make. The instinct — "the protocol should adapt itself based on local observation, not run on a fixed schedule" — is exactly the Neuromorphic instinct. The difference is what they tune (maintenance rate) vs what we tune (synaptome composition).</span>
+
+---
+
+## Adaptive stabilization vs N-DHT
+
+Both reject fixed-schedule maintenance. Different observables, different actions.
+
+| Aspect | Ghinita & Teo (Adaptive Stabilization) | N-DHT |
+|---|---|---|
+| **What's adapted** | Stabilization rate per routing pointer | Synaptome composition (which peers are kept) |
+| **Trigger** | `P_dead` or `P_inacc` exceeds threshold | Dead-peer discovery (reheat); per-lookup probabilistic anneal |
+| **Local observable** | Node failure rate **μ**, join rate **λ** estimated from routing table | Per-synapse `weight × recency`; observed dead peers |
+| **Statistical model** | Closed-form: `P_dead = 1 − exp(−μΔt)`, `P_inacc` from new-joiner density | None — vitality is a heuristic correlate, not a probabilistic model |
+| **QoS knob** | **Yes — single dial `Pf` (target lookup failure rate)** | **No — parameters are tuned by sweep, not by a target** |
+| **Liveness vs accuracy** | **Explicit decoupled channels** with different cost / threshold | **Implicit, mixed** — both fire as side-effects of routing |
+| **What survives** | Routing pointers (back to canonical-XOR ideal) | Routing pointers (toward traffic-shaped optimum) |
+
+<br>
+
+**Where they overlap.** Decentralized self-monitoring + threshold-triggered protocol response — the same control-loop architecture as our **temperature reheat** (NX-6), Makris's **DFE migration**, and the proposed **load-aware AP scoring**. *Four independent works converging on the same architectural pattern* is meaningful evidence that this is a recognizable design class, not a one-off choice.
+
+**Where they differ.** Ghinita-Teo is purely *statistical* — derive analytical formulas, estimate parameters, threshold. NH-1 is *biological* — synaptic weights, vitality, decay. Both work; both have limits. **The synthesis would be NH-1 with Ghinita-style statistical estimation of churn driving adaptive anneal/reheat parameters.**
+
+<span class="callout">**The headline trade.** Their stabilization brings a Chord routing table back to its canonical ideal under churn. Our learning evolves the routing table *away* from the canonical ideal toward a traffic-shaped one. **Combining the two — Ghinita's adaptive *cadence* with NH-1's adaptive *content* — is the metaplastic NH-1 we keep gesturing at.**</span>
+
+---
+
 ## What is Coral DSHT?
 
 **Coral** (Freedman, Freudenthal, Mazières — NSDI 2004) is a **distributed sloppy hash table** that powered Coral CDN — one of the earliest production decentralized content-distribution networks. Coral coined the term *DSHT* to distinguish itself from strict DHTs.
@@ -1242,6 +1472,101 @@ Both are adaptive routing systems. They optimize different things.
 
 ---
 
+## What is route-diversity replication?
+
+**Castro, Druschel, Ganesh, Rowstron, Wallach** (Microsoft Research / Rice — OSDI 2002, *Secure Routing for Structured Peer-to-Peer Overlay Networks*) is the foundational paper on **Byzantine fault tolerance** in DHTs. They prove that three jointly-necessary mechanisms make a DHT robust against malicious nodes: **constrained routing tables**, **secure node ID assignment**, and **redundant routing**. The third is what later work elaborates.
+
+**Harvesf & Blough** (Georgia Tech — IEEE P2P 2007, *The Design and Evaluation of Techniques for Route Diversity in Distributed Hash Tables*) makes the redundant-routing piece concrete with a clean theorem:
+
+<br>
+
+**To produce d disjoint routes from any source to a key k in a prefix-matching DHT with base B,**
+**replicate k at (n+1) × B^m locations,** with `m = ⌊(d−1)/(B−1)⌋` and `n = (d−1) mod (B−1)`.
+
+<br>
+
+The replicas are placed by **varying the length of common prefix** among replica IDs — so that any two routes from a query node to the replica set diverge at the first hop and never share an intermediate. Two complementary techniques:
+
+- **MaxDisjoint replica placement** — the placement formula above. Multiple disjoint paths to the *content*.
+- **Neighbor Set Routing (NBR)** — issue the lookup through the source's *neighbors'* tables, not just your own. Multiple disjoint paths from the *source*.
+
+**Empirical headline (1024-node Pastry, 8 replicas, 100 K lookups):** with **half the network compromised**, MaxDisjoint + NBR routes **90 % of lookups successfully** — vs ~66 % for replica placement alone, and ~50 % for random placement.
+
+<span class="callout">**For this project:** route-diversity replication is the canonical answer to the Byzantine-resistance gap our red-team analysis flags. The mechanism is well-studied; what we'd add is *specializing it for axonal pub/sub topic roots and S2-cell eclipse defense*.</span>
+
+---
+
+## Route-diversity DHTs vs N-DHT
+
+Both families care about routing robustness. They commit to different mechanisms.
+
+| Aspect | Castro / Harvesf-Blough | N-DHT |
+|---|---|---|
+| **Threat model** | Byzantine — malicious nodes that lie about routing | Crash-failure — honest peers that disappear |
+| **Mechanism** | Replicate the *target* at d disjoint placements; query in parallel | Maintain a weighted *synaptome* with overlapping candidates per logical destination |
+| **What's redundant** | Multiple disjoint *paths to the same key* | Multiple weighted *next-hop options* per lookup |
+| **Activation** | Always — every lookup queries replicas in parallel (or in batches) | Reactive — iterative fallback only fires when greedy AP routing dead-ends |
+| **Cost** | ×d storage, parallel network load per lookup | One synaptome; lookup load unchanged |
+| **Pub/sub support** | Out of scope | First-class via axonal trees — but currently single-replica root |
+
+<br>
+
+**Where they overlap.** Both reject "one route is enough." Both treat the routing fabric as something whose redundancy can be *engineered for* rather than hoped for.
+
+**Where they differ.** Castro / Harvesf-Blough is **storage-side redundancy** (the same key lives in d places, queries are parallel). N-DHT is **synaptome-side redundancy** (one key lives in one place, the routing table holds many candidates per direction). The two are complementary, not competing — a real production system would likely use both.
+
+<span class="callout">**The headline trade.** Their work delivers strong Byzantine resilience (90 % success at 50 % malicious) at the cost of d× storage and parallel query load. N-DHT delivers strong crash-failure resilience (100 % delivery under 5 % churn) at the cost of zero extra storage. Combining the two — MaxDisjoint replication of NH-1 axon-tree roots — is the obvious next step for a Byzantine-tolerant pub/sub.</span>
+
+---
+
+## What is hotspot-aware placement?
+
+**Makris, Tserpes, Anagnostopoulos** (Harokopio Athens — IEEE BIGDATA 2017, *A novel object placement protocol for minimizing the average response time of get operations in distributed key-value stores*) addresses a problem that consistent-hashing DHTs systematically ignore: **request rates are not uniform even when keys are.**
+
+Real workloads follow **Zipf's law** — a small set of "hot" keys takes most of the traffic. Their measurement on a 24-node Redis cluster: even with keys evenly distributed, the hottest node received **222 K requests** while others received ~1–10 K each. Response time on the hotspot was 5× the cluster median. **Consistent hashing solves the wrong half of the problem.**
+
+<br>
+
+**Mechanism: Directory For Exceptions (DFE).** A hybrid placement that keeps consistent hashing as the *default* and adds a small distributed override:
+
+1. Each node monitors its own **average response time (RT)** and **request count (NR)**
+2. When `max(NR) > permissible threshold T`, the node identifies its hottest keys
+3. Picks the **least-loaded peer** in the cluster (offline FFD bin-packing chooses placements)
+4. **Migrates** the hot key there
+5. Installs a **DFE entry** — other nodes consult DFE before falling back to the hash function
+
+Fully decentralized: each node operates independently, no central coordinator.
+
+**Headline result.** Hotspot N3's response time **dropped 86 %**; load uniformized across the cluster (~10 K – 25 K requests per node, down from 222 K on N3). The other nodes saw response time rise ~3.9× — but stayed well below the threshold.
+
+<span class="callout">**For this project:** the *hot-key migration* pattern maps directly onto NH-1's pub/sub *gateway concentration* failure mode. A topic with millions of subscribers is the same engineering problem as Redis's hot key — and the DFE mechanism is the family of answers that fits.</span>
+
+---
+
+## Hotspot-aware vs N-DHT
+
+Both care about routing performance under *non-uniform* conditions. Different non-uniformities.
+
+| Aspect | Makris et al. (DFE) | N-DHT |
+|---|---|---|
+| **Skew dimension** | Request rate per key (Zipf-distributed gets) | Crash failure / churn (nodes disappearing) |
+| **Trigger** | Local threshold on RT or NR exceeded | Lookup failure / dead-peer discovery |
+| **Response** | Migrate hot keys to underloaded peers | Anneal lowest-vitality synapse, reheat temperature |
+| **State change** | Physical key migration + DFE redirect entries | Synaptome reweighting + new edges via LTP / triadic |
+| **Mechanism family** | Cooperative location cache (DFE) | Cooperative location cache (hop caching) |
+| **Setting assumptions** | 24-node Redis cluster, full-mesh TCP, stable nodes, honest reporting | 50K-node P2P overlay, partial mesh, churn, possibly adversarial |
+| **Pub/sub support** | Out of scope (KV gets only) | First-class via axonal trees |
+
+<br>
+
+**Where they overlap.** Both treat *self-monitoring + threshold-triggered protocol response* as the right control-loop architecture. Both use a "directory of exceptions" / "hop cache" — a cooperative override of the canonical placement function — as the data structure that implements the override. Both reduce a balance problem to a packing problem (FFD for them, axon-tree branching for us).
+
+**Where they differ.** They assume **stable cooperative nodes with global load knowledge**; we cannot. Their FFD requires snapshot information our overlay can't cheaply collect. The *adaptation* needs translation: their migration becomes our *axon-tree root migration*, their FFD becomes our *load-aware AP scoring*.
+
+<span class="callout">**The headline trade.** Their work targets *content-popularity skew* in stable clusters. N-DHT targets *node-failure / churn skew* in dynamic overlays. Bringing the two together — **load-aware AP scoring + threshold-triggered axon-root migration** — closes the *gateway concentration* failure mode the deck currently leaves open.</span>
+
+---
+
 ## Example Message Protocol
 
 <span class="muted">*Reference slide — the wire-level protocol surface. Skim if you only care about results; consult when you want to know what NH-1 actually exchanges between peers.*</span>
@@ -1291,9 +1616,9 @@ Honest accounting of where the axonal tree shows seams:
 
 - **Forwarder loss under churn.** When a tree-internal node dies mid-publish, its subtree is briefly unreachable until each member's next refresh. Today: each affected node's periodic re-subscribe routes to whichever live axon is now closest to `topicId` and re-attaches there — no explicit subtree move, the tree heals at the speed of the refresh interval. *Possible:* redundant forwarders or proactive health checks to shorten the gap.
 - **Tree rebuild cost at scale.** O(S × F) for S subscribers and F forwarders. Negligible at 2 K subscribers; measurable at 50 K+. *Possible:* incremental updates rather than full rebuilds.
-- **Gateway concentration.** A skewed synaptome can yield deep-narrow trees instead of broad-shallow ones. Today: recursive delegation distributes load. *Possible:* secondary splitting on geographic cell when one gateway covers > 50 % of remaining children.
+- **Gateway concentration.** A skewed synaptome can yield deep-narrow trees instead of broad-shallow ones, *and* a Zipf-popular topic concentrates load on its single root. Today: recursive delegation distributes load. *Possible:* secondary splitting on geographic cell when one gateway covers > 50 % of remaining children, plus **threshold-triggered hot-axon-root migration** with a DFE-style redirect entry (Makris et al. 2017) — the same mechanism Redis clusters use for hot-key skew.
 - **Synaptome–tree coupling.** Annealing replacing a synapse that's also a forwarder leaves a stale tree until TTL. *Possible:* mark tree dirty on synapse eviction.
-- **Byzantine resistance.** The system assumes honest nodes. *Possible:* proof-of-location, cryptographic ID binding, reputation, multi-path verification.
+- **Byzantine resistance.** The system assumes honest nodes. *Possible:* MaxDisjoint replica placement (Harvesf & Blough 2007) for axon-tree roots, plus the Castro et al. (OSDI 2002) triplet — constrained routing tables, secure node-ID assignment, redundant routing — proof-of-location, cryptographic ID binding, reputation, multi-path verification.
 
 <br>
 
@@ -1309,6 +1634,8 @@ Honest accounting of where the axonal tree shows seams:
 - **Locality requires geographic IDs.** Without S2 prefix, regional locality collapses. *(Vivaldi-style RTT-only locality is future work.)*
 - **Training is compute-optimizing, not path-shortening.** Cannot close the bootstrap → omniscient hop gap without changes to bootstrap or annealing.
 - **Memory & bandwidth overhead.** ~50 synapses × ~80 B metadata ≈ 4 KB / node + axonal-tree state per subscribed topic. Modest, but worth measuring at 50 K+ subscribers.
+- **Workload skew not yet stressed.** Today's pub/sub benchmark uses uniform topic activity. Real workloads are Zipf-distributed (few hot topics, long tail). Single-root axon trees may saturate under content popularity — methodology gap addressed in red-team Phase 2 (Zipf publish workload).
+- **Churn rate is uniform in current benchmarks.** Real networks churn unevenly — corporate workdays, time-of-day peaks, regional outages. Variable-churn ("peak-hour") benchmarking is the sharper test of self-tuning; it is a methodology gap addressed in red-team Phase 2 (variable-churn benchmark, Ghinita-Teo style).
 
 **Future directions**
 - **RTT-driven locality (Vivaldi integration).** Today's locality is structural; an embedded coordinate system could drive locality without a geo-prefix.
@@ -1335,26 +1662,27 @@ Honest accounting of where the axonal tree shows seams:
 
 ## Red team review
 
-Two independent red-team passes, both deliberately adversarial — *what would break if we shipped this tomorrow?*
+Three independent red-team passes, all deliberately adversarial — *what would break if we shipped this tomorrow?*
 
-- **`docs/red-team-analysis.md`** (2026-04-21, NX-15 / NX-17 era) — focused on transport friction, congestion, and ID-space security. Most findings remain valid because the simulator they targeted hasn't changed.
-- **`docs/red-team-analysis-nh1.md`** (2026-04-29, NH-1 update) — tracks which gaps NH-1's consolidation closed and which environmental "cheats" still remain.
+- **`docs/red-team-analysis.md`** (2026-04-21, NX-15 / NX-17 era) — transport friction, congestion, ID-space security. Most findings remain valid.
+- **`docs/red-team-analysis-nh1.md`** (2026-04-29, NH-1 update) — tracks which gaps consolidation closed and which environmental "cheats" remain.
+- **`documents/NH1-RedTeam-v0.3.38.md`** (2026-04-30, **13-issue priority list**) — composite ranking by occurrence × severity × detectability × time-to-fix × deploy-blocker status. Tiers the work into 4 deploy blockers, 4 correctness-under-stress items, and 5 operational-hardening items.
 
 <br>
 
 The combined verdict, in one paragraph:
 
-> The simplification of NH-1 means the team is now perfectly positioned to tackle the environmental realities that were previously masked by NX-17's complexity. The "brain" of the DHT is now production-ready. The next step is to make sure it can survive in a body that experiences real physical friction — connection setup delays, RPC timeouts, bandwidth saturation, jitter, and an adversarial ID space.
+> The simplification of NH-1 means the team is now perfectly positioned to tackle the environmental realities that were previously masked by NX-17's complexity. The "brain" of the DHT is production-ready. The body — connection setup, RPC timeouts, bandwidth saturation, jitter, asymmetric reachability, an adversarial ID space — is the next, *measurable, scopeable* problem.
 
 <br>
 
 **Three sections follow:**
 
-- **Light** — what the architecture got right (both reviews)
-- **Dark** — environmental and structural gaps the simulator still hides
-- **Action plan** — three phases of remediation, sequenced from highest behavioral impact to security hardening
+- **Light** — what the architecture got right (all three reviews)
+- **Dark** — environmental and structural gaps the simulator hides
+- **Action plan** — three priority tiers (Deploy blockers · Correctness under stress · Operational hardening)
 
-<span class="callout">**Premise.** A protocol that cannot be understood cannot be secured or maintained in production. NH-1's parameter collapse from 44 → 12 closes one class of vulnerability — opacity. The remaining classes are the subject of these slides.</span>
+<span class="callout">**Total estimated work:** ~6–8 weeks for two engineers to clear deploy blockers (Tier 1); 1–2 quarters for full coverage. Tier 2 and Tier 3 can be staged during early production.</span>
 
 ---
 
@@ -1394,41 +1722,131 @@ The **protocol** has improved. The **environment** it lives in has not. NH-1 ove
 
 **4. Jitter-free latency.** Real RTTs fluctuate ±30 % from bufferbloat, asymmetric paths, and queueing. The simulator's distance-derived latency is monotone and clean. The EMA latency tracker has an easy job; high-frequency noise could prematurely decay good synapses or promote lucky-but-unstable ones.
 
-**5. Sybil forgery & cell eclipse.** The S2 prefix is self-declared. **An attacker can pick any prefix** and generate IDs that land in a target cell. Proof-of-location, Vivaldi RTT clustering, and IP-ASN bounding are all unaddressed.
+**5. Asymmetric reachability and bilateral assumption failure.** The simulator assumes if A connects to B, B can reach A on the same edge. **Carrier-grade NAT, asymmetric firewalls, and asymmetric upstream/downstream bandwidth break that.** Every learning rule (LTP, hop caching, lateral spread, triadic closure) silently encodes the bilateral assumption — a one-directional bridge in Slice World heals only half the network; routing loops become possible when peers' views of each other diverge.
+
+**6. Sybil forgery & cell eclipse.** The S2 prefix is self-declared. **An attacker can pick any prefix** and generate IDs that land in a target cell. The canonical mitigation is the **Castro et al. (OSDI 2002) triplet** — constrained routing tables + secure node-ID assignment + redundant routing — combined with route-diversity replica placement (Harvesf & Blough 2007). Proof-of-location, Vivaldi RTT clustering, and IP-ASN bounding are complementary and currently unimplemented.
 
 ---
 
-## Red team — action plan for next steps
+## Red team — Tier 1: deploy blockers
 
-The simplification of NH-1 unlocks the next research phase: stop flattering the protocol with a frictionless simulator. Phases ordered from highest behavioral impact (immediate observability of friction) to security hardening (long-tail correctness).
-
-<br>
-
-**Phase 1 — Friction modeling** *(highest priority — what the simulator is missing)*
-- **`CONNECTION_SETUP_MS = 1500 – 2000 ms`** — new synapses sit in `PENDING` and are excluded from AP scoring until setup elapses.
-- **`RPC_TIMEOUT_MS = 3000 ms`** — sends to silently-dropped nodes stall before iterative fallback or the next AP hop is tried.
-- **Request / reply RPC** — refactor `routeMessage` to trace forward path *and* reverse path. Either failure fails the RPC; reply may take a different path back.
+*Issues 1–4 from the v0.3.38 ranking. ~18–30 person-weeks, partially parallelizable. The protocol's claimed properties cannot be verified in production until these are addressed.*
 
 <br>
 
-**Phase 2 — Load & noise dynamics** *(make the protocol measurable under stress)*
-- **Load-dependent latency.** `effective_delay = base_delay × (1 + active_msg_rate / bandwidth_cap)`. Saturating gateways get penalized in AP scoring and shed traffic naturally.
-- **Bandwidth dropping.** When a node exceeds its modeled cap, drop incoming messages instead of forwarding — exposes whether AP routing routes around overload or piles into it.
-- **Jitter injection** — add `Normal(0, JITTER_SIGMA)` to per-hop RTT. Verify the LTP EMA doesn't catastrophically oscillate; tune the EMA constant if it does.
+**1. Connection-setup model.** Real WebRTC requires ICE + STUN/TURN + DTLS — **1.5–3 seconds blocking** per new synapse. Slice World "unzips" today only because hundreds of new triadic closures cost nothing.
+
+- **`CONNECTION_SETUP_MS = 1500–2000 ms`** — new synapses sit in `PENDING`, excluded from AP scoring until setup elapses.
+- **Browser-aware concurrency cap** — Chrome desktop 4 / Safari & mobile 2 ICE in flight; tab-backgrounding throttles to 1; GC-pause tolerance to suppress spurious timeout suspicion.
 
 <br>
 
-**Phase 3 — Structural integrity & trustless locality**
-- **Bidirectional eviction agency.** When A connects to B, B independently runs its own stratified eviction to decide whether to keep the reverse edge — closes a small but real asymmetry in the current bilateral cap model.
-- **Vivaldi RTT integration.** Replace the self-declared S2 prefix with organically learned coordinates — Sybil-resistant locality without trusting peers' self-claims.
-- **Geographic proof of work / IP-ASN binding.** Require geo-prefix to align with a node's actual ASN/region or carry a hash-cash stamp — drastically raises the cost of cell eclipse.
-- **Pub/sub gateway-load mitigation.** Secondary splitting on geo / RTT coordinates so an overloaded axon root sheds children rather than buffering them.
+**2. RPC timeouts and request/reply tracing.** Today RPCs to dead nodes return instantly because the simulator knows. **No timeouts, no dropped packets, no asymmetric reply paths.**
 
-<span class="callout">**Bottom line.** The brain is production-ready. The body is not — but the body is now the next *measurable, scopeable* problem rather than a tangle of interacting mechanisms. Each phase above produces falsifiable measurements; the simulator becomes the lab bench for the next iteration.</span>
+- **`RPC_TIMEOUT_MS = 3000 ms`** — sends stall on silent failure before iterative-fallback / next AP hop.
+- **Request/reply RPC refactor** — `routeMessage` traces forward and reverse paths. Either failure fails the RPC; reply may take a different path back.
+
+<br>
+
+**3. Load-dependent AP scoring + bandwidth modeling.** Today hop cost is `10 ms + propagation` regardless of load. AP routing risks oscillatory *success disasters* — reinforce a node until it congests, abandon it, flock back when it recovers.
+
+- **`effective_delay = base_delay × (1 + msg_rate / bandwidth_cap)`** — load enters AP as `½^(load_factor)`, the same form as the existing latency penalty (Makris et al. 2017 — DFE-style threshold control).
+- **Bandwidth dropping** when a node exceeds its modeled cap — exposes whether AP routes around overload or piles in.
+
+<br>
+
+**4. Jitter injection + LTP-EMA validation.** Real RTTs fluctuate ±30 % from bufferbloat and queueing.
+
+- Add `Normal(0, JITTER_SIGMA)` to per-hop RTT. Verify the LTP EMA doesn't oscillate; tune the EMA constant if it does.
+
+<span class="callout">**Gate.** No deploy claim about latency, churn, or pub/sub holds until the simulator models all four sources of friction. Once it does, the existing measurements re-run as production-honest.</span>
 
 ---
 
-## References — DHT lineage
+## Red team — Tier 2: correctness under stress
+
+*Issues 5–8 from the v0.3.38 ranking. ~16–28 person-weeks. The protocol works in nominal conditions; under realistic adversarial or heterogeneous workloads it degrades. Staged rollout can manage this — but it must be measured, not assumed.*
+
+<br>
+
+**5. Sybil & cell eclipse hardening.**
+- **Vivaldi RTT integration** — replace self-declared S2 prefix with organically learned coordinates (Sybil-resistant locality without trusting peer self-claims).
+- **Geographic proof-of-work / IP-ASN binding** — require geo-prefix to align with actual ASN/region; raises the cost of cell eclipse drastically.
+
+<br>
+
+**6. Heterogeneous-churn convergence.**
+- **Variable-churn benchmark** — alternate 3/sec churn for 30 min with 0.5/sec for 90 min. Measures adaptation time at transitions.
+- **Adaptive anneal driven by churn rate** *(Ghinita & Teo 2006).* Anneal cooling rate, reheat amount, staleness threshold all become functions of locally-observed `(μ, λ)`. Peers in stable regions anneal slowly; peers in high-churn regions anneal aggressively.
+- **Liveness vs accuracy decoupled** *(Ghinita-Teo).* Independent threshold-triggered channels — one operator dial per channel.
+- **Patchwork-style background liveness probes** *(Tapestry 2004).* Catches silent failures before routing errors fire.
+
+<br>
+
+**7. Byzantine pub/sub mitigation.**
+- **MaxDisjoint topic replication** *(Harvesf & Blough 2007).* Replicate every axon-tree root at *d* disjoint locations. No single node — or single S2-cell eclipse — can silence a topic.
+- **Zipf-distributed publish workload** + **hot-axon-root migration** *(Makris et al. 2017).* Threshold-triggered topic migration with DFE-style redirect at the original location, closing the *gateway concentration* failure mode under content popularity.
+
+<br>
+
+**8. Asymmetric reachability and bilateral failure** *(NEW).*
+- **Per-direction `Synapse` fields** — `forwardReachable`, `reverseReachable`, `forwardLatencyEMA`, `reverseLatencyEMA`, `asymmetryFlag`. Updated on every successful exchange in either direction.
+- **Direction-specific AP scoring** — exclude `forwardReachable=false` for forward routing; same for reverse during reply paths.
+- **Loop detection in iterative fallback** — track visited node IDs; explicitly exclude already-visited on expansion.
+- **Bidirectional eviction agency** — when A connects to B, B independently runs admission; the asymmetry becomes explicit (A holds the synapse, B may not).
+
+<span class="callout">**Gate.** Tier-2 items measure how the protocol degrades under *real* heterogeneity. Production deployment can begin while these items are in flight, but each carries a metric the deployment must monitor live.</span>
+
+---
+
+## Red team — Tier 3: operational hardening
+
+*Issues 9–13 from the v0.3.38 ranking. ~17–25 person-weeks. Long-tail items for production maturity, second-deployment confidence, and operator handoff.*
+
+<br>
+
+**9. Promoted-incoming bias and spam resistance** *(NEW).* The "incoming promotion" rule has no defensive limit — a popular node's synaptome can become 5/45 outbound/incoming-promoted, losing diverse outbound coverage.
+- **Track synapse origin** (`OUTBOUND_LEARNED | INCOMING_PROMOTED | BOOTSTRAP_SEED`).
+- **Cap promoted-incoming at ~30 %** of synaptome budget; reduced inertia for promoted entries.
+- **Per-source spam rate-limit** — sources connecting > 10/sec have promotion suppressed regardless of useCount.
+
+<br>
+
+**10. Parameter sensitivity sweep + four-dial framework** *(NEW).* The "12 parameters" claim only holds if individual parameters are robust and interactions are documented.
+- **OFAT ±20 % / ±50 %** sweep per parameter at 25K nodes — identifies high-sensitivity parameters needing narrow operator bounds.
+- **2D interaction sweep** across the 66 parameter pairs — surface joint-only effects.
+- **Scale- and workload-aware defaults** — repeat at 1K/10K/50K and under uniform / Zipf / Slice-World workloads.
+
+<br>
+
+**11. Replay-cache semantics under partition** *(NEW).* The bounded replay cache is designed for transient churn, not multi-minute regional partitions.
+- **Cache metadata on replay** — `(oldestTs, newestTs, capacity, gapsDetected)` so subscribers know whether they have a gap.
+- **Multi-source replay reconciliation** — dovetails with MaxDisjoint replication; subscribers query several replicas in parallel and dedupe by `publishId`.
+- **Partition-aware retention** — extend cache window when forward-attempt failure rate spikes.
+
+<br>
+
+**12. Concurrent connection-setup contention** *(NEW — folds into Tier-1 #1 once Tier 2 is in flight).* Browser concurrency limits cause learning rules to silently serialize. Adaptive throttling + GC-pause / tab-backgrounding handling already covered above; explicitly track here so the operability metric isn't lost.
+
+<br>
+
+**13. Adversarial operator tuning + audit hygiene** *(NEW).*
+- **Multi-source metric verification** — dashboard churn rate cross-checked against locally-measured per-node samples; alert on disagreement.
+- **Audit log + canary rollout** — parameter changes affect 10 % of nodes for 1 hour; auto-rollback if metrics regress.
+
+<br>
+
+**Plus, from prior comparison work, integrated here as architectural hardening:**
+
+- **Target-QoS knob** *(Ghinita & Teo 2006).* Expose `targetLookupFailureRate` / `targetMedianLatency`; system self-tunes underlying constants. Precondition for metaplastic NH-1.
+- **Parametrized hop caching with `(k_backup, l_nearest, m_hops)` knobs** *(Tapestry 2004).* Empirical guidance: `(1, 5, 1)` is the cost / RDP sweet spot.
+- **Explicit leaf-set tier in the synaptome** *(Pastry 2001).* Reserve ~8 entries for XOR-closest peers regardless of vitality — guarantees a terminal-hop landing point.
+
+<span class="callout">**Bottom line.** The brain is production-ready. The body is the next *measurable, scopeable* problem rather than a tangle of interacting mechanisms. Each tier produces falsifiable measurements; the simulator becomes the lab bench for the next iteration.</span>
+
+---
+
+## References — DHT foundations
 
 **Whitepaper** — `documents/Neuromorphic-DHT-Architecture.md` (this repository, v0.67)
 **Source + data** — <code>github.com/YZ-social/dht-sim</code>
@@ -1440,19 +1858,55 @@ The simplification of NH-1 unlocks the next research phase: stop flattering the 
 - Clark · *The Design Philosophy of the DARPA Internet Protocols* (SIGCOMM 1988)
 
 ### Foundational DHT work
-- Maymounkov & Mazières · *Kademlia: A Peer-to-peer Information System Based on the XOR Metric* (IPTPS 2002)
-- Rowstron & Druschel · *Pastry: Scalable, decentralized object location and routing* (Middleware 2001)
-- Zhao et al. · *Tapestry: A Resilient Global-Scale Overlay* (IEEE J-SAC 2004)
+- Maymounkov & Mazières · ***Kademlia: A Peer-to-peer Information System Based on the XOR Metric*** (IPTPS 2002) — **the literal substrate of N-DHT**. XOR distance, K-buckets, α-parallel lookup, four-RPC protocol — all retained unchanged below the synaptome layer. NX-4 iterative fallback is unmodified Kademlia routing
+- Rowstron & Druschel · ***Pastry: Scalable, decentralized object location and routing*** (Middleware 2001) — the canonical **three-tier routing state** (R / L / M) and **locality-preserving join**; substrate for SCRIBE and PAST. NH-1's synaptome consolidates Pastry's three tables into a single vitality-scored set
+- Zhao, Huang, Stribling, Rhea, Joseph, Kubiatowicz · ***Tapestry: A Resilient Global-Scale Overlay for Service Deployment*** (IEEE JSAC 2004) — the closest historical ancestor of NH-1's combined locality + soft-state + resilience architecture; substrate for OceanStore, Bayeux multicast, and Mnemosyne
+
+---
+
+## References — Pub/sub and latency
+
+### Pub/sub infrastructure
+- Castro, Druschel, Kermarrec, Rowstron · ***SCRIBE: A Large-Scale and Decentralized Application-Level Multicast Infrastructure*** (IEEE JSAC 2002) — routed subscribe + **reverse-path forwarding multicast tree** layered on Pastry; **the structural ancestor of NH-1's axonal-tree pub/sub**
+- Zhuang, Zhao, Joseph, Katz, Kubiatowicz · *Bayeux: An architecture for scalable and fault-tolerant wide-area data dissemination* (NOSSDAV 2001) — the analogous multicast layer on Tapestry
+
+<br>
 
 ### Latency-aware DHTs
 - Dabek, Li, Sit, Robertson, Kaashoek, Morris · ***Designing a DHT for low latency and high throughput*** (NSDI 2004) — DHash++; the **3δ floor** analysis (§ 4.3) anchors our absolute-latency reference
 - Freedman, Mazières · *Sloppy Hashing and Self-Organizing Clusters* (IPTPS 2003) — the Coral DSHT design
 - Freedman, Freudenthal, Mazières · ***Democratizing Content Publication with Coral*** (NSDI 2004) — Coral CDN deployment
 
+---
+
+## References — Adaptive systems
+
 ### Adaptive coordinates
-- Dabek, Cox, Kaashoek, Morris · ***Vivaldi: A Decentralized Network Coordinate System*** (SIGCOMM 2004)
-- Cox, Dabek, Kaashoek, Li, Morris · *Practical, Distributed Network Coordinates* (HotNets 2003)
-- Ledlie, Gardner, Seltzer · *Network Coordinates in the Wild* (NSDI 2007)
+- Dabek, Cox, Kaashoek, Morris · ***Vivaldi: A Decentralized Network Coordinate System*** (SIGCOMM 2004) — synthetic-coordinate primitive; candidate replacement for the self-declared S2 prefix
+- Cox, Dabek, Kaashoek, Li, Morris · *Practical, Distributed Network Coordinates* (HotNets 2003) — earlier coordinate-system design
+- Ledlie, Gardner, Seltzer · *Network Coordinates in the Wild* (NSDI 2007) — Vivaldi behavior in deployment
+
+<br>
+
+### Adaptive maintenance / churn handling
+- Mahajan, Castro, Rowstron · *Controlling the Cost of Reliability in Peer-to-peer Overlays* (IPTPS 2003) — early adaptive-maintenance methodology; cost-of-reliability framework
+- Krishnamurthy, El-Ansary, Aurell, Haridi · *A statistical theory of Chord under churn* (IPTPS 2005) — analytical model of Chord routing-table accuracy under Poisson churn
+- Ghinita, Teo · ***An Adaptive Stabilization Framework for Distributed Hash Tables*** (IPDPS 2006) — local statistical estimation of `(μ, λ, N)` + threshold-triggered liveness / accuracy checks; closest match in *mechanism family* to the Neuromorphic self-tuning instinct
+
+---
+
+## References — Production resilience
+
+### Byzantine resistance / route diversity
+- Castro, Druschel, Ganesh, Rowstron, Wallach · ***Secure Routing for Structured Peer-to-Peer Overlay Networks*** (OSDI 2002) — the foundational Byzantine-DHT paper; the **constrained routing + secure ID assignment + redundant routing** triplet
+- Harvesf, Blough · ***The Design and Evaluation of Techniques for Route Diversity in Distributed Hash Tables*** (IEEE P2P 2007) — **MaxDisjoint replica placement** + Neighbor Set Routing; 90 % lookup success at 50 % node failure
+
+<br>
+
+### Load balancing / hotspot mitigation
+- Karger, Lehman, Leighton, Panigrahy, Levine, Lewin · *Consistent Hashing and Random Trees* (STOC 1997) — the foundational consistent-hashing paper; load-uniformity guarantees under uniform request rates
+- Rao, Lakshminarayanan, Surana, Karp, Stoica · *Load balancing in structured P2P systems* (IPTPS 2003) — virtual servers + many-to-one / many-to-many migration schemes
+- Makris, Tserpes, Anagnostopoulos · ***A novel object placement protocol for minimizing the average response time of get operations in distributed key-value stores*** (IEEE BIGDATA 2017) — **Directory For Exceptions (DFE)** + threshold-triggered migration; 86 % response-time reduction on the hotspot
 
 ---
 

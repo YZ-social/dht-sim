@@ -40,7 +40,7 @@
 import { DHT }            from '../contracts/DHT.js';
 import { Synapse }        from './Synapse.js';
 import { Subscription }   from './Subscription.js';
-import { clz264, toHex, fromHex, isHexId, extractS2Prefix, BAD_ID_CODE } from '../utils/hexid.js';
+import { clz264, toHex, fromHex, isHexId, extractS2Prefix, asId, BAD_ID_CODE } from '../utils/hexid.js';
 import { resolveTopic, deriveTopicId, deriveTopicIdBig } from '../pubsub/post.js';
 
 /**
@@ -53,10 +53,10 @@ export const ANONYMOUS = Symbol.for('axona.publish.anonymous');
 import { buildEnvelope }  from '../pubsub/envelope.js';
 import { buildKill }      from '../pubsub/kill.js';
 import { buildTouch }     from '../pubsub/touch.js';
-import { buildUnpub }     from '../pubsub/unpub.js';
-import { AxonaManager, MAX_PUBLISH_BYTES, MAX_RELIABLE_PUBLISH_BYTES } from '../pubsub/AxonaManager.js';
+import { AxonaManager, MAX_PUBLISH_BYTES, MAX_RELIABLE_PUBLISH_BYTES, isRegionLockEnforced } from '../pubsub/AxonaManager.js';
+import { metricTopic, isMetricTopicName, dataTopicIdOf } from '../pubsub/metrics.js';
 import { authorClassTopic, buildAuthorClass, verifyAuthorClass } from '../pubsub/authorClass.js';
-import { PublishError, SubscribeError, KillError, UnpubError, TouchError, PullError, MetricsError, ErrorCodes } from '../errors.js';
+import { PublishError, SubscribeError, KillError, TouchError, PullError, MetricsError, ErrorCodes } from '../errors.js';
 
 // ── B-3 (eclipse prevention) tunables ───────────────────────────────
 // Max concurrent verification probes triggered by gossip introductions —
@@ -108,9 +108,23 @@ export class AxonaPeer extends DHT {
    *        signed publishes (the default).  Apps that only call
    *        `peer.pub(topic, message, { sign: false })` can omit it.
    */
-  constructor({ engine = null, domain = null, node, axonaManager = null, nodeIdentity = null, transport = null, persist = null, maxPublishBytes = null }) {
+  constructor({ engine = null, domain = null, node, axonaManager = null, nodeIdentity = null, transport = null, persist = null, maxPublishBytes = null, synaptomeMaintain = null, rootReplicas = null }) {
     super();
     if (!node) throw new Error('AxonaPeer: node is required');
+    // Singleton-root replication fan-out (kernel v4.9.2). null → kernel default (2).
+    // Set 0 to disable (A/B diagnostics, or deployments that don't want backup roots).
+    this._rootReplicas = rootReplicas;
+    // Synaptome maintenance (Synaptome-Maintenance-v0.1): continuously refill the
+    // K_NEAR XOR-nearest "successor" quota so greedy routing's last-mile descent
+    // always completes through churn. OPT-IN (default off) — when omitted the peer
+    // behaves exactly as before. `{ kNear, intervalMs, maxPerTick }` overrides.
+    this._maintainCfg = (synaptomeMaintain && typeof synaptomeMaintain === 'object')
+      ? { kNear: synaptomeMaintain.kNear ?? 5, intervalMs: synaptomeMaintain.intervalMs ?? 15000, maxPerTick: synaptomeMaintain.maxPerTick ?? 3 }
+      : (synaptomeMaintain === true)
+        ? { kNear: 5, intervalMs: 15000, maxPerTick: 3 }
+        : null;
+    this._maintainTimer = null;
+    this._maintainInflight = false;
     // O-5: a publish must be RECEIVABLE by any peer on any browser across any
     // path → default the per-publish limit to the WebRTC-interop floor (16 KiB),
     // never above the absolute ingress cap. Override only for controlled,
@@ -374,6 +388,8 @@ export class AxonaPeer extends DHT {
           (node._deadPeers ??= new Set()).add(dead);
           this._axonaManager?.invalidateKClosestCache?.();
           this._emitLog?.('info', 'peer-died-evicted', { peer: toHex(dead) });
+          this._scheduleMaintain();   // a lost peer may have been a near-quota successor → refill
+
         } catch (err) {
           if (typeof console !== 'undefined') console.warn('AxonaPeer.onPeerDied: eviction failed', err);
         }
@@ -381,6 +397,16 @@ export class AxonaPeer extends DHT {
     }
 
     this._started = true;
+
+    // Synaptome-maintenance tick (opt-in): a deterministic cadence to refill the
+    // near-quota, independent of routing traffic (anneal only fires on activity,
+    // so an idle node would never refresh). No-op when the flag is off.
+    if (this._maintainCfg && !this._maintainTimer) {
+      this._maintainTimer = setInterval(() => {
+        this._maintainSynaptome().catch(() => { /* best-effort */ });
+      }, this._maintainCfg.intervalMs);
+      if (this._maintainTimer && typeof this._maintainTimer.unref === 'function') this._maintainTimer.unref();
+    }
   }
 
   /**
@@ -556,9 +582,7 @@ export class AxonaPeer extends DHT {
     // excluding the requestor itself (otherwise they'd see themselves
     // as a candidate — useless).
     transport.onRequest('local_probe', async (fromId, _payload) => {
-      const fromBig = (typeof fromId === 'bigint')
-        ? fromId
-        : BigInt('0x' + fromId);
+      const fromBig = asId(fromId);   // wire→internal id gate
       const peerIds = [];
       for (const syn of node.synaptome.values()) {
         if (syn.peerId !== fromBig) peerIds.push(syn.peerId);
@@ -582,9 +606,7 @@ export class AxonaPeer extends DHT {
     // discovery.  Insertion-sorted scan; cheap because synaptome is
     // bounded by MAX_SYNAPTOME.  Caller merges results across rounds.
     transport.onRequest('find_closest_set', async (_fromId, payload) => {
-      const targetBig = (typeof payload.target === 'bigint')
-        ? payload.target
-        : BigInt('0x' + String(payload.target));
+      const targetBig = asId(payload.target);   // wire→internal id gate
       const K = payload.K ?? domain._k;
       const top = [];
       for (const syn of node.synaptome.values()) {
@@ -611,9 +633,7 @@ export class AxonaPeer extends DHT {
     // route_msg request and bubbles the downstream reply unchanged.
     transport.onRequest('route_msg', async (fromId, msg) => {
       const { type, payload, targetId, hops, originId } = msg;
-      const targetBig = (typeof targetId === 'bigint')
-        ? targetId
-        : BigInt('0x' + String(targetId));
+      const targetBig = asId(targetId);   // wire→internal id gate
 
       // Greedy 1-hop forward — only over synapses we are actually connected
       // to (skip dead/unbound entries, e.g. the bridge after it drops; see
@@ -623,10 +643,12 @@ export class AxonaPeer extends DHT {
       const connOk = (typeof node.transport?.isConnected === 'function')
         ? node.transport.isConnected.bind(node.transport) : null;
       const deadSet = node._deadPeers;
+      const bridgeId = node.transport?.bridgeNodeIdBig ?? null;
       let nextHopId = null;
       let bestDist  = node.id ^ targetBig;
       for (const syn of node.synaptome.values()) {
         if (deadSet && deadSet.has(syn.peerId)) continue;
+        if (bridgeId !== null && syn.peerId === bridgeId) continue;   // bridge is signaling infra, not a topic root/forwarder
         if (connOk && !connOk(syn.peerId)) continue;
         const d = syn.peerId ^ targetBig;
         if (d < bestDist) { bestDist = d; nextHopId = syn.peerId; }
@@ -733,6 +755,10 @@ export class AxonaPeer extends DHT {
       this._onPeerDiedUnsub();
       this._onPeerDiedUnsub = null;
     }
+    if (this._maintainTimer) {
+      clearInterval(this._maintainTimer);
+      this._maintainTimer = null;
+    }
     this._started = false;
   }
 
@@ -813,6 +839,162 @@ export class AxonaPeer extends DHT {
     // join(sponsor) takes hex (user-facing API); _seedSynaptomeWithSponsor
     // is BigInt-only (kernel-internal).
     this._seedSynaptomeWithSponsor(fromHex(sponsor));
+
+    // Self-integration (the "future enhancement" the seed comment named):
+    // a sponsor-only join leaves us at the churn FLOOR — reachable only from
+    // the sponsor, because reachability-to-us is a property of our NEIGHBOURS'
+    // tables, and they don't know us yet. So discover our own neighbourhood
+    // (findKClosest(ownId) — a read-only probe needing only our own id) and
+    // open authenticated channels to it. The bind flow (onPeerBound on BOTH
+    // ends) then makes those neighbours adopt us, so a greedy walk into our
+    // region lands on us. Best-effort: a failure here just means slower heal,
+    // never a failed join. Sim-validated: floor 7-27% → ~95-98% in one pass.
+    try { await this._selfIntegrate(); } catch { /* best-effort; anneal still heals slowly */ }
+  }
+
+  /**
+   * Self-integrate into the mesh: discover our own neighbourhood and open
+   * authenticated channels to it so neighbours adopt us (reachability lives in
+   * THEIR routing tables, not ours). Idempotent and re-runnable — call it on
+   * join, and again after a disruption to re-home quickly. Never throws.
+   *
+   *   await peer.integrate()          // K = mesh K
+   *   await peer.integrate({ K: 30 })
+   *
+   * @param {{K?: number, concurrency?: number}} [opts]
+   * @returns {Promise<number>} channels opened to neighbours
+   */
+  async integrate(opts = {}) { return this._selfIntegrate(opts); }
+
+  /**
+   * Resolve when the mesh is ready for reliable pub/sub — i.e. this peer has
+   * formed enough synapses that a routed subscribe/publish attaches to the topic
+   * tree instead of stranding in a not-yet-formed mesh. Subscribing the instant
+   * after join() (synaptome = just the bridge) is the dominant cause of slow
+   * first delivery; `await peer.ready()` before your first sub/pub.
+   *
+   * Resolves as soon as EITHER:
+   *   • synaptome.size >= minPeers (a healthy mesh formed), OR
+   *   • the synaptome stopped growing for `stableMs` — so a small/relay-poor mesh
+   *     converges to whatever is available (a 3-node mesh resolves at 2 synapses,
+   *     never hangs waiting for an unreachable minPeers), OR
+   *   • timeoutMs elapses (resolves `ready:false` so the caller can proceed or
+   *     back off — never throws).
+   *
+   *   const { ready, peers } = await peer.ready();
+   *   await peer.ready({ minPeers: 4, timeoutMs: 8000 });
+   *
+   * @param {{minPeers?:number, timeoutMs?:number, stableMs?:number, pollMs?:number}} [opts]
+   * @returns {Promise<{ready:boolean, peers:number, ms:number, reason:'minPeers'|'stable'|'timeout'}>}
+   */
+  async ready({ minPeers = 4, timeoutMs = 10_000, stableMs = 1500, pollMs = 150 } = {}) {
+    const t0 = Date.now();
+    const size = () => this._node?.synaptome?.size ?? 0;
+    let last = -1, stableSince = t0;
+    for (;;) {
+      const n = size();
+      if (n >= minPeers) return { ready: true, peers: n, ms: Date.now() - t0, reason: 'minPeers' };
+      if (n !== last) { last = n; stableSince = Date.now(); }
+      else if (n > 0 && Date.now() - stableSince >= stableMs) {
+        return { ready: true, peers: n, ms: Date.now() - t0, reason: 'stable' };
+      }
+      if (Date.now() - t0 >= timeoutMs) {
+        return { ready: n > 0, peers: n, ms: Date.now() - t0, reason: 'timeout' };
+      }
+      await new Promise(r => setTimeout(r, pollMs));
+    }
+  }
+
+  async _selfIntegrate({ K = this._domain?._k ?? 20, concurrency = 8 } = {}) {
+    const node = this._node;
+    if (!node?.alive || !node.transport || typeof node.transport.openConnection !== 'function') return 0;
+    const selfId = node.id;
+    let closest;
+    try { closest = await this.findKClosest(selfId, K); }
+    catch { return 0; }
+    if (!Array.isArray(closest) || closest.length === 0) return 0;
+
+    // Targets: discovered neighbours we aren't already connected to (skip self).
+    const targets = [];
+    for (const id of closest) {
+      if (typeof id !== 'bigint' || id === selfId) continue;
+      if (typeof node.transport.isConnected === 'function' && node.transport.isConnected(id)) continue;
+      targets.push(id);
+    }
+
+    let opened = 0;
+    for (let i = 0; i < targets.length; i += concurrency) {
+      const batch = targets.slice(i, i + concurrency);
+      const settled = await Promise.allSettled(
+        batch.map(id => node.transport.openConnection(toHex(id))),
+      );
+      for (const r of settled) if (r.status === 'fulfilled' && r.value !== false) opened++;
+    }
+    // Our synaptome just widened (via the bind flow on each open) — drop any
+    // stale K-closest cache so the next pub/sub recomputes against it.
+    this._axonaManager?.invalidateKClosestCache?.();
+    return opened;
+  }
+
+  // ── Synaptome maintenance (Synaptome-Maintenance-v0.1) ─────────────────
+  // Continuously refill the K_NEAR XOR-nearest "successor" quota — the cheap,
+  // local repair that keeps greedy routing's last-mile descent complete through
+  // churn (sim-validated: near-stratum erodes without it, delivery drifts down).
+  // Candidates route through `_considerCandidate` → B-3 first-party verification
+  // + budgeted openConnection, so a forged "near" id can NEVER poison the table
+  // (eclipse-safe). Bounded per tick; a no-op once the quota is full. Long-range
+  // / per-stratum "finger" coverage is maintained by the existing anneal path
+  // (`_tryAnneal`); both are needed (sim: near-only holds occupancy but delivery
+  // still collapses when long-range is starved).
+  //
+  // OPT-IN via the `synaptomeMaintain` constructor option (default off → inert).
+  // v1 uses `findKClosest` as the authoritative nearest source (local-first,
+  // probe-bounded); a pure 2-hop-neighbourhood source — cheaper, the sims show it
+  // suffices — is a documented follow-up optimization.
+  async _maintainSynaptome() {
+    const cfg = this._maintainCfg;
+    const node = this._node;
+    if (!cfg || this._maintainInflight || !node?.alive) return 0;
+    if (typeof node.transport?.openConnection !== 'function') return 0;
+    this._maintainInflight = true;
+    try {
+      const self = node.id;
+      let nearest;
+      // Request kNear+1: findKClosest(self, …) returns self as the closest entry,
+      // so without the +1 we'd only ever fill kNear-1 successors.
+      try { nearest = await this.findKClosest(self, cfg.kNear + 1); }
+      catch { return 0; }
+      if (!Array.isArray(nearest)) return 0;
+      const isConn = (id) => node.synaptome?.has(id)
+        || (typeof node.transport?.isConnected === 'function' && node.transport.isConnected(id));
+      const deficit = [];
+      for (const id of nearest) {
+        if (typeof id !== 'bigint' || id === self) continue;
+        if (!isConn(id)) deficit.push(id);
+        if (deficit.length >= cfg.maxPerTick) break;
+      }
+      let attempted = 0;
+      for (const id of deficit) {
+        attempted++;
+        try { await this._considerCandidate(id, 'maintain'); } catch { /* verified-connect is best-effort */ }
+      }
+      if (attempted) {
+        this._axonaManager?.invalidateKClosestCache?.();
+        this._emitLog?.('info', 'synaptome-refill', { near: cfg.kNear, attempted });
+      }
+      return attempted;
+    } finally { this._maintainInflight = false; }
+  }
+
+  // Debounced trigger — coalesce a burst of near-neighbour losses into one pass.
+  _scheduleMaintain() {
+    if (!this._maintainCfg || this._maintainPending) return;
+    this._maintainPending = true;
+    const t = setTimeout(() => {
+      this._maintainPending = false;
+      this._maintainSynaptome().catch(() => { /* best-effort */ });
+    }, 250);
+    if (t && typeof t.unref === 'function') t.unref();
   }
 
   /**
@@ -857,6 +1039,13 @@ export class AxonaPeer extends DHT {
         } catch { /* swallow — best-effort */ }
       }
     }
+
+    // (1b) graceful-leave cache handoff: push any topic we ROOT to its heir
+    // (next-closest live node) while the transport is still up, so the topic's
+    // history survives our departure (since:'all' replay keeps working for
+    // subscribers that re-home or join after we go). Best-effort; bounded by the
+    // drain window below. Must run BEFORE we tear down the transport/listeners.
+    try { await this._axonaManager?.pubsubLeaveHandoff?.(); } catch { /* best-effort */ }
 
     // (2) optional drain — pause for in-flight publishes / pulls
     if (drain && timeoutMs > 0) {
@@ -1373,7 +1562,7 @@ export class AxonaPeer extends DHT {
         ? ErrorCodes.TOPIC_REGION_REQUIRED : ErrorCodes.PUBLISH_INVALID_TOPIC;
       throw new PublishError(code, `peer.${op}: ${cause.message}`, { cause, context: { topic } });
     }
-    r.topicIdBig = BigInt('0x' + r.topicId);
+    r.topicIdBig = asId(r.topicId);
     return r;
   }
 
@@ -1400,7 +1589,7 @@ export class AxonaPeer extends DHT {
       return {
         region: parseInt(id.slice(0, 2), 16),
         owner: null, name: null, write: null,
-        topicId: id, topicIdBig: BigInt('0x' + id), byId: true,
+        topicId: id, topicIdBig: asId(id), byId: true,
       };
     }
     return this._resolveTopicOrThrow(topic, op);
@@ -1409,6 +1598,7 @@ export class AxonaPeer extends DHT {
   async pub(topic, message, opts = {}) {
     const desc = await this._resolveTopicOrThrow(topic, 'pub');
     const am   = this._requireAxonaManager('pub');
+    await this._assertRegionUsable(desc.topicIdBig, PublishError, 'pub');   // region-occupancy rule
 
     // Signer (design v0.3 §5/§6): opts.signWith is an AUTHOR identity, or the
     // ANONYMOUS sentinel for a deliberately unsigned publish. There is NO default
@@ -1429,10 +1619,14 @@ export class AxonaPeer extends DHT {
     }
     // Owner-only topic: only the owner key may publish. Fail fast here (the root
     // enforces the same at ingress, so this just turns a silent drop into an error).
-    if (desc.write === 'owner' && signId && signId.pubkeyHex.toLowerCase() !== desc.owner) {
+    // Compare the author's PUBLIC id (authorId) to the topic owner. In prod
+    // authorId === pubkeyHex; in a shrunk sim profile authorId is the truncated
+    // id the descriptor owner is also keyed on.
+    const signerAuthorId = signId ? (signId.authorId ?? signId.pubkeyHex) : null;
+    if (desc.write === 'owner' && signId && signerAuthorId.toLowerCase() !== desc.owner) {
       throw new PublishError(ErrorCodes.WRITE_POLICY_VIOLATION,
         `peer.pub: owner-only topic '${desc.name}' — only the owner key may publish ` +
-        `(signer ${signId.pubkeyHex.slice(0, 12)}… ≠ owner ${desc.owner.slice(0, 12)}…)`,
+        `(signer ${signerAuthorId.slice(0, 12)}… ≠ owner ${desc.owner.slice(0, 12)}…)`,
         { context: { topic: desc.name } });
     }
 
@@ -1463,6 +1657,14 @@ export class AxonaPeer extends DHT {
         `peer.pub: enveloped message ${json.length}B exceeds the reliable-delivery limit ${this._maxPublishBytes}B ` +
         `(WebRTC-interoperable floor). Chunk large payloads with @axona/protocol/std/chunk (publishChunkedBytes).`,
         { context: { topic: desc.name, size: json.length, max: this._maxPublishBytes } });
+    }
+
+    // Lookup-assisted publish (v4.3.1): warm the true-root hint before the first
+    // publish so the PUB routes straight to the topic's emergent root instead of
+    // stranding on the single-pass greedy walk (a one-shot publish never re-routes,
+    // so a cold-hint strand = lost message). Bounded; no-op once warm.
+    if (typeof am.warmRootHint === 'function') {
+      try { await am.warmRootHint(desc.topicIdBig); } catch { /* proceed greedy */ }
     }
 
     // postHash = envelope.msgId makes the replay cache searchable by content hash
@@ -1526,6 +1728,11 @@ export class AxonaPeer extends DHT {
   }
 
   /**
+   * @deprecated (v4.3.0) touch() is a NO-OP in the routing-only kernel (TTL extension
+   * was never implemented; `_onTouch` does nothing) and is removed from the docs. The
+   * method + wire type are retained as a harmless no-op for compatibility; do not use.
+   * Keep a message alive past the 24h hold by re-publishing it.
+   *
    * Touch a message (Phase A #7) — a keep-alive gated by TOPIC OWNERSHIP.
    * Always signed (for freshness); routed to the topic's K-closest roots,
    * each of which (if it holds the message) resets the message's hold-time
@@ -1574,68 +1781,12 @@ export class AxonaPeer extends DHT {
     return { ok: true };
   }
 
-  /**
-   * Remove a topic's message queue (Phase A #3) — owner-only.
-   *
-   * Only the topic OWNER (the identity whose nodeId seeds the topic id) can
-   * unpub.  The topic's root axons verify ownership self-authenticatingly:
-   * the signer's pubkey must bind to the owner nodeId, and that nodeId must
-   * derive the topicId.  Two modes:
-   *   - default            → drop the message queue (tombstone the msgIds so
-   *                          a lagging replica can't resurrect them); any
-   *                          topic config/ACL is kept so the owner can keep
-   *                          publishing.
-   *   - `{ destroy: true }`→ TOTAL removal: messages AND config/ACL AND the
-   *                          hosting role state. The topicId can be
-   *                          re-derived and the topic re-created later, but
-   *                          it comes back with defaults, not its old state.
-   *
-   * Ownerless (public) topics have no owner key and cannot be unpubbed.
-   *
-   * @param {string} topic
-   * @param {object} [opts]
-   * @param {boolean} [opts.destroy=false]
-   * @param {string|null} [opts.publisher]  owner selector; default = this peer
-   * @returns {Promise<{ ok: boolean }>}
-   */
-  async unpub(topic, opts = {}) {
-    const desc = await this._resolveTopicOrThrow(topic, 'unpub');
-    // Only an OWNED topic can be unpublished, and only by its owner key.
-    if (!desc.owner || desc.write !== 'owner') {
-      throw new UnpubError(ErrorCodes.UNPUB_PUBLIC_TOPIC,
-        'peer.unpub: only an owned topic can be unpublished ({ owner, write: \'owner\' }); open topics have no owner',
-        { context: { topic: desc.name } });
-    }
-    const author = opts.signWith;
-    if (!author || !author.privateKey || typeof author.pubkeyHex !== 'string') {
-      throw new UnpubError(ErrorCodes.UNPUB_SIGN_FAILED,
-        'peer.unpub: an unpub must be signed by the topic owner — pass { signWith } (the owner author key)',
-        { context: { topic: desc.name } });
-    }
-    if (author.pubkeyHex.toLowerCase() !== desc.owner) {
-      throw new UnpubError(ErrorCodes.UNPUB_SIGN_FAILED,
-        'peer.unpub: signer is not the topic owner',
-        { context: { topic: desc.name } });
-    }
-    const am = this._requireAxonaManager('unpub');
-    let unpub;
-    try {
-      unpub = await buildUnpub({
-        topicId:     desc.topicId,
-        topicName:   desc.name,
-        ownerNodeId: desc.owner,         // v0.3: the owner is the Author ID (public key)
-        destroy:     opts.destroy === true,
-        seq:         this._nextPubSeq(),
-        identity:    author,
-      });
-    } catch (cause) {
-      throw new UnpubError(ErrorCodes.UNPUB_SIGN_FAILED,
-        `peer.unpub: signing the unpub failed (${cause.message})`,
-        { cause, context: { topic: desc.name } });
-    }
-    am.pubsubUnpub(desc.topicIdBig, unpub);
-    return { ok: true };
-  }
+  // peer.unpub() — REMOVED in v4.3.0 (decision 2026-06-25: keep kill, drop unpub).
+  // It was a thin cache-clear, not a real owner topic-tombstone (no propagation, a
+  // surviving replica or a new publish resurrected the feed). Per-message retraction
+  // is peer.kill(); a whole feed is retired by killing its messages or letting the
+  // 24h TTL expire. If atomic owner feed-destroy is ever needed, build it properly as
+  // an owner-signed topic-tombstone — don't revive this.
 
   /**
    * Subscribe to `topic`.  Handler is invoked with the full envelope
@@ -1664,6 +1815,7 @@ export class AxonaPeer extends DHT {
     const desc       = await this._resolveReadTopic(topic, 'sub');
     const am         = this._requireAxonaManager('sub');
     const topicIdBig = desc.topicIdBig;
+    await this._assertRegionUsable(topicIdBig, SubscribeError, 'sub');   // region-occupancy rule
 
     // Apply `since` mode by seeding AxonaManager's per-topic lastSeenTs
     // BEFORE the subscribe call.  AxonaManager passes lastSeenTs in the
@@ -1682,9 +1834,73 @@ export class AxonaPeer extends DHT {
     this._subscriptions.get(topicIdBig).add(sub);
     this._installDeliveryHook(am);
 
-    am.pubsubSubscribe(topicIdBig);
+    // Lookup-assisted subscribe (v4.3.1): warm the true-root hint so the SUBSCRIBE
+    // routes straight to the topic's emergent root (and replay lands), instead of
+    // relying solely on the post-strand background heal. Bounded; no-op once warm.
+    if (typeof am.warmRootHint === 'function') {
+      try { await am.warmRootHint(topicIdBig); } catch { /* proceed greedy + heal */ }
+    }
+
+    am.pubsubSubscribe(topicIdBig, { replayLatest: opts.since === 'latest' });
+
+    // Demand-driven metrics: subscribing to a metricTopic(dataId) turns metrics ON
+    // for the underlying DATA topic — a renewable METRICSON lease routed to that
+    // topic's root, which then publishes snapshots to this metric topic. ANY node
+    // that roots the data topic honors it (no special/relay node); the lease lapses
+    // when the last metric subscriber unsubscribes. See AxonaManager metrics block.
+    if (isMetricTopicName(desc.name) && typeof am.pubsubMetricsOn === 'function') {
+      const dataIdHex = dataTopicIdOf(desc);
+      if (dataIdHex) {
+        const dataBig = asId(dataIdHex);
+        this._ensureMetricsPublisher(am);
+        if (!this._metricDataByMetricTopic) this._metricDataByMetricTopic = new Map();
+        this._metricDataByMetricTopic.set(topicIdBig, dataBig);
+        am.pubsubMetricsOn(dataBig);
+      }
+    }
+
     this._markPersistDirty('subscriptions');
     return sub;
+  }
+
+  // Register (once) the hook the kernel calls to publish a metric snapshot: any
+  // root with an active metrics lease produces a snapshot, and we publish it to
+  // the derived metric topic — ANONYMOUS (the metric topic is open + advisory, so
+  // no node exposes an author key just to emit infra stats).
+  _ensureMetricsPublisher(am) {
+    if (this._metricsPublisherSet || typeof am.setMetricsPublisher !== 'function') return;
+    this._metricsPublisherSet = true;
+    am.setMetricsPublisher((dataTopicIdHex, snapshot) =>
+      this.pub(metricTopic(dataTopicIdHex), JSON.stringify(snapshot), { signWith: ANONYMOUS }));
+  }
+
+  // REGION RULE (region occupancy): a topic is served only by nodes IN ITS REGION.
+  // You may pub/sub to any region, but if the topic's region has no operational
+  // (reachable) node, there's no valid root — refuse rather than let a neighbouring
+  // region absorb it (which would hotspot that region). Fast-fail BEFORE sending, so
+  // it's a pre-send guard, not a delivery ack. If we can't yet tell (cold/isolated
+  // lookup), we don't false-refuse — the kernel still won't root an out-of-region
+  // topic, so the worst case is a silent no-op, never a wrong-region hotspot.
+  async _assertRegionUsable(topicIdBig, ErrCls, opName) {
+    // Gated (v4.15.0): the region-occupancy rule is OFF by default pre-critical-mass —
+    // most regions have no node yet, so refusing empty-region pub/sub would break nearly
+    // everything. When off, this guard is a no-op and the nearest node roots (pre-4.13.0).
+    // configureRegionLock({ enforce: true }) turns it back on once coverage exists.
+    if (!isRegionLockEnforced()) return;
+    // node.id is a BigInt by construction (DHTNode gate); asId() keeps the topic arg
+    // honest whether it arrived as a BigInt or a hex id, without any local type-guessing.
+    const selfRegion  = (this._node?.id != null) ? extractS2Prefix(asId(this._node.id)) : null;
+    const topicRegion = extractS2Prefix(asId(topicIdBig));
+    if (selfRegion === topicRegion) return;          // we ARE an in-region node → the region is populated
+    let closest = null;
+    try { const a = await this.findKClosest(asId(topicIdBig), 1); closest = (Array.isArray(a) && a.length) ? asId(a[0]) : null; }
+    catch { closest = null; }
+    if (closest == null) return;                     // indeterminate — don't false-refuse
+    if (extractS2Prefix(closest) !== topicRegion) {
+      throw new ErrCls(ErrorCodes.REGION_UNPOPULATED,
+        `peer.${opName}: region 0x${topicRegion.toString(16)} has no operational node — a topic is served only by nodes in its own region`,
+        { context: { topicRegion } });
+    }
   }
 
   /**
@@ -1758,6 +1974,15 @@ export class AxonaPeer extends DHT {
       return { ok: true, scope: 'keyspace' };
     }
     const desc = await this._resolveTopicOrThrow(topic, 'host');
+    // REGION RULE: hosting a specific topic makes this node its root — only valid
+    // if the topic is in THIS node's region (no node roots a foreign region).
+    const selfRegion = (this._node?.id != null) ? extractS2Prefix(this._node.id) : null;
+    const topicRegion = extractS2Prefix(desc.topicIdBig);
+    if (selfRegion !== topicRegion) {
+      throw new PublishError(ErrorCodes.REGION_UNPOPULATED,
+        `peer.host: cannot host a topic in region 0x${topicRegion.toString(16)} from a node in region 0x${(selfRegion ?? 0).toString(16)} — a node roots/hosts only topics in its own region`,
+        { context: { topicRegion, selfRegion } });
+    }
     this._applySince(am, desc.topicIdBig, opts.since);
     am.pubsubHost(desc.topicIdBig);
     this._markPersistDirty('hosting');
@@ -1798,7 +2023,12 @@ export class AxonaPeer extends DHT {
       if (set.size === 0) {
         this._subscriptions.delete(key);
         try {
-          this._requireAxonaManager('unsubscribe').pubsubUnsubscribe(key);
+          const am = this._requireAxonaManager('unsubscribe');
+          am.pubsubUnsubscribe(key);
+          // If this was a metric-topic subscription, drop the metrics lease on the
+          // underlying data topic so its root stops publishing (soft-state turn-off).
+          const dataBig = this._metricDataByMetricTopic?.get(key);
+          if (dataBig !== undefined && typeof am.pubsubMetricsOff === 'function') { am.pubsubMetricsOff(dataBig); this._metricDataByMetricTopic.delete(key); }
         } catch { /* unsubscribe is best-effort */ }
       }
       this._markPersistDirty('subscriptions');
@@ -1908,78 +2138,91 @@ export class AxonaPeer extends DHT {
   }
 
   /**
-   * Aggregate counters for a topic across the K-closest relay tree.
+   * One-shot read of a topic's latest metrics snapshot. Works for BOTH open and
+   * owned data topics (their metric topic is open + advisory either way).
    *
-   * Returns an object `{ publishes, subscribers, deliveries, pulls,
-   * reshares, relayCount }`.  Sums per-post counters across all relays
-   * that respond; `relayCount` is the number of distinct responding
-   * relays so callers can sanity-check coverage.
+   * Mechanism: metrics are DEMAND-DRIVEN (v4.12.0) — subscribing to
+   * metricTopic(dataId), which this call does internally, routes a renewable
+   * METRICSON lease to the data topic's root(s); while leased, each rooting node
+   * publishes a signed snapshot every ~20s. Under the v4.10.0 cohort model EVERY
+   * co-hosting root publishes its own snapshot, so this call collects them across
+   * a short window and AGGREGATES: `subscribers` is summed (each root reports its
+   * own subset), `current_count`/`seq`/`bytes` are maxed (they converge across the
+   * cohort via anti-entropy; max tolerates a lagging member).
    *
-   * Note: today's AxonaManager enforces a publisher-only ownership
-   * check on metrics requests — only the topic's publisher gets a
-   * non-empty result.  Removing that check (so any peer can audit)
-   * is queued as a kernel-side cleanup.
+   * TIMING: on a COLD topic (no recent watcher) the first snapshot arrives ~2-20s
+   * after demand turns on — beyond the default 1500ms window — so the first call
+   * returns stale:true unless a snapshot from a prior watcher is still in the 48h
+   * replay cache. Retry, pass a wider timeoutMs (25_000 spans one cadence), or —
+   * for a live dashboard — **prefer `sub(metricTopic(dataId), …)` directly**;
+   * this one-shot is a convenience.
    *
    * @param {string} topic
-   * @param {object} opts
-   * @param {string} opts.publisher  66-char hex node ID of the topic owner
-   * @param {number} [opts.timeoutMs=500]
-   * @returns {Promise<{ publishes: number, current_count: number, subscribers: number, deliveries: number, pulls: number, reshares: number, relayCount: number }>}
-   *   `current_count` is the number of published events currently retained
-   *   (live, non-expired, non-killed) in the topic's tree — the max reported
-   *   across responding root relays.  `subscribers` is the max direct-child
-   *   count reported by any single responding relay — exact for an unsplit
-   *   topic (single root), a lower bound once the tree has split into sub-axons.
+   * @param {object} [opts]
+   * @param {number} [opts.timeoutMs=1500]  window to collect cohort snapshots
+   * @returns {Promise<{ current_count:number, seq:number, subscribers:number,
+   *   bytes:number, publishes:number, ts:number|null, signer:string|null,
+   *   cohortSize:number, stale:boolean }>}
+   *   `current_count` = messages currently in cache (live, non-expired/non-killed);
+   *   `seq` = the root's dense message counter (monotonic high-water — total events
+   *   ever emitted, incl. kills); `subscribers` = topic-wide total across the cohort;
+   *   `cohortSize` = # of distinct roots that reported; `stale:true` ⇒ no snapshot
+   *   seen. Advisory: the metric topic is open, so check `signer` for provenance.
    */
-  async metrics(topic, { timeoutMs = 500 } = {}) {
-    const desc = await this._resolveReadTopic(topic, 'metrics');
-    const am = this._requireAxonaManager('metrics');
-    if (typeof am.requestMetrics !== 'function') {
-      return { publishes: 0, subscribers: 0, deliveries: 0, pulls: 0, reshares: 0, relayCount: 0 };
-    }
-    const topicIdBig = desc.topicIdBig;
-    const responses = await am.requestMetrics(topicIdBig, null, { timeoutMs });
+  async metrics(topic, { timeoutMs = 1500 } = {}) {
+    const desc   = await this._resolveReadTopic(topic, 'metrics');
+    const mTopic = metricTopic(desc.topicId);     // open, derived; same for owned + open data topics
+    // Collect every cohort member's snapshot over the window, keyed by the computing
+    // node (`by`), keeping each node's freshest. One snapshot = one partial cohort view,
+    // so we wait the full window rather than taking the first.
+    const byNode = new Map();
+    let handle = null;
+    await new Promise((resolve) => {
+      // NOTE: do NOT unref this timer — it is the sole resolver of the collection
+      // window (the callback only accumulates), so it must keep the loop alive for
+      // the full window; unref'ing lets the process exit before it fires (hang).
+      const timer = setTimeout(resolve, timeoutMs);
+      this.sub(mTopic, (env) => {
+        let s = env?.message;
+        if (typeof s === 'string') { try { s = JSON.parse(s); } catch { return; } }
+        if (!s || typeof s !== 'object') return;
+        const ts = Number(s.ts ?? env?.publishTs ?? 0);
+        const by = s.by ?? env?.signerPubkey ?? s.signer ?? 'unknown';
+        const prev = byNode.get(by);
+        // Prefer the envelope's cryptographic signer over the self-asserted body field.
+        if (!prev || ts >= prev._ts) byNode.set(by, { ...s, signer: env?.signerPubkey ?? s.signer ?? null, _ts: ts });
+      }, { since: 'all' }).then((h) => { handle = h; }).catch(() => { clearTimeout(timer); resolve(); });
+    });
+    try { if (handle && typeof handle.stop === 'function') await handle.stop(); } catch { /* */ }
 
-    let deliveries = 0, pulls = 0, reshares = 0, publishes = 0;
-    let subscribers = 0, current_count = 0;
-    const relayIds = new Set();
-    for (const resp of (responses ?? [])) {
-      if (resp?.responderId) relayIds.add(resp.responderId);
-      const entries = resp?.entries ?? [];
-      publishes = Math.max(publishes, entries.length);    // distinct post hashes seen
-      for (const c of entries) {
-        deliveries += c.delivery_count ?? 0;
-        pulls      += c.pull_count     ?? 0;
-        reshares   += c.reshare_count  ?? 0;
-      }
-      if (typeof resp?.subscribers === 'number') {
-        subscribers = Math.max(subscribers, resp.subscribers);
-      }
-      // current_count: live (non-expired, non-killed) messages a relay is
-      // holding for this topic right now.  Each root replica holds the same
-      // queue, so the max across responders is the tree's current count.
-      if (typeof resp?.current_count === 'number') {
-        current_count = Math.max(current_count, resp.current_count);
-      }
+    const snaps = [...byNode.values()];
+    if (snaps.length === 0) {
+      return { current_count: 0, seq: 0, subscribers: 0, bytes: 0, publishes: 0, ts: null, signer: null, cohortSize: 0, stale: true };
     }
+    const max = (f) => snaps.reduce((m, s) => Math.max(m, Number(s[f] ?? 0)), 0);
+    const sum = (f) => snaps.reduce((a, s) => a + Number(s[f] ?? 0), 0);
+    const newest = snaps.reduce((a, b) => (b._ts >= a._ts ? b : a));
     return {
-      publishes,
-      current_count,
-      subscribers,
-      deliveries,
-      pulls,
-      reshares,
-      relayCount: relayIds.size,
+      current_count: max('current_count'),   // converges across cohort → max
+      seq:           max('seq'),             // monotonic counter → max is the true high-water
+      subscribers:   sum('subscribers'),     // per-member subset → sum = topic-wide total
+      bytes:         max('bytes'),
+      publishes:     max('publishes'),        // present only if a publisher tracks it; else 0
+      ts:            newest.ts ?? null,
+      signer:        newest.signer ?? null,
+      cohortSize:    snaps.length,            // # of distinct roots that reported
+      stale:         false,
     };
   }
 
   /**
    * Enumerate the topics this peer currently ROOTS, each with its signed topic
    * descriptor and a locally-computed metric snapshot — synchronous, no network
-   * (unlike metrics(), which scatter-gathers the K roots). The read side of the
+   * (metrics() reads the published snapshot instead). The producer side of the
    * derived-metric-topic convention (`metricTopic()`): an infrastructure root
-   * walks this on a timer, skips metric topics + non-open topics, and
-   * republishes each open topic's snapshot to metricTopic(topicId).
+   * walks this on a timer, skips only metric topics (recursion guard), and
+   * republishes each topic's snapshot to metricTopic(topicId) — owned AND open
+   * (v4.3.0: owned topics' metrics are public too, so anyone can subscribe).
    *
    * @returns {Array<{ topicId:string, descriptor:object|null,
    *                   current_count:number, subscribers:number, bytes:number }>}
@@ -2333,6 +2576,10 @@ export class AxonaPeer extends DHT {
       am.setLogSink((level, msg, context) => this._emitLog(level, msg, context));
       this._managerLogWired = am;
     }
+    // Wire the metrics publisher eagerly so ANY node that ever roots a topic with
+    // an active metrics lease publishes its snapshots — including a headless host()
+    // relay that never subscribes to a metric topic itself.
+    if (am) this._ensureMetricsPublisher(am);
     return am;
   }
 
@@ -2423,6 +2670,10 @@ export class AxonaPeer extends DHT {
         }
         return [...out];
       },
+      // The bridge node id (signaling infra, never a topic root). Lets AxonaManager
+      // exclude it from the reachable-closest test in its root-claim fallback, the
+      // same way findKClosest/routeMessage already skip it.
+      bridgeId: () => node.transport?.bridgeNodeIdBig ?? null,
       findKClosest: async (targetIdBig, K = 5) => {
         // AxonaManager now passes BigInt targetId; the adapter is
         // BigInt-throughout.  No hex conversion needed.
@@ -2432,18 +2683,26 @@ export class AxonaPeer extends DHT {
           );
         }
         const dist = new Map();
+        // The bridge is signaling infra, NEVER a topic root. It must be excluded
+        // here too — this local adapter is what AxonaManager's _rootHint_ prefers,
+        // and the bridge is in every peer's synaptome (bootstrap link). Without
+        // this skip, any topic XOR-closest to the bridge resolves its root hint TO
+        // the bridge, the SUB/PUB re-homes toward it, the bridge can't serve as a
+        // root → the tree never forms (the same strand the iterative findKClosest
+        // [bridgeId skip] and the greedy route hop already guard against).
+        const bridgeId = node.transport?.bridgeNodeIdBig ?? null;
         if (typeof selfId === 'bigint') {
           dist.set(selfId, selfId ^ targetIdBig);
         }
         for (const syn of node.synaptome?.values?.() ?? []) {
           const pid = syn.peerId;
-          if (typeof pid === 'bigint' && !dist.has(pid)) {
+          if (typeof pid === 'bigint' && !dist.has(pid) && pid !== bridgeId) {
             dist.set(pid, pid ^ targetIdBig);
           }
         }
         for (const syn of node.incomingSynapses?.values?.() ?? []) {
           const pid = syn.peerId;
-          if (typeof pid === 'bigint' && !dist.has(pid)) {
+          if (typeof pid === 'bigint' && !dist.has(pid) && pid !== bridgeId) {
             dist.set(pid, pid ^ targetIdBig);
           }
         }
@@ -2530,13 +2789,6 @@ export class AxonaPeer extends DHT {
       return 'consumed';
     });
 
-    // Match axona-peer's wiring: do NOT call am.start() here.
-    // axona-peer constructs AxonaManager via engine.axonFor(node)
-    // and never arms the 10s refreshTick interval.  Applications
-    // call peer.sub after the mesh has stabilised, so the
-    // initial K-closest is already wide and refresh isn't needed
-    // to recover from a stale boot-time target set.
-    //
     // Wire `pickRelayPeer` so sub-axon recruitment uses BATCH ADOPTION
     // (pick a relay XOR-closest to the new subscriber from the whole
     // synaptome, hand off a batch) instead of the fallback that promotes
@@ -2545,23 +2797,37 @@ export class AxonaPeer extends DHT {
     // (measured in dht-sim: depth ~21 at 600 subscribers vs ~4 with batch
     // adoption) — a latency/fragility scaling problem.  `shouldRecruitSubAxon`
     // keeps its default (recruit past `maxDirectSubs`).
-    return new AxonaManager({
+    const am = new AxonaManager({
       dht,
       pickRelayPeer: (role, subscriberId, forwarderId) =>
         this._pickRelayPeer(role, subscriberId, forwarderId),
+      ...(this._rootReplicas != null ? { rootReplicas: this._rootReplicas } : {}),
     });
+    // ARM the periodic refreshTick (kernel v4.9.1). Earlier this was deliberately
+    // left un-armed ("apps subscribe after the mesh stabilises"), but that left the
+    // whole periodic healing layer — adaptive renewal/re-home, persistent pub/kill
+    // retry, and the reachable-root fallback — running ONLY on subscribe/publish
+    // events, never on cadence. On a real WebRTC mesh that under-heals: a subscriber
+    // stranded at a transient local-minimum (or whose root churns between its sparse
+    // sub/pub events) never re-resolves until the app happens to act again. Arming the
+    // tick is what those mechanisms were designed around. Idempotent + unref()'d, so
+    // it never holds the process open. The bridge already arms its own (bridge_axona_node).
+    // The sim/engine path (axonaManagerFor) does NOT reach here, so it keeps its
+    // injected clock and manual tick — only the standalone (browser/relay) peers arm.
+    am.start();
+    return am;
   }
 
   _installDeliveryHook(am) {
     if (this._deliveryHookInstalled) return;
     if (typeof am.onPubsubDelivery !== 'function') return;
-    am.onPubsubDelivery((topicId, json, publishId, publishTs) => {
-      this._dispatchDelivery(topicId, json, publishId, publishTs);
+    am.onPubsubDelivery((topicId, json, publishId, publishTs, seq) => {
+      this._dispatchDelivery(topicId, json, publishId, publishTs, seq);
     });
     this._deliveryHookInstalled = true;
   }
 
-  _dispatchDelivery(topicId, json, publishId, publishTs) {
+  _dispatchDelivery(topicId, json, publishId, publishTs, seq) {
     const set = this._subscriptions.get(topicId);
     if (!set || set.size === 0) return;
     let envelope;
@@ -2573,7 +2839,10 @@ export class AxonaPeer extends DHT {
       // skip the normal envelope shape check.
       if (envelope && typeof envelope === 'object' && envelope.deleted === true &&
           typeof envelope.msgId === 'string') {
-        for (const sub of set) sub._deliver({ msgId: envelope.msgId, topic: envelope.topic ?? null, deleted: true });
+        // A kill is a publish with a delete side-effect: it carries the SAME
+        // root-assigned `ts` (the kill's killTs stamp) so apps order it on the one
+        // topic timeline exactly like a message.
+        for (const sub of set) sub._deliver({ msgId: envelope.msgId, topic: envelope.topic ?? null, deleted: true, ts: publishTs, seq });
         return;
       }
       // Defence: enforce envelope shape so apps always see consistent
@@ -2596,10 +2865,23 @@ export class AxonaPeer extends DHT {
       envelope = {
         msgId:    publishId,
         ts:       publishTs,
+        seq,
         topic:    null,
         message:  json,
       };
     }
+    // ROOT TIME IS THE SINGLE ORDERING AUTHORITY. Overwrite the envelope's `ts`
+    // (the publisher's signed, clock-skew-prone claim) with the root-assigned
+    // monotonic stamp, so every subscriber ranks messages identically regardless
+    // of publisher clocks. The publisher's ts still gates envelope FRESHNESS at the
+    // root ingress (C-2 anti-replay); by the time a message is delivered the root
+    // has serialized it onto the topic timeline, and THAT stamp is what apps must
+    // order + replay (`since`) by. (Kills carry the same stamp — see the delete
+    // branch above.) Guarded so a missing stamp never clobbers ts with undefined.
+    if (Number.isFinite(publishTs)) envelope.ts = publishTs;
+    // The dense per-topic root counter (gap detection): env.seq jumps ⇒ a message
+    // was missed. Guarded so a missing counter never clobbers with undefined.
+    if (Number.isFinite(seq)) envelope.seq = seq;
     // Kernel keeps loopback semantics — a publisher's own publishes
     // do bounce back through the K-closest tree and deliver to its
     // own subscriptions.  Tests rely on this for single-peer e2e
@@ -2637,8 +2919,12 @@ export class AxonaPeer extends DHT {
       return;
     }
     if (since === 'latest') {
-      // Approximate: ask for the most recent ~1s of cache + future.
-      am._lastSeenTsByTopic.set(topicId, Date.now() - 1000);
+      // The newest retained message regardless of age + live tail. The floor is
+      // "future only" (now); the root replays the single newest cache entry via
+      // the replayLatest flag (set in sub()). The pre-v4.3.0 `now - 1000` was a
+      // 1-second cache window that MISSED any message last published more than
+      // ~1s before subscribe — the "subscribe latest, no callback" bug.
+      am._lastSeenTsByTopic.set(topicId, Date.now());
       return;
     }
     if (typeof since === 'number') {
@@ -2818,9 +3104,7 @@ export class AxonaPeer extends DHT {
    */
   _greedyNextHopToward(targetId) {
     if (!this._node?.alive) return null;
-    const target = (typeof targetId === 'bigint')
-      ? targetId
-      : BigInt('0x' + targetId);
+    const target = asId(targetId);   // wire→internal id gate
     // Only forward to a synapse we are ACTUALLY connected to.  A dead synapse
     // (e.g. the bridge after it dies — peers keep the synapse until anneal
     // cleans it) is XOR-near many targets and would be picked as the greedy
@@ -2831,10 +3115,12 @@ export class AxonaPeer extends DHT {
     const t = this._node.transport;
     const connOk = (typeof t?.isConnected === 'function') ? t.isConnected.bind(t) : null;
     const dead   = this._node._deadPeers;
+    const bridgeId = t?.bridgeNodeIdBig ?? null;   // the bridge is signaling infra, not a routable DHT node / topic root
     let bestPeerId = null;
     let bestDist   = this._node.id ^ target;
     for (const syn of this._node.synaptome.values()) {
       if (dead && dead.has(syn.peerId)) continue;
+      if (bridgeId !== null && syn.peerId === bridgeId) continue;   // never route a topic toward the bridge (it can't serve as root)
       if (connOk && !connOk(syn.peerId)) continue;
       const d = syn.peerId ^ target;
       if (d < bestDist) { bestDist = d; bestPeerId = syn.peerId; }
@@ -2861,9 +3147,7 @@ export class AxonaPeer extends DHT {
    */
   async _findCloserInTwoHops(targetId) {
     const node = this._node;
-    const target = (typeof targetId === 'bigint')
-      ? targetId
-      : BigInt('0x' + targetId);
+    const target = asId(targetId);   // wire→internal id gate
     const myDist = node.id ^ target;
     let bestPeerId = null;        // the FIRST-HOP (adjacent) peer to forward to
     let bestDist   = myDist;
@@ -3299,9 +3583,16 @@ export class AxonaPeer extends DHT {
       ? targetId
       : (() => { throw new TypeError(`findKClosest: targetId must be bigint, got ${typeof targetId}`); })();
 
+    // The bridge is a connection rendezvous, not a routable DHT node — it must
+    // never be returned as a topic's closest node (root hint), or every same-
+    // region topic funnels its subscribe-k to the bridge, which can't serve as a
+    // root → the tree never forms (captured: SUB/PUB routed to the bridge id,
+    // role=— everywhere, 0 delivery on contended regions).
+    const bridgeId = src.transport?.bridgeNodeIdBig ?? null;
     const distances = new Map();
     const addCandidate = (peerId) => {
       if (typeof peerId !== 'bigint' || distances.has(peerId)) return;
+      if (bridgeId !== null && peerId === bridgeId) return;   // exclude the bridge from root candidacy
       distances.set(peerId, peerId ^ targetBig);
     };
 
@@ -3393,6 +3684,21 @@ export class AxonaPeer extends DHT {
     }
     if (isTerminal) {
       return { consumed: false, atNode: originNode.id, hops: 0, terminal: true };
+    }
+
+    // Lazy channel-open on the FIRST hop (v4.3.2): the forwarding path
+    // (route_msg handler) already opens a channel to an unconnected next hop
+    // mid-walk, but the ORIGIN's first send did not — so a pub/sub routed toward
+    // a resolved-but-unconnected root (a gossip-known node in the K-closest set
+    // that isn't yet a mesh peer), and the root's reverse DELIVER toward a
+    // subscriber it isn't connected to, both silently failed → the subscriber
+    // never attached (empty `_upstream`), the dominant residual no-delivery case.
+    // Open the channel first so the routed SUB/PUB/DELIVER traverses a real link.
+    if (typeof originNode.transport.isConnected === 'function'
+        && !originNode.transport.isConnected(nextHopId)
+        && typeof originNode.transport.openConnection === 'function') {
+      try { await originNode.transport.openConnection(nextHopId); }
+      catch { /* fall through; send may still route via the bridge/relay sink */ }
     }
 
     try {
@@ -3577,12 +3883,14 @@ export class AxonaPeer extends DHT {
     if (!node?.alive) return null;
     const selfBig = (typeof node.id === 'bigint') ? node.id : fromHex(node.id);
     const dead    = node._deadPeers || new Set();
+    const bridgeId = node.transport?.bridgeNodeIdBig ?? null;   // never recruit the bridge as a relay axon
 
     const considered = new Map();
     for (const syn of node.synaptome.values()) {
       const peerId = syn.peerId;
       if (dead.has(peerId)) continue;
       if (peerId === selfBig)       continue;
+      if (bridgeId !== null && peerId === bridgeId) continue;   // signaling infra, not a relay/root → would black-hole the subtree
       if (peerId === forwarderId)   continue;
       if (peerId === subscriberId)  continue;
       if (role.children.has(peerId)) continue;

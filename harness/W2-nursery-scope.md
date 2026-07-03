@@ -40,17 +40,36 @@ bilateral cap, transport channel open — is unchanged. Returns `joinReach`.
 ### B2 — `BridgeNursery` policy model  (harness, ~1 day)
 Plain JS in the harness (NOT kernel — it models the bridge *policy* we'd later
 port into `axona-bridge`). Responsibilities:
-- **Anchor pool** with an **eligibility score** = f(age/uptime, current synaptome
-  size, keyspace spread). Only *proven* nodes are anchor-eligible; a fresh joiner
-  never is until it graduates.
-- **`pickAnchors(newId, k)`** → k anchors chosen for **keyspace diversity** (not
-  the k closest — spread so the newcomer gets footholds across strata), never
-  itself, all currently healthy.
+
+- **Composite anchor-eligibility score** (a blend, never a single signal — a lone
+  metric is gameable and blind to outcomes):
+    `score = w_up·uptime + w_deg·degree + w_in·inboundDegree + w_hist·integrationSuccess`
+  - **uptime** — longevity as a stability proxy (also the hard gate: a node must
+    survive `minUptime` before it is anchor-eligible at all; a fresh joiner never
+    anchors).
+  - **degree** — outbound synaptome fill / cap (well-connected).
+  - **inboundDegree** — incoming synapses / cap. This is the connectivity that
+    actually matters for *introducing* — how many peers already route through it
+    (B1 finding: reachability lives in inbound refs).
+  - **integrationSuccess** — *outcome-based track record*: a smoothed success rate
+    `(successes + α)/(attempts + α + β)` over the newcomers this node was an anchor
+    for. Each introduction records an attempt against its anchors; when a newcomer
+    later **graduates**, its anchors are credited a success. Rewards proven
+    introducers and self-corrects (an anchor that looks connected but fails to
+    integrate newcomers loses score). α/β keep unproven anchors neutral, not zero.
+  - Weights are configurable so B5 can sweep profiles; default: equal-ish, with
+    inboundDegree + integrationSuccess weighted slightly higher (they're the two
+    that most directly predict a good introduction).
+- **`pickAnchors(newId, k)`** → the top-scoring *eligible* nodes, chosen for
+  **keyspace diversity** (spread across strata, not the k closest, so the newcomer
+  gets footholds in different regions), never itself, all currently healthy.
+  Records an attempt against each chosen anchor.
 - **Admission budget + graduation:** the bridge keeps room for newcomers; a
-  newcomer *graduates* out of "being introduced" once it clears a stability bar
-  (synaptome ≥ threshold AND inbound-reachable), after which it can itself become
-  anchor-eligible. This is the "two-tier disconnect but keep as introduction"
-  behaviour, modelled as pool membership rather than live connections.
+  newcomer *graduates* once it clears the stability bar (synaptome fill ≥ threshold
+  AND inbound-refs ≥ k), at which point (a) its anchors are credited an integration
+  success and (b) it becomes anchor-eligible itself once past `minUptime`. This is
+  the "two-tier disconnect but keep as introduction" behaviour, modelled as pool
+  membership + credit rather than live connections.
 
 ### B3 — Bootstrap-only harness `harness/nursery-experiment.mjs`  (~1 day)
 - Genesis: seed a small stable core (the first anchors).

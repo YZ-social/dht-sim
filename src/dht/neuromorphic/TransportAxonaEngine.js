@@ -48,6 +48,8 @@ import {
   createAuthorIdentity,
   deriveTopicId,
   clz264,
+  configureKeyspace,
+  getKeyspace,
 } from '@axona/protocol';
 import { buildXorRoutingTable }     from '@axona/protocol/utils/geo.js';
 import { DHT } from '../DHT.js';
@@ -59,6 +61,23 @@ export class TransportAxonaEngine extends DHT {
     this._alpha   = opts.alpha   ?? 3;
     this._bits    = opts.bits    ?? 264;
     this.GEO_BITS = opts.geoBits ?? 8;
+
+    // ── Sim-configurable keyspace (opt-in shrink) ─────────────────────
+    // The kernel mints PRODUCTION-faithful 264-bit identities by default
+    // (region 8 ‖ SHA-256 256). Pass `hashBits` < 256 to shrink the hash
+    // component so churn tests scale to far more nodes (e.g. hashBits:64 →
+    // 72-bit node/topic ids, 64-bit author ids). This MUST happen before
+    // any peer/identity is minted, so it lives in the constructor. The
+    // browser benchmark path does NOT pass hashBits → stays 264-bit, so
+    // existing routing/benchmark behaviour is unchanged. Author ids shrink
+    // below the Ed25519 width, so the kernel runs its relaxed-verification
+    // sim profile (routing/delivery, not crypto, is what these tests probe).
+    // Set the keyspace DETERMINISTICALLY on every construction (256 = production
+    // default; resets a prior engine's shrink so re-initialising at full width
+    // actually restores 264-bit). configureKeyspace is global/process-wide.
+    const reqHashBits = opts.hashBits ?? 256;
+    configureKeyspace({ hashBits: reqHashBits });
+    this._keyspace = getKeyspace();   // { idBits, authorIdBits, hexChars, ... }
 
     // One shared domain for every peer in this engine.  Hands the
     // peers their tuning constants + event bus + simEpoch counter.
@@ -380,21 +399,31 @@ export class TransportAxonaEngine extends DHT {
     });
   }
 
-  // ─── DHT contract — bootstrapJoin (churn replacement) ───────────
+  // ─── DHT contract — bridgeIntroduce / bootstrapJoin ─────────────
   //
-  // Called by the churn loop after addNode for each replacement
-  // peer.  Walks the synaptome of the sponsor outward (XOR-iterative
-  // closest-set discovery), opens SimTransport channels to every
-  // discovered peer, and admits them as synapses on the new node so
-  // it's reachable from the surviving mesh on the next lookup round.
+  // W2 bridge-nursery primitive. A newcomer is introduced to a SET of
+  // `anchorIds` (the bridge's curated anchors) rather than a single
+  // sponsor. From those k seeds it walks the mesh outward (XOR-iterative
+  // closest-set discovery), opens SimTransport channels, and admits the
+  // discovered peers as synapses so it's reachable from the surviving
+  // mesh on the next lookup round. Seeding from a SET of anchors (each a
+  // distinct foothold, ideally spread across the keyspace) is what lets
+  // the bridge hand out a small bounded introduction instead of the
+  // whole peer-list and still let the newcomer self-expand.
+  //
+  // k=1 anchor === the old single-sponsor bootstrapJoin, kept as a thin
+  // wrapper below for the churn loop.
   //
   // Returns the number of synapses installed (also stored as
-  // newNode._joinReach for benchmark introspection).
+  // newNode._joinReach; the anchor count as newNode._joinAnchors).
 
-  async bootstrapJoin(newNodeId, sponsorId) {
+  async bridgeIntroduce(newNodeId, anchorIds) {
     const newNode = this.nodeMap.get(newNodeId);
-    const sponsor = this.nodeMap.get(sponsorId);
-    if (!newNode || !sponsor) return 0;
+    if (!newNode) return 0;
+    const anchors = (Array.isArray(anchorIds) ? anchorIds : [anchorIds])
+      .map(id => this.nodeMap.get(id))
+      .filter(a => a && a.alive && a.id !== newNodeId);
+    if (!anchors.length) return 0;
 
     const k = this._k;
     const alpha = this._alpha;
@@ -412,7 +441,7 @@ export class TransportAxonaEngine extends DHT {
       const latMs   = roundTripLatency(newNode, peer);
       const stratum = clz264(newNode.id ^ peer.id);
       const syn = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
-      syn._addedBy = 'bootstrapJoin';
+      syn._addedBy = 'bridgeIntroduce';
       newNode.addSynapse(syn);
       if (this.bidirectional !== false) {
         peer.addIncomingSynapse(newNode.id, latMs, stratum);
@@ -442,9 +471,17 @@ export class TransportAxonaEngine extends DHT {
       return peers.slice(0, k);
     };
 
-    const iterLookup = async (targetId, startNode, maxRounds) => {
+    // Seed the frontier from the UNION of every anchor's closest-set —
+    // each anchor contributes a distinct entry point — then iterate the
+    // merged frontier toward the newcomer's own id so its true nearest
+    // neighbours install it (inbound reachability).
+    const iterLookup = async (targetId, seeds, maxRounds) => {
       const queried = new Set([newNodeId]);
-      let shortlist = findClosest(startNode, targetId);
+      const byId = new Map();
+      for (const seed of seeds) {
+        for (const p of findClosest(seed, targetId)) byId.set(p.id, p);
+      }
+      let shortlist = [...byId.values()];
       for (const p of shortlist) await addPeer(p);
       for (let round = 0; round < maxRounds; round++) {
         const unq = shortlist.filter(n => !queried.has(n.id)).slice(0, alpha);
@@ -470,11 +507,18 @@ export class TransportAxonaEngine extends DHT {
       }
     };
 
-    await addPeer(sponsor);
-    await iterLookup(newNodeId, sponsor, 10);
+    for (const a of anchors) await addPeer(a);
+    await iterLookup(newNodeId, anchors, 10);
 
-    newNode._joinReach = newNode.synaptome.size;
+    newNode._joinReach   = newNode.synaptome.size;
+    newNode._joinAnchors = anchors.length;
     return newNode._joinReach;
+  }
+
+  // Churn-loop compatibility: single-sponsor introduction is just a
+  // k=1 bridgeIntroduce. Existing callers pass one sponsor id.
+  async bootstrapJoin(newNodeId, sponsorId) {
+    return this.bridgeIntroduce(newNodeId, [sponsorId]);
   }
 
   // ─── DHT contract — postChurnHeal ────────────────────────────────

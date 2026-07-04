@@ -72,13 +72,22 @@ port into `axona-bridge`). Responsibilities:
   membership + credit rather than live connections.
 
 ### B3 — Bootstrap-only harness `harness/nursery-experiment.mjs`  (~1 day)
-- Genesis: seed a small stable core (the first anchors).
-- Grow to N purely via `nursery.pickAnchors` → `engine.bridgeIntroduce` — **no
-  `buildRoutingTables` call anywhere.**
-- Drive organic growth with explicit `refreshTick` rounds (the sim's deterministic
-  stand-in for production's per-peer refresh timer).
-- Inject **churn + rejoin** (rejoin is the important axis — a returning node is a
-  fresh introduction each time).
+- Genesis: seed a small stable core (the first anchors) — buildRoutingTables on the
+  genesis set only; everything after grows via introduction.
+- Grow to N via the arm's introduction (C = `nursery.introduce` → k curated anchors;
+  B = single random sponsor; A = god's-eye `buildRoutingTables` ceiling).
+- **Self-expansion mechanism (measured, not assumed):** a probe proved the sim
+  integrates a newcomer through **lookup traffic**, NOT `refreshTick` — a k=1
+  introduce yields 21/21, and 5 rounds of driven lookups take it to 60/60 (full
+  mesh), outbound and inbound. So each grow step runs a **bounded** traffic budget
+  (a few lookup rounds); bounded because *with unlimited* traffic every arm
+  converges — the discriminating regime is limited traffic under churn, where
+  introduction quality still matters before a node accumulates traffic.
+- **Mesh-self-expansion share** is measured directly: record a newcomer's synaptome
+  size right after its introduction (bridge contribution) vs at measurement; the
+  remainder is what the mesh added. We want this majority-mesh and rising with N.
+- Inject **churn + rejoin** (the important axis — a returning node is a fresh
+  `addNode` + fresh introduction each time, the real cost).
 
 ### B4 — Metrics + analyzer  (~½ day)
 Per newcomer and aggregate:

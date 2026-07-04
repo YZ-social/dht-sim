@@ -47,6 +47,12 @@ export class BridgeNursery {
     // Composite weights (B5 sweeps these). Default: inbound + track-record
     // weighted a touch higher — the two that most predict a good introduction.
     this.weights = opts.weights ?? { uptime: 0.2, degree: 0.2, inbound: 0.3, integ: 0.3 };
+    // Anti-concentration: penalize an anchor by its RELATIVE recent usage so the
+    // nursery spreads introductions across the eligible tier instead of funneling
+    // every newcomer through the same few top-scored anchors (an eclipse surface).
+    // Applied at pick time against the current max usage. wLoad=0 restores pure
+    // score-ranking (the concentrating behaviour).
+    this.wLoad = opts.wLoad ?? 0.35;
 
     this._born       = new Map(); // id -> round first seen
     this._intro      = new Map(); // newcomerId -> { anchors:[ids], round }
@@ -100,10 +106,15 @@ export class BridgeNursery {
   // regions (distinct high-byte prefixes first), never `newId`. Records an
   // attempt against each chosen anchor.
   pickAnchors(round, newId, k = this.k) {
+    // Current max usage among all anchors, for the relative load penalty.
+    let maxUses = 0;
+    for (const u of this._attempts.values()) if (u > maxUses) maxUses = u;
+
     const scored = [];
     for (const id of this.eng.nodeMap.keys()) {
       if (id === newId || !this.eligible(round, id)) continue;
-      scored.push({ id, s: this.score(round, id) });
+      const loadPenalty = maxUses > 0 ? this.wLoad * ((this._attempts.get(id) ?? 0) / maxUses) : 0;
+      scored.push({ id, s: this.score(round, id) - loadPenalty });
     }
     scored.sort((a, b) => b.s - a.s);
 

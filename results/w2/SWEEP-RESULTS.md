@@ -60,3 +60,33 @@ regime, only a marginal integration payoff.
 The sim did its job: it validated the premise and killed the assumption that the
 elaborate composite anchor score is worth its cost — before any of it reached
 `axona-bridge`.
+
+## Follow-up: anti-concentration load penalty (wLoad=0.35)
+
+Added a relative-usage penalty to `pickAnchors` (`score − wLoad·uses/maxUses`) so
+the nursery spreads introductions across the eligible tier. Re-swept (N=500, 5
+seeds; `results/w2/nursery-wload.jsonl`):
+
+| churn | metric | before (no penalty) | after (wLoad=0.35) |
+|---|---|---|---|
+| 0%  | eclipse gini | 0.755 | **0.204** |
+| 0%  | fill (% ceiling) | 81.8% | **83.5%** |
+| 0%  | reach | 1.000 | 1.000 |
+| 20% | eclipse gini | 0.652 | **0.489** |
+| 20% | fill (% ceiling) | 84.6% | **87.0%** |
+| 20% | reach | 1.000 | 1.000 |
+| 20% | C beats random | +2.9pt | **+5.1pt (87.0 vs 81.9)** |
+
+**The penalty is a clean win, no trade-off.** Eclipse concentration collapses
+(gini 0.75→0.20 at steady state; 0.65→0.49 under churn — both now under the 0.6
+bar), and fill *improves* rather than degrades — spreading load keeps anchors
+unsaturated, so newcomers attach to better-connected footholds. Under churn the
+curated+spread policy now clearly beats a random sponsor (87% vs 82% of ceiling,
+tighter variance).
+
+**Refined verdict:** ship the bounded-introduction premise **with** the composite
+eligibility **and** the anti-concentration penalty to `axona-bridge`. The only
+unmet greenlight criterion is the 95% fill bar (~85–87%), and that is a tunable
+traffic-budget artifact — reachability, the load-bearing property, is 100%
+throughout. The remaining open probe (nice-to-have, not a blocker): traffic=1 and
+N=2k/5k to map where curation's margin over random widens.

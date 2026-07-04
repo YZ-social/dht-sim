@@ -121,9 +121,36 @@ async function testPickAndAttribution() {
     nur.eligible(round + nur.minUptime, newId));
 }
 
+async function testAntiConcentration() {
+  console.log('\n── anti-concentration load penalty spreads introductions ──');
+  const eng = await warmMesh(60);
+  const ids = [...eng.nodeMap.keys()];
+  const round = 5;
+
+  const distinctUsed = (wLoad) => {
+    const nur = new BridgeNursery(eng, { k: 3, minUptime: 3, wLoad });
+    for (const id of ids) nur.onJoin(0, id);
+    // 40 introductions of transient newcomers (not added to the mesh; we only
+    // exercise anchor SELECTION, which is what concentrates).
+    for (let i = 0; i < 40; i++) nur.pickAnchors(round, `syn${i}`, 3);
+    const uses = [...nur._attempts.values()];
+    const tot = uses.reduce((a, b) => a + b, 0);
+    const maxShare = tot ? Math.max(...uses) / tot : 0;
+    return { distinct: nur._attempts.size, maxShare };
+  };
+
+  const off = distinctUsed(0);      // pure score-ranking (concentrates)
+  const on  = distinctUsed(0.35);   // with load penalty (spreads)
+  console.log(`    wLoad=0:   ${off.distinct} distinct anchors, maxShare ${off.maxShare.toFixed(3)}`);
+  console.log(`    wLoad=.35: ${on.distinct} distinct anchors, maxShare ${on.maxShare.toFixed(3)}`);
+  check('load penalty uses MORE distinct anchors', on.distinct > off.distinct);
+  check('load penalty lowers the top anchor\'s share', on.maxShare < off.maxShare);
+}
+
 await testEligibilityGate();
 await testCompositeScore();
 await testPickAndAttribution();
+await testAntiConcentration();
 
 console.log(`\n${failed ? '✗' : '✓'} smoke_bridge_nursery: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

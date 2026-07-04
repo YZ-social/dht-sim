@@ -13,7 +13,10 @@
 import { readFileSync } from 'node:fs';
 
 const path = process.argv[2] || 'results/w2/nursery.jsonl';
-const rows = readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+const rows = readFileSync(path, 'utf8').split('\n')
+  .filter(l => l.trim().startsWith('{'))   // skip stray engine log lines
+  .map(l => { try { return JSON.parse(l); } catch { return null; } })
+  .filter(Boolean);
 
 const mean = (xs) => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
 const sd = (xs) => { if (xs.length < 2) return 0; const m = mean(xs); return Math.sqrt(mean(xs.map(x => (x - m) ** 2))); };

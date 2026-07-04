@@ -21,7 +21,7 @@ for churn in $CHURNS; do
   for arm in A B C; do
     for seed in $(seq 1 "$REPS"); do
       ARM=$arm N=$N K=$K CHURN=$churn TRAFFIC=$TRAFFIC SEED=$seed \
-        node harness/nursery-experiment.mjs 2>/dev/null >> "$OUT"
+        node harness/nursery-experiment.mjs 2>/dev/null | grep "^{" >> "$OUT"
       echo "  done arm=$arm churn=$churn seed=$seed"
     done
   done

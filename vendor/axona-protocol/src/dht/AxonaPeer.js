@@ -350,15 +350,6 @@ export class AxonaPeer extends DHT {
             console.warn('AxonaPeer.onPeerBound: admission failed', err);
           }
         }
-        // The synaptome just changed — drop any cached K-closest set so
-        // the next pub/sub recomputes the topic's axon set against the
-        // newly-wider mesh.  Without this the relay set a peer chose
-        // while the mesh was sparse stays frozen, and publishes from
-        // peers that joined later route to axons this peer never
-        // registered at (the cross-app delivery asymmetry).  refreshTick
-        // also flushes on its 10 s cadence; this makes convergence
-        // immediate on each new binding.
-        this._axonaManager?.invalidateKClosestCache?.();
       });
     }
 
@@ -386,7 +377,7 @@ export class AxonaPeer extends DHT {
           node.incomingSynapses?.delete(dead);
           node.connections?.delete(dead);
           (node._deadPeers ??= new Set()).add(dead);
-          this._axonaManager?.invalidateKClosestCache?.();
+          this._axonaManager?.pubsubPeerDied?.(toHex(dead));   // purge ghost root beacons
           this._emitLog?.('info', 'peer-died-evicted', { peer: toHex(dead) });
           this._scheduleMaintain();   // a lost peer may have been a near-quota successor → refill
 
@@ -568,7 +559,6 @@ export class AxonaPeer extends DHT {
         try { node.transport?.closeConnection?.(leaving); } catch { /* dying channel */ }
         this._emitLog?.('info', 'peer-leaving', { from: toHex(leaving) });
         // Re-anchor now rather than waiting for the 10 s refreshTick.
-        this._axonaManager?.invalidateKClosestCache?.();
         Promise.resolve(this._axonaManager?.refreshTick?.()).catch(() => {});
       } catch { /* best-effort resilience path */ }
     });
@@ -759,6 +749,15 @@ export class AxonaPeer extends DHT {
       clearInterval(this._maintainTimer);
       this._maintainTimer = null;
     }
+    // Retire the pub/sub machinery on the abrupt path too — a stopped peer
+    // must not keep ticking, retrying pendings, or verifying roots (see the
+    // matching teardown in leave() step 2c for the field incident).
+    if (this._axonaManager) {
+      try { this._axonaManager.stop?.(); } catch { /* */ }
+      try { this._axonaManager._pendingPub?.clear?.(); } catch { /* */ }
+      try { this._axonaManager._pendingKill?.clear?.(); } catch { /* */ }
+      try { this._axonaManager._verifyInflight?.clear?.(); } catch { /* */ }
+    }
     this._started = false;
   }
 
@@ -930,9 +929,6 @@ export class AxonaPeer extends DHT {
       );
       for (const r of settled) if (r.status === 'fulfilled' && r.value !== false) opened++;
     }
-    // Our synaptome just widened (via the bind flow on each open) — drop any
-    // stale K-closest cache so the next pub/sub recomputes against it.
-    this._axonaManager?.invalidateKClosestCache?.();
     return opened;
   }
 
@@ -979,7 +975,6 @@ export class AxonaPeer extends DHT {
         try { await this._considerCandidate(id, 'maintain'); } catch { /* verified-connect is best-effort */ }
       }
       if (attempted) {
-        this._axonaManager?.invalidateKClosestCache?.();
         this._emitLog?.('info', 'synaptome-refill', { near: cfg.kNear, attempted });
       }
       return attempted;
@@ -1017,8 +1012,33 @@ export class AxonaPeer extends DHT {
   async leave({ drain = true, notify = true, timeoutMs = 5000 } = {}) {
     if (!this._started) return;
     const selfId = this._nodeIdHex();
+    // NOTE: deliberately REF'd (no unref). These sleeps are actively-awaited
+    // steps of leave() itself — if they were unref'd and leave() is the
+    // process's last activity, the event loop empties and Node exits MID-LEAVE
+    // (caught by smoke_leave_teardown). They're bounded, so they can't hold
+    // the process past their own resolution.
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const am = this._axonaManager;
 
-    // (1) notify peers (fire-and-forget, bounded by drain window).
+    // (1) drain FIRST, while the transport is still fully alive: wait for
+    // in-flight publishes/kills to CONFIRM (the pendingPub implicit-ack
+    // machinery), bounded by timeoutMs. Replaces the old fixed pause — which
+    // was capped at 50ms (`Math.min(timeoutMs, 50)`), silently defeating the
+    // caller's timeout — and drains on EVIDENCE, not time: the moment the
+    // retry maps are empty we move on, so a confirmed publish leaves at once
+    // and an unconfirmed one gets the full window it asked for. Field report
+    // (alert-bot, 2026-07-10): publish→leave with unconfirmed pendings
+    // previously required long app-side sleeps to behave.
+    if (drain && timeoutMs > 0 && am) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline
+             && ((am._pendingPub?.size ?? 0) > 0 || (am._pendingKill?.size ?? 0) > 0)) {
+        await sleep(100);
+      }
+    }
+
+    // (2) notify peers — parallel and time-bounded (the old serial await
+    // chain paid one WAN round-trip per peer and delayed the departure).
     // Resolve the transport the same way the routing path does: prefer
     // the constructor-supplied transport, else node.transport.  Hosts
     // like the bridge wire their transport onto node.transport (not the
@@ -1028,31 +1048,52 @@ export class AxonaPeer extends DHT {
     const announceVia = this._transport ?? this._node?.transport;
     if (notify && announceVia && typeof announceVia.notify === 'function') {
       // peers() returns hex (display); convert to BigInt for the
-      // transport contract.  The wire `from` field stays hex.
+      // transport contract.  The wire `from` field stays hex.  Use the
+      // transport's notify directly (not peer.notify) so we don't tunnel
+      // through 'axona:direct'; this is a transport-level signal.
       const peers = this.peers();
-      for (const peerHex of peers) {
-        // Use the transport's notify directly (not peer.notify) so we
-        // don't tunnel through 'axona:direct'; this is a transport-
-        // level signal, not an application message.
-        try {
-          await announceVia.notify(fromHex(peerHex), 'peer-leaving', { from: selfId });
-        } catch { /* swallow — best-effort */ }
-      }
+      await Promise.race([
+        Promise.allSettled(peers.map((peerHex) =>
+          Promise.resolve()
+            .then(() => announceVia.notify(fromHex(peerHex), 'peer-leaving', { from: selfId }))
+            .catch(() => { /* best-effort */ }))),
+        sleep(Math.min(timeoutMs, 2000)),
+      ]);
     }
 
-    // (1b) graceful-leave cache handoff: push any topic we ROOT to its heir
+    // (2b) graceful-leave cache handoff: push any topic we ROOT to its heir
     // (next-closest live node) while the transport is still up, so the topic's
     // history survives our departure (since:'all' replay keeps working for
-    // subscribers that re-home or join after we go). Best-effort; bounded by the
-    // drain window below. Must run BEFORE we tear down the transport/listeners.
-    try { await this._axonaManager?.pubsubLeaveHandoff?.(); } catch { /* best-effort */ }
+    // subscribers that re-home or join after we go). Best-effort and now
+    // genuinely TIME-BOUNDED: the handoff awaits a network lookup per rooted
+    // topic, so on a slow or dying mesh it could previously hold leave() open
+    // indefinitely (the old comment claimed "bounded by the drain window" but
+    // nothing raced it). Must run BEFORE we tear down transport/listeners.
+    try {
+      // Full timeoutMs, not a smaller slice: the handoff is the LAST copy of
+      // every topic this node roots (field case: a burst publisher left
+      // holding 25 roots — topics past a tighter cutoff died with it). The
+      // handoff itself is parallelized (bounded concurrency), so the bound is
+      // a safety net, not the expected path.
+      await Promise.race([
+        this._axonaManager?.pubsubLeaveHandoff?.(),
+        sleep(timeoutMs),
+      ]);
+    } catch { /* best-effort */ }
 
-    // (2) optional drain — pause for in-flight publishes / pulls
-    if (drain && timeoutMs > 0) {
-      // Without a per-publish ack stream we can only bound by time.
-      // Apps that want stronger guarantees should await their own
-      // pub() promises before calling leave().
-      await new Promise(r => setTimeout(r, Math.min(timeoutMs, 50)));
+    // (2c) retire the pub/sub machinery — tick, retries, verifies, beacons.
+    // A departed peer must go SILENT. Previously nothing ever called
+    // am.stop(): the refreshTick interval kept firing after leave(),
+    // re-sending every unconfirmed publish and re-running iterative lookups
+    // against a dead or dying transport until the pending TTLs burned off
+    // (~30-40s) — observed in the field as a 100%-CPU tail after leave() on a
+    // WAN mesh, reproduced locally as pendingPub retries surviving leave.
+    // Stop the machinery, then clear the retry state so nothing re-arms it.
+    if (am) {
+      try { am.stop?.(); } catch { /* */ }
+      try { am._pendingPub?.clear?.(); } catch { /* */ }
+      try { am._pendingKill?.clear?.(); } catch { /* */ }
+      try { am._verifyInflight?.clear?.(); } catch { /* */ }
     }
 
     // (3) force-flush persistence (P4)
@@ -2434,10 +2475,15 @@ export class AxonaPeer extends DHT {
           meshBound = t.webrtc.boundPeers().length;
         }
       } catch { /* best-effort */ }
+      let signaling = null;
+      try {
+        if (typeof t.signalStats === 'function') signaling = t.signalStats();
+      } catch { /* best-effort */ }
       if (meshChannels !== null || boundCount !== null) {
         transport = {
           boundCount, meshChannels, meshOpen, meshBound,
           bridgeState: t.bridgeState ?? null,
+          signaling,   // W1: mesh-vs-bridge signaling split ({meshMsgs,bridgeMsgs,bridgeMsgFraction,...})
         };
         // Open data channels with materially fewer authenticated binds
         // ⇒ routing is not flowing despite a connected-looking mesh.
@@ -2789,18 +2835,8 @@ export class AxonaPeer extends DHT {
       return 'consumed';
     });
 
-    // Wire `pickRelayPeer` so sub-axon recruitment uses BATCH ADOPTION
-    // (pick a relay XOR-closest to the new subscriber from the whole
-    // synaptome, hand off a batch) instead of the fallback that promotes
-    // an existing child one subscriber at a time.  Without it the axon
-    // tree degenerates into a deep near-linear chain as a topic grows
-    // (measured in dht-sim: depth ~21 at 600 subscribers vs ~4 with batch
-    // adoption) — a latency/fragility scaling problem.  `shouldRecruitSubAxon`
-    // keeps its default (recruit past `maxDirectSubs`).
     const am = new AxonaManager({
       dht,
-      pickRelayPeer: (role, subscriberId, forwarderId) =>
-        this._pickRelayPeer(role, subscriberId, forwarderId),
       ...(this._rootReplicas != null ? { rootReplicas: this._rootReplicas } : {}),
     });
     // ARM the periodic refreshTick (kernel v4.9.1). Earlier this was deliberately
@@ -3872,41 +3908,6 @@ export class AxonaPeer extends DHT {
       if (bestDist === null || d < bestDist) { bestDist = d; best = childId; }
     }
     return best;
-  }
-
-  /**
-   * Pick an external synaptome peer (not yet a child) to become a new
-   * sub-axon — XOR-closest to the new subscriber's id.  All IDs BigInt.
-   */
-  _pickRelayPeer(role, subscriberId, forwarderId) {
-    const node = this._node;
-    if (!node?.alive) return null;
-    const selfBig = (typeof node.id === 'bigint') ? node.id : fromHex(node.id);
-    const dead    = node._deadPeers || new Set();
-    const bridgeId = node.transport?.bridgeNodeIdBig ?? null;   // never recruit the bridge as a relay axon
-
-    const considered = new Map();
-    for (const syn of node.synaptome.values()) {
-      const peerId = syn.peerId;
-      if (dead.has(peerId)) continue;
-      if (peerId === selfBig)       continue;
-      if (bridgeId !== null && peerId === bridgeId) continue;   // signaling infra, not a relay/root → would black-hole the subtree
-      if (peerId === forwarderId)   continue;
-      if (peerId === subscriberId)  continue;
-      if (role.children.has(peerId)) continue;
-      if (considered.has(peerId))    continue;
-      considered.set(peerId, { peerId, distToSub: peerId ^ subscriberId });
-    }
-    if (considered.size === 0) return null;
-
-    let bestId = null, bestDist = null;
-    for (const [id, rec] of considered) {
-      if (bestDist === null || rec.distToSub < bestDist) {
-        bestDist = rec.distToSub;
-        bestId   = id;
-      }
-    }
-    return bestId;
   }
 
   /**

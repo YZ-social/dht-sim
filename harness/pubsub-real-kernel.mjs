@@ -23,8 +23,19 @@
 import {
   AxonaPeer, AxonaDomain, NeuronNode, Synapse, SimNetwork, simTransport,
   createNodeIdentity, createAuthorIdentity, deriveTopicId, clz264, KERNEL_VERSION,
+  configureKeyspace, getKeyspace,
 } from '@axona/protocol';
 import { buildXorRoutingTable } from '@axona/protocol/utils/geo.js';
+
+// Sim-configurable keyspace — shrink the hash component so churn tests scale.
+// HASH_BITS=64 → 72-bit node/topic ids, 64-bit author ids (relaxed verify).
+// MUST run before any identity is minted. Default 256 = production-faithful.
+const HASH_BITS = +(process.env.HASH_BITS || 256);
+if (HASH_BITS !== 256) {
+  configureKeyspace({ hashBits: HASH_BITS });
+  const ks = getKeyspace();
+  console.log(`[keyspace] SHRUNK → nodeId=${ks.idBits}b authorId=${ks.authorIdBits}b (hex ${ks.hexChars}/${ks.authorHexChars})`);
+}
 
 const N        = +(process.env.N || 120);
 const SUBS     = +(process.env.SUBS || 80);

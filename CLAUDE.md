@@ -62,10 +62,17 @@ deferred). `window.__sim.showAxonTree({subscribers})` renders the real `role.chi
 delivery tree in bright green on the globe; at 2500 nodes / 2000 subs it forms a genuine
 multi-tier recruited tree (depth ~5, ~190 sub-axons). The legacy comparison protocols
 (K-DHT/G-DHT/NX/NH) stay on the 64-bit `src/utils/geo.js` `clz64` path — they are XOR
-baselines, not the deployed kernel. **NOTE:** `createNodeIdentity` does a real Ed25519
-keygen per node, so the browser `axona` path is now keygen-bound at build time — 25k
-live kernel peers is not browser-feasible; scale-faithful axon-tree tests run in Node
-(`harness/pubsub-real-kernel.mjs`).
+baselines, not the deployed kernel. **NOTE (corrected 2026-06-26):** the browser
+`axona` build was long described as "keygen-bound", but that was **wrong** — measured
+in-browser, native Web Crypto Ed25519 keygen is ~0.03 ms/node (≈1.5 s at 50k). The real
+build wall was `buildRoutingTables` → `_collectBucket`, which scanned to each bucket's
+end and so ran **O(N²)** (≈8 min at 50k). Kernel **v4.6.0** rewrote `_collectBucket` to
+binary-search both ends + uniform-sample (provably-identical per-bucket distribution,
+O(N log N)). With that + the sim-configurable keyspace wired through the `idBits` control
+(72 = region8‖hash64; 264 = full prod; engine sets the kernel keyspace per-Init), the
+browser now builds a **full 50k-node Axona network in ~53 s at 72-bit IDs** (Node harness
+~47 s). Scale-faithful axon-tree/churn tests still run in Node (`harness/pubsub-real-kernel.mjs`,
+`harness/pubsub-churn-suite.mjs`) but 50k is now browser-feasible.
 
 ## Adaptive Benchmark Loop
 
@@ -241,6 +248,52 @@ When re-running benchmarks after a refactor commit, **K-DHT and G-DHT ms
 numbers will shift** from pre-refactor values (the new code uses
 `transport.getLatency` per-round, not post-walk pairwise `roundTripLatency`).
 Hop counts and success rates are stable across the change.
+
+### Scale milestone — 50,000 nodes (June 26, 2026 · `@axona/protocol` v4.4.0 · sim-configurable keyspace)
+
+**First 50K run** (prior headline benchmarks topped out at 25K). On the **kernel
+v4.4.0** vendor — the additive *sim-configurable keyspace* change (`configureKeyspace`,
+default profile unchanged at 264-bit). The browser `axona` path runs at the default
+264-bit (no shrink), so this is a clean scale-up of the same routing code; the run
+validates the v4.4.0 vendor is **routing-neutral at 2× the node count**. Same config
+as the 25K rows below (Web limit on, maxConnections = 100, geoBits = 8, 5 % churn,
+omniscient init). δ median 67.6 ms one-way. Axona build is Ed25519-keygen-bound
+(~9 min for 50K); baselines (K-DHT/G-DHT god's-eye `randomU64`, NX-17/NH-1 legacy
+`AxonaEngine`) build without per-node keygen.
+
+| Protocol | global ms | r500 ms | r2000 ms | r5000 ms | 5 % churn ms | success% |
+|---|---|---|---|---|---|---|
+| Kademlia | 914.5 | 899.5 | 895.9 | 886.9 | 821.5 | 100% |
+| G-DHT    | 877.2 | 203.4 | 279.2 | 421.6 | 748.7 | 100% |
+| NX-17    | 331.3 | 167.1 | 199.8 | 231.8 | 361.6 | 100% |
+| NH-1     | 339.4 | 177.7 | 205.4 | 254.8 | 373.0 | 100% |
+| **Axona**  | 355.0 | 190.9 | 219.2 | 258.8 | **349.1** | **100%** |
+
+Hop counts (same column order): Kademlia 4.84/4.88/4.88/4.79/**4.40**; G-DHT
+5.91/5.23/5.66/5.79/5.26; NX-17 7.31/5.48/6.12/6.51/8.08; NH-1
+7.52/5.71/6.25/7.09/8.32; **Axona 7.82/6.02/6.69/7.18/7.45**.
+
+**Verdict: clean scale-up, no regression from the v4.4.0 sim-keyspace change.**
+- **100 % success on every cell for every protocol**, incl. 5 % churn.
+- **Learning protocols hold their latency tier:** Axona/NH-1/NX-17 ~330–355 ms global
+  vs Kademlia ~914 ms (**~61 % reduction**); Axona sits at NH-1/NX-17 parity (shared
+  `AxonaPeer` kernel → statistically tied on non-churn cells).
+- **Axona's churn dividend reproduces at 50K:** churn cell **7.45 hops / 349 ms** vs
+  NH-1 8.32 / 373 and NX-17 8.08 / 362 — ~0.9 fewer hops, ~24 ms faster than NH-1
+  (explicit dead-peer eviction in `TransportAxonaEngine.removeNode` vs the lazy
+  stale-synapse path).
+- **Hops grew ~1 vs the 25K rows** (e.g. Axona global 5.50 → 7.82) — the expected
+  `log₂ N` step from 25K → 50K, not a regression.
+
+**Slice World (split-hemisphere, single Hawaii bridge) @ 50K:** Axona **8.42 hops /
+400.7 ms / 100 %** across 18,574 West / 31,426 East — the learning synaptome still
+discovers the lone inter-hemisphere bridge at 50K. Pure-XOR Kademlia & G-DHT remain
+**0 %** here (no XOR table can find that the only path is one specific node) — the
+architectural separator, intact at 2× scale. In line with the 25K slice
+(8.40 / 429.8 / 100 %); slice hop count is bottleneck-bound, ~flat with N.
+
+CSVs (`dht-sim/results/`): `2026-06-26_50k_axona_5tests_v4.4.0.csv`,
+`2026-06-26_50k_baselines_4proto_v4.4.0.csv`, `2026-06-26_50k_axona_slice_v4.4.0.csv`.
 
 ### Re-verification (25,000 nodes · June 19, 2026 · `@axona/protocol` v3.1.0 · identity/authorship v0.3 + region resolution)
 

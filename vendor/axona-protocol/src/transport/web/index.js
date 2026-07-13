@@ -204,7 +204,42 @@ export function webTransport({
 
   function openSocket() {
     if (socket) return;
-    socket = new WSImpl(bridgeUrl);
+    try {
+      socket = new WSImpl(bridgeUrl);
+    } catch (err) {
+      // Synchronous construction failure (bad state, resource exhaustion):
+      // treat like a failed attempt and keep the backoff chain alive.
+      socket = null;
+      log('bridge-socket-create-failed', { err: String(err?.message || err).slice(0, 120) });
+      setBridgeState('disconnected');
+      scheduleReconnect();
+      return;
+    }
+    const sock = socket;
+    // A failed HTTP upgrade — e.g. a proxy answering 502 while the bridge
+    // container is still booting — surfaces as an 'error' EVENT, not a close.
+    // In Node's `ws` an unlistened 'error' THROWS out of the emitter; that
+    // escaped here as an uncaughtException, aborted before 'close' could fire,
+    // and left `socket` non-null — so scheduleReconnect never ran and every
+    // prod relay wedged in state=connecting after a bridge-only restart
+    // (2026-07-09). Listening is the fix: ws then proceeds to its normal
+    // 'close', which drives the backoff chain. The delayed fallback below
+    // covers any implementation that fires 'error' without a 'close' for a
+    // never-opened socket (guards make it a no-op when close did arrive).
+    socket.addEventListener('error', (ev) => {
+      const msg = ev?.message || ev?.error?.message || 'socket error';
+      log('bridge-socket-error', { err: String(msg).slice(0, 120) });
+      if (!socketOpen) {
+        const fb = setTimeout(() => {
+          if (socket === sock && !socketOpen && !stopped) {
+            socket = null;
+            setBridgeState('disconnected');
+            scheduleReconnect();
+          }
+        }, 1000);
+        if (typeof fb?.unref === 'function') fb.unref();   // never hold the process open
+      }
+    });
     socket.addEventListener('open', () => {
       socketOpen = true;
       log('bridge-socket-open', { bridgeUrl });
@@ -306,20 +341,29 @@ export function webTransport({
   // took ownership (will route through the mesh), else we fall back to the
   // bridge.  Pure bridge behaviour is preserved when meshRelay is off.
   let signalRelay = null;
+  // Signaling-path telemetry (W1): how often WebRTC signaling rides the mesh
+  // (peer-relayed, bridge untouched) vs falls back to the bridge. Message-level
+  // counts show load split; the distinct-peer sets approximate how many *links*
+  // were established each way (a healthy dense mesh should signal almost every
+  // post-bootstrap edge peer-to-peer, leaving the bridge only genuinely new
+  // joiners + NAT/ICE failures). Pure measurement — no behaviour change.
+  const signalStats = { meshMsgs: 0, bridgeMsgs: 0, dropMsgs: 0, meshPeers: new Set(), bridgePeers: new Set() };
   const mesh = new MeshManager({
     sendSignal: (toPeerId, payload) => {
       if (meshRelay && typeof signalRelay === 'function' && isHexId(toPeerId)) {
         let took = false;
         try { took = signalRelay(toPeerId, payload) === true; }
         catch (err) { log('signal-relay-threw', { to: toPeerId, err: err.message }); }
-        if (took) return;
+        if (took) { signalStats.meshMsgs++; signalStats.meshPeers.add(toPeerId); return; }
       }
       if (!socketOpen) {
+        signalStats.dropMsgs++;
         log('signal-drop-no-bridge', { to: toPeerId });
         return;
       }
       try {
         sendToBridge({ type: 'signal', to: toPeerId, payload });
+        signalStats.bridgeMsgs++; signalStats.bridgePeers.add(toPeerId);
       } catch (err) {
         log('signal-send-failed', { to: toPeerId, err: err.message });
       }
@@ -812,6 +856,17 @@ export function webTransport({
   // Advisory capability surface (forward-compat; functional gate is the flag).
   composite.capabilities = () => (meshRelay ? ['mesh-relay'] : []);
   composite.hasCapability = (cap) => composite.capabilities().includes(cap);
+  // Signaling-path telemetry (W1): snapshot of mesh-relayed vs bridge-fallback
+  // signaling. bridgeMsgFraction near 0 on a healthy mesh = the bridge is only
+  // carrying genuine new-joiner + NAT/ICE-failure signaling, as intended.
+  composite.signalStats = () => {
+    const m = signalStats.meshMsgs, b = signalStats.bridgeMsgs;
+    return {
+      meshMsgs: m, bridgeMsgs: b, dropMsgs: signalStats.dropMsgs,
+      meshPeers: signalStats.meshPeers.size, bridgePeers: signalStats.bridgePeers.size,
+      bridgeMsgFraction: (m + b) ? +(b / (m + b)).toFixed(3) : 0,
+    };
+  };
   Object.defineProperty(composite, 'socket',          { get() { return socket; } });
   Object.defineProperty(composite, 'bridgeReady',     { get() { return bridgeReady; } });
   // Display surface: hex (derived from BigInt).  External UI / log

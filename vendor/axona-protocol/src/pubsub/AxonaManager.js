@@ -103,7 +103,17 @@ const ROOT_CLAIM_MS   = 6_000;           // unconfirmed-deferral window before s
 // promotes it with no gap. Backups are re-evaluated each tick (closer newcomers
 // recruited, farther ones retired). 0 disables.
 const ROOT_REPLICAS   = 2;
-const REPLICA_STALE_MS = 65_000;         // a backup whose root stopped replicating this long is presumed gone
+// A backup is a subscribing CHILD RELAY that also prefetches the root's full cache
+// (see _onReplicate + the _backupTopics subscribe loop in refreshTick). Promotion is
+// NOT a bespoke, local-only decision anymore (that split roots when two backups
+// couldn't see each other): a backup renews its subscribe every tick, so on root
+// churn the SAME probe-protected machinery every subscriber/host uses — _rootHint_'s
+// iterative lookup() → single globally-closest terminus — elects exactly ONE new root
+// (the closest self-roots; the rest re-home under it), gap-free from the warm cache.
+// This constant only bounds set growth: a backup whose root stopped replicating to it
+// this long (root departed & we've since re-homed/promoted, or the root retired us) is
+// dropped from _backupTopics as cleanup — never used to trigger promotion.
+const BACKUP_EVICT_MS = 60_000;
 // ≈1 renewFastMs cycle: long enough that a genuinely reachable multi-hop closer
 // root adopts us first (deliver-`from` pin), short enough that a cold topic roots
 // within a couple of seconds instead of stranding. (12s was measured too slow —
@@ -130,8 +140,14 @@ const PENDING_PUB_MAX_TRIES = 6;         // cap re-sends so a never-confirmed pu
 // fresh shot at the true root as tables converge. Naturally disabled once warm (the
 // gate is low neighbour count), and the slow refreshTick retry still backstops after.
 const COLD_BURST_TRIES     = 5;          // extra fast re-sends on a cold publish
-const COLD_BURST_INTERVAL_MS = 200;      // spacing of the burst (≈1s total)
+const COLD_BURST_INTERVAL_MS = 200;      // spacing of the fast burst (≈1s total)
+const COLD_BURST_SLOW_TRIES    = 5;      // then a second, slower wave as tables keep warming
+const COLD_BURST_SLOW_INTERVAL_MS = 400; // 5 × 400ms ≈ 2s more coverage past the first second
 const COLD_PEER_THRESHOLD  = 8;          // "cold" = fewer than this many neighbours (not yet integrated)
+// First publish to a topic — even when WARM — is re-sent once this long after, so a
+// tree that formed microseconds before the send (a just-arrived subscriber, a root
+// that just rooted) still catches it. Cold publishers already re-send via the burst.
+const FIRST_PUBLISH_RESEND_MS = 200;
 const REPLAY_CHUNK_BYTES = 96 * 1024;    // byte budget per replay deliver batch
 const FUTURE_TOLERANCE_MS = 5 * 60 * 1000;   // §5 bad-clock rule: drop replayed stamps this far ahead
 
@@ -145,6 +161,21 @@ const BEACON_TTL_MS   = 50_000;          // inbound pointer validity (~2.5×BEAC
 const BEACON_FANOUT   = 6;               // K closest neighbors per layer (fan-out ≤ K+K²)
 const BEACON_LAYERS   = 2;               // recursive forward depth
 const BEACON_SEEN_MS  = 60_000;          // flood-dedup retention
+
+// Root self-verification (v4.19.1). Beacon-gated reconciliation is reach-limited:
+// a spurious root minted by a stranded SUB on a FRESH topic (no beacon anywhere
+// yet) can sit outside the true root's beacon basin (fanout^layers) and never
+// hear the demotion — its via-pinned subscribers are then permanently orphaned
+// (observed on prod: binary 0-of-N subscribers inside an otherwise-perfect
+// tree). So every root verifies its own claim with the SAME iterative
+// closest-node lookup subscribers use: once shortly after forming (the
+// fresh-topic race window), then periodically. Finding a strictly-closer live
+// node ⇒ seed a VERIFIED root pointer + demote + re-home + push cache up.
+// Batched per tick so a many-rooted relay doesn't storm lookups; each lookup is
+// fired non-blocking (NEVER awaited in the tick — the 4.18.1 lesson).
+const ROOT_VERIFY_FIRST_MS = 6_000;      // first verify after root-formed
+const ROOT_VERIFY_MS       = 45_000;     // steady-state re-verify cadence
+const ROOT_VERIFY_BATCH    = 3;          // max verify lookups launched per tick
 
 // ── Wire message types (all ROUTED) ─────────────────────────────────────
 const T = {
@@ -257,6 +288,7 @@ export class AxonaManager {
     this.axonRoles       = new Map();   // topicIdBig -> Role  (topics I host: root or relay)
     this.mySubscriptions = new Map();   // topicIdBig -> { since, lastRenewSent }
     this._hostedTopics   = new Set();   // topicIdBig hosted without app consumption
+    this._backupTopics   = new Set();   // topicIdBig I hold a warm replica for → subscribe like a child relay (single-root election)
     this._lastSeenTsByTopic = new Map();// topicIdBig -> ts  (AxonaPeer seeds `since` here)
 
     // Internal.
@@ -275,7 +307,8 @@ export class AxonaManager {
     this._pending         = new Map();  // pull corrId -> { resolve, timer }
     this._pullSeq         = 0;
     this._timer           = null;
-    this._burstTimers     = new Set();  // cold-publish burst setTimeout handles (cleared on stop)
+    this._burstTimers     = new Set();  // cold-publish burst + first-publish setTimeout handles (cleared on stop)
+    this._publishedTopics = new Set();  // topics this node has published to (for the first-publish re-send)
     this.myMetricsRequests = new Map(); // dataTopicBig -> { lastSent }  topics THIS node wants metrics for (renewed like subscriptions)
     this._metricsWanted   = new Map();  // dataTopicBig -> exp   soft flag on a path node (short-circuit duplicate METRICSON)
     this._metricsFwdAt    = new Map();  // dataTopicBig -> ts    last upstream METRICSON forward (fan-in coalesce)
@@ -369,12 +402,58 @@ export class AxonaManager {
   _maybePromoteRoot(role, payload, meta) {
     const viaEmpty = !(Array.isArray(payload.via) && payload.via.length);
     if (viaEmpty && meta.isTerminal && !role.isRoot) {
+      if (this._liveCloserRoot(role.topicId)) return;   // a closer live root is beaconing — don't contest it
       role.isRoot = true; this._upstream.delete(role.topicId); this._announceRoot(role.topicId);
+      role.formedAt = this._now(); role.lastVerify = 0;  // promoted claims get an early self-verify too
       // Inherit an active metrics lease: if a METRICSON passed through this node on
       // its way to the (now-departed) old root, the new root resumes publishing.
       const w = this._metricsWanted.get(role.topicId) || 0;
       if (w > this._now()) role.metricsOn = w;
     }
+  }
+
+  // A live root beacon naming a STRICTLY closer node than self means this node
+  // must not (re)take the topic's root — stranded terminal traffic defers to that
+  // root instead. This breaks the flap loop observed on the prod relay backbone:
+  // a near-miss relay was beacon-demoted every ~20s but re-rooted on the next
+  // stranded SUB (only PUB carried the last-mile correction), so two same-region
+  // relays traded the root forever and subscribers/publishers split across the
+  // variants. `requireReachable` (the default) additionally demands the beaconed
+  // root be a DIRECT, authenticated neighbour — when a root dies its channel
+  // drops and the gate opens instantly, so backup promotion on churn is never
+  // stalled by a stale beacon (the ≤TTL corpse window). The PUB last-mile
+  // correction keeps its original TTL-only semantics (requireReachable:false): a
+  // publish is one self-healing message, and that looser gate is what fixed
+  // cold-publish discovery.
+  _liveCloserRoot(topicBig, { requireReachable = true } = {}) {
+    const b = this._rootBeacons.get(topicBig);
+    if (!b || this._now() >= b.exp) return null;
+    if (b.root === lc(idHex(this.nodeId))) return null;
+    let rb; try { rb = idBig(b.root); } catch { return null; }
+    if ((rb ^ topicBig) >= (this.nodeId ^ topicBig)) return null;   // never defer to a farther node
+    if (b.verified) return b.root;    // root self-verification found it via iterative lookup — network-confirmed
+    if (this._isReachableId(b.root)) return b.root;                 // channel-verified live neighbour
+    // Loose branch (PUB/KILL): a live root re-beacons every BEACON_MS, so a
+    // beacon heard very recently is strong liveness evidence even for a
+    // non-neighbour root. A DEAD root's beacon goes silent — without this
+    // freshness cut a stranded publish ping-pongs toward the corpse until the
+    // full beacon TTL (the pre-4.19 latent loop, reproduced in
+    // smoke_root_reconcile phase 4).
+    if (!requireReachable && (this._now() - b.at) < BEACON_MS * 1.5) return b.root;
+    return null;
+  }
+
+  // Defer a stranded terminal message to the beaconed root: demote any spurious
+  // root claim I hold (and re-home under the true root so my subtree keeps
+  // receiving), then forward the payload via-pinned to it.
+  _deferToRoot(topicBig, type, payload, rootHex) {
+    const spurious = this.axonRoles.get(topicBig);
+    if (spurious && spurious.isRoot) {
+      spurious.isRoot = false;
+      this._upstream.set(topicBig, [rootHex]);
+      this._sendSubscribe(topicBig);                 // root must ADOPT us or our subtree starves
+    }
+    this._send(type, { ...payload, via: [rootHex] });
   }
 
   // ── SUBSCRIBE ────────────────────────────────────────────────────────
@@ -385,6 +464,29 @@ export class AxonaManager {
     if (d === 'reroute') { this._reroute(T.SUB, payload); return 'consumed'; }
 
     const topicBig = idBig(payload.topicId);
+    // Root-beacon last-mile correction (SUB). A stranded subscribe must not
+    // (re)root a near-miss node while a strictly-closer live NEIGHBOUR root is
+    // beaconing — defer the seat to that root. Without this only PUB carried the
+    // correction, and every stranded/renewing SUB re-rooted the just-demoted
+    // relay → the ~20s root flap between same-region relays (split trees, 0%
+    // fresh-subscriber delivery on prod). A node that already relays the topic
+    // (non-root role with a live upstream) still seats subscribers below.
+    if (!this.axonRoles.has(topicBig)) {
+      const closer = this._liveCloserRoot(topicBig);
+      if (closer) { this._deferToRoot(topicBig, T.SUB, payload, closer); return 'consumed'; }
+      // Alone-in-the-dark guard (v4.19.2). A freshly-joined node subscribes
+      // before its mesh has formed: with zero non-bridge neighbours its SUB
+      // never leaves the node, terminates at self, and (no beacons heard yet)
+      // it minted itself "root" — observed live as EVERY joining subscriber
+      // creating a transient root for the topic, splitting the tree until
+      // reconciliation caught up (which under churn load it often didn't
+      // inside the delivery window). A node that can't reach anyone has no
+      // business electing itself: hold the seat; mySubscriptions is already
+      // set, so the renewFastMs renewal re-runs the election once meshed.
+      // Publish-side is deliberately NOT gated — a genuinely solo node still
+      // roots on its own publish and serves its local subscriber.
+      if (idBig(lc(payload.subscriberId)) === this.nodeId && this._meshBare()) return 'consumed';
+    }
     let role = this.axonRoles.get(topicBig) || this._becomeRoot(topicBig);
     this._maybePromoteRoot(role, payload, meta);
 
@@ -539,14 +641,8 @@ export class AxonaManager {
     // a node that wrongly became root also emits poisoning "root=me" beacons, so a
     // peer can arrive here via-pinned to me — the correction must still re-home it.
     {
-      const b = this._rootBeacons.get(topicBig);
-      const meHex = lc(idHex(this.nodeId));
-      if (b && this._now() < b.exp && b.root !== meHex && (idBig(b.root) ^ topicBig) < (this.nodeId ^ topicBig)) {
-        const spurious = this.axonRoles.get(topicBig);
-        if (spurious && spurious.isRoot) spurious.isRoot = false;       // demote: a closer root exists
-        this._send(T.PUB, { topicId: payload.topicId, via: [b.root], json: payload.json });
-        return 'consumed';
-      }
+      const closer = this._liveCloserRoot(topicBig, { requireReachable: false });
+      if (closer) { this._deferToRoot(topicBig, T.PUB, payload, closer); return 'consumed'; }
     }
     let role = this.axonRoles.get(topicBig) || this._becomeRoot(topicBig);
     this._maybePromoteRoot(role, payload, meta);
@@ -644,6 +740,13 @@ export class AxonaManager {
     if (role.cacheIds.has(m.msgId)) return;                              // already have it
     if (this._tombstoned(role, m.msgId, m.json)) return;                 // killed → don't resurrect via replay-up
     this._cachePush(role, { msgId: m.msgId, publishTs: m.publishTs, json: m.json, seq: m.seq });
+    // Seeing our own msgId arrive via ANY stamped path (cohort replicate,
+    // replay-up, handoff) is proof it landed on a durable holder — confirm the
+    // pending so the retry machinery (and leave()'s evidence-based drain)
+    // doesn't keep waiting on a publish that already made it. A true ack is
+    // impossible by design (a PUB carries no return address — publisher
+    // location privacy), so echoes are the only confirmation signal.
+    this._confirmPending(role.topicId, m.msgId);
     if (m.publishTs > role.lastTs) role.lastTs = m.publishTs;            // continue stamping above recovered history
     if (Number.isFinite(m.seq) && m.seq > role.seq) role.seq = m.seq;   // recover dense counter → a new root continues it
     this._fanout(role, { json: m.json, publishTs: m.publishTs, msgId: m.msgId, seq: m.seq }, null);
@@ -668,6 +771,26 @@ export class AxonaManager {
     for (const m of (Array.isArray(payload.msgs) ? payload.msgs : [])) {
       if (m && typeof m.json === 'string' && Number.isFinite(m.publishTs)) await this._ingestStamped(role, m);
     }
+    // The sender is DEPARTING: its root beacon for this topic is a ghost the
+    // moment the handoff arrives. Purge it, or the defer gates (here and on
+    // every later stranded SUB) would keep pointing the topic at a corpse —
+    // observed as heirs adopting the history and immediately demoting back
+    // toward the leaver, undoing the handoff entirely.
+    const leaver = typeof payload.from === 'string' ? lc(payload.from) : null;
+    if (leaver && this._rootBeacons.get(topicBig)?.root === leaver) {
+      this._rootBeacons.delete(topicBig);
+    }
+    // The handoff made us root so the history is safe — but if a strictly-closer
+    // live root is beaconing (the leaver picked us while a better heir exists),
+    // don't hold a competing claim: demote to a subscribing child and push the
+    // inherited history up (the SUB carries our hw → the root PULLUPs it).
+    // Never defer back to the leaver itself.
+    const closer = this._liveCloserRoot(topicBig);
+    if (closer && closer !== leaver && role.isRoot) {
+      role.isRoot = false;
+      this._upstream.set(topicBig, [closer]);
+      this._sendSubscribe(topicBig);
+    }
     return 'consumed';
   }
 
@@ -676,21 +799,52 @@ export class AxonaManager {
   // live node) so the history isn't lost when we go. Best-effort; never throws.
   async pubsubLeaveHandoff() {
     if (typeof this.dht.findKClosest !== 'function') return;
+    // PARALLEL with bounded concurrency. This used to be one topic at a time —
+    // one iterative network lookup each — so a burst publisher that had rooted
+    // a few dozen fresh topics (field case: an alert bot left holding 25 roots)
+    // could not finish inside leave()'s time bound, and every topic past the
+    // cutoff died with the departing node (its subscribers replayed nothing).
+    // Eight lookups in flight turns 25 sequential round-trips into ~3 rounds.
+    const jobs = [];
     for (const [t, role] of this.axonRoles) {
       if (!role.isRoot || !role.cache.length) continue;
-      let heir = null;
-      try {
-        const arr = await this.dht.findKClosest(t, 3);
-        for (const id of (Array.isArray(arr) ? arr : [])) {
-          const b = idBig(id);
-          if (b !== this.nodeId) { heir = b; break; }   // closest node that isn't us
-        }
-      } catch { /* no heir resolvable → nothing we can do */ }
-      if (heir === null) continue;
-      const msgs = role.cache.map(c => ({ json: c.json, publishTs: c.publishTs, msgId: c.msgId, seq: c.seq }));
-      const dels = this._activeDels(role);
-      try { this._route(heir, T.HANDOFF, { topicId: idHex(t), msgs, dels }); } catch { /* best-effort */ }
+      jobs.push([t, role]);
     }
+    let i = 0;
+    const worker = async () => {
+      while (i < jobs.length) {
+        const [t, role] = jobs[i++];
+        let heir = null;
+        try {
+          const arr = await this.dht.findKClosest(t, 3);
+          for (const id of (Array.isArray(arr) ? arr : [])) {
+            const b = idBig(id);
+            if (b !== this.nodeId) { heir = b; break; }   // closest node that isn't us
+          }
+        } catch { /* fall through to the iterative probe */ }
+        // findKClosest is LOCAL-only; a leaver with a thin table (fresh burst
+        // publisher) can see nobody but itself even though the network is
+        // populated. Mirror _rootHint_'s self-closest escape: probe with the
+        // ITERATIVE lookup before giving up on the topic's history.
+        if (heir === null && typeof this.dht.lookup === 'function') {
+          try {
+            const r = await this.dht.lookup(t);
+            const id = (r && Array.isArray(r.path) && r.path.length) ? r.path[r.path.length - 1] : null;
+            if (id != null) { const b = idBig(id); if (b !== this.nodeId) heir = b; }
+          } catch { /* no heir resolvable → nothing we can do */ }
+        }
+        if (heir === null) continue;
+        const msgs = role.cache.map(c => ({ json: c.json, publishTs: c.publishTs, msgId: c.msgId, seq: c.seq }));
+        const dels = this._activeDels(role);
+        // `from` names the DEPARTING root so the heir can (a) purge our stale
+        // root beacon and (b) never defer its new claim back to us — without
+        // it, the heir adopted the history and then immediately demoted toward
+        // our still-fresh beacon, undoing the handoff (reproduced: a fresh
+        // subscriber replayed 0 after a burst publisher left).
+        try { this._route(heir, T.HANDOFF, { topicId: idHex(t), msgs, dels, from: idHex(this.nodeId) }); } catch { /* best-effort */ }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, jobs.length) }, worker));
   }
 
   // ── singleton-root replication (warm backup roots) ───────────────────
@@ -791,11 +945,14 @@ export class AxonaManager {
     }
   }
 
-  // Receive a replica push: become (or refresh) a passive BACKUP for this topic —
-  // hold the full cache + tombstones without claiming root or fanning to subscribers
-  // while the root keeps replicating. Verifies each message (don't-trust) via the
-  // normal stamped-ingest. On root churn this cache is what makes instant takeover
-  // gap-free (see the stale-promote in refreshTick + _onSub-terminal promotion).
+  // Receive a replica push: become (or refresh) a BACKUP for this topic — hold the
+  // full cache + tombstones (don't-trust: each message re-verified via stamped-ingest)
+  // AND join _backupTopics so refreshTick subscribes us toward the topic like an
+  // ordinary child relay. While the root lives our SUB routes to it and we sit as a
+  // warm child; when it churns the normal probe-protected subscribe machinery elects
+  // ONE new root (the closest self-roots, we re-home under it) — no bespoke local-only
+  // promotion to split. The prefetched cache makes whichever backup wins take over
+  // gap-free (it already holds the history a since:'all' joiner will ask for).
   async _onReplicate(payload, meta) {
     if (meta.targetId !== this.nodeId) return;          // routed to me as the backup
     if (!this._rootReplicas) return 'consumed';         // replication disabled on this node
@@ -808,6 +965,7 @@ export class AxonaManager {
     if (role.isRoot) return 'consumed';                 // I'm already (a closer) root — ignore a backup push
     role.backupOf = from;
     role.lastReplicaAt = this._now();
+    this._backupTopics.add(topicBig);                   // participate as a subscribing child relay (single-root election)
     this._applyDels(role, topicBig, payload.dels);   // tombstones FIRST → a killed body in the same push is suppressed
     for (const m of (Array.isArray(payload.msgs) ? payload.msgs : [])) {
       if (m && typeof m.json === 'string' && Number.isFinite(m.publishTs)) await this._ingestStamped(role, m);
@@ -1037,6 +1195,18 @@ export class AxonaManager {
     this._pendingKill?.delete(msgId);
   }
 
+  // A peer died (channel closed / evicted): every root beacon naming it is now
+  // a ghost. Purge them so the defer gates (SUB/PUB/promotion) stop steering
+  // topics at a corpse — otherwise, until the 50s TTL, stranded traffic keeps
+  // deferring to a node that can never serve, and promotions stay suppressed.
+  pubsubPeerDied(deadHex) {
+    if (typeof deadHex !== 'string') return;
+    const dead = lc(deadHex);
+    for (const [t, b] of this._rootBeacons) {
+      if (b?.root === dead) this._rootBeacons.delete(t);
+    }
+  }
+
   // A target message arriving (publish / replay / fan-out) for which we hold a
   // tombstone: SUPPRESS it iff the kill was authorized by the message's own author
   // — this is where a PROVISIONAL kill (accepted before we held the target) is
@@ -1058,10 +1228,81 @@ export class AxonaManager {
 
   _becomeRoot(topicBig) {
     const role = makeRole(topicBig, true);
+    role.formedAt = this._now(); role.lastVerify = 0;
     this.axonRoles.set(topicBig, role);
     this._log('info', 'root-formed', { topic: idHex(topicBig).slice(0, 12) });
     this._announceRoot(topicBig);
     return role;
+  }
+
+  // Root self-verification (see the ROOT_VERIFY_* constants). Launch up to
+  // BATCH iterative lookups per tick, NON-BLOCKING, for roots due a check. A
+  // strictly-closer live node ⇒ this claim is spurious (or was overtaken):
+  // seed a VERIFIED root pointer (honored by the promotion gates even where no
+  // beacon reaches), demote to a subscribing child, and re-home — the SUB
+  // carries our cache high-water so the true root PULLUPs anything only we
+  // hold, and our seated subscribers keep receiving through us as a relay.
+  _verifyRoots(now) {
+    if (typeof this.dht.lookup !== 'function') return;
+    if (!this._verifyInflight) this._verifyInflight = new Set();
+    let launched = 0;
+    for (const [t, role] of this.axonRoles) {
+      if (launched >= ROOT_VERIFY_BATCH) break;
+      if (!role.isRoot || this._verifyInflight.has(t)) continue;
+      const due = role.lastVerify
+        ? (now - role.lastVerify >= ROOT_VERIFY_MS)
+        : (now - (role.formedAt || 0) >= ROOT_VERIFY_FIRST_MS);
+      if (!due) continue;
+      role.lastVerify = now; launched++;
+      this._verifyInflight.add(t);
+      Promise.resolve()
+        .then(() => this.dht.lookup(t))
+        .then((r) => {
+          this._verifyInflight.delete(t);
+          const id = (r && Array.isArray(r.path) && r.path.length) ? r.path[r.path.length - 1] : null;
+          if (id == null) return;
+          let cBig; try { cBig = idBig(id); } catch { return; }
+          if (cBig === this.nodeId) return;                       // confirmed: I am the terminus
+          if ((cBig ^ t) >= (this.nodeId ^ t)) return;            // not strictly closer → keep the claim
+          if (_regionLockEnforced && extractS2Prefix(cBig) !== extractS2Prefix(t)) return;
+          const live = this.axonRoles.get(t);
+          if (!live || !live.isRoot) return;                      // already demoted meanwhile
+          const hex = lc(idHex(cBig));
+          this._rootBeacons.set(t, { root: hex, at: this._now(), exp: this._now() + 2 * ROOT_VERIFY_MS, verified: true });
+          live.isRoot = false;
+          this._upstream.set(t, [hex]);
+          this._sendSubscribe(t);
+          this._log('info', 'root-verify-demote', { topic: idHex(t).slice(0, 12), to: hex.slice(0, 10) });
+        })
+        .catch(() => this._verifyInflight.delete(t));
+    }
+  }
+
+  // ── introspection (consumed by AxonaPeer.health()) ───────────────────
+  // These were dropped in the v3.12 clean break, which left health().axonRoles
+  // permanently empty — every relay reported roles=0 while actually rooting
+  // topics, which masked the prod root-split for a full diagnosis cycle.
+  // Observability surfaces must fail loudly or exist; these exist again.
+  inspectRoles() {
+    const out = [];
+    for (const r of this.axonRoles.values()) {
+      out.push({
+        topicId: idHex(r.topicId),
+        isRoot: !!r.isRoot,
+        children: [...r.children],
+        subscribers: r.subscribers.size,
+        replayCacheSize: r.cache.length,
+      });
+    }
+    return out;
+  }
+
+  inspectHosting() {
+    return {
+      topics: [...this._hostedTopics].map((t) => idHex(t)),
+      subscriptions: this.mySubscriptions.size,
+      backups: this._backupTopics.size,
+    };
   }
 
   // Emit a root beacon IMMEDIATELY on becoming root, so a brand-new topic's
@@ -1133,13 +1374,32 @@ export class AxonaManager {
         this._lookupInflight.add(topicBig);
         Promise.resolve()
           .then(resolveClosest)
-          .then(id => {
+          .then(async id => {
+            // findKClosest is LOCAL-ONLY (never probes the network). Local knowledge
+            // is region-bounded: a node in region A holds few/no synapses into
+            // region B, and the bridge — the universal connector — is skipped as a
+            // hop. So a foreign-region subscriber's local closest is often itself,
+            // and it wrongly SELF-ROOTS the topic → a second root disjoint from the
+            // publisher's → 0% cross-region delivery. Region is a PLACEMENT HINT,
+            // not a routing wall: before self-rooting, probe the network with the
+            // ITERATIVE lookup (which hops through the meshed relays and DOES cross
+            // regions) to find the TRUE globally-closest reachable node. Only pay
+            // this when about to self-root (rare — the real root, or a stranded
+            // foreign node); the fast local path is unchanged for everyone else.
+            const selfHex = lc(idHex(this.nodeId));
+            const localHex = (id != null) ? lc(idHex(idBig(id))) : null;
+            if ((localHex === null || localHex === selfHex) && typeof this.dht.lookup === 'function') {
+              try {
+                const r = await this.dht.lookup(topicBig);
+                if (r && Array.isArray(r.path) && r.path.length) id = r.path[r.path.length - 1];
+              } catch { /* keep the local result — greedy stays in effect */ }
+            }
             // Self-closest → leave the hint null so we route greedily toward the
             // bare topic id and become root as the terminus (don't via-pin to self).
             let hex = null;
             if (id != null) {
               const h = lc(idHex(idBig(id)));
-              if (h !== lc(idHex(this.nodeId))) hex = h;
+              if (h !== selfHex) hex = h;
             }
             this._rootHint.set(topicBig, { via: hex, at: this._now() });
             // Heal (subscribe): subscribed, not yet pinned (no deliver `from`
@@ -1281,6 +1541,36 @@ export class AxonaManager {
   // XOR than any of these, but if it never adopts us it is effectively unreachable;
   // when self beats every reachable neighbour, self is the best reachable root. Pure
   // local read — no network probe. Sim/fabric without neighbours() → trivially self.
+  // Is `hex` a currently-reachable node (a direct neighbour in the synaptome)?
+  // Used to distinguish a departed root (drop from the mesh → fast promotion) from
+  // a live-but-quiet one (kept as a passive backup for the full stale window).
+  // Conservative: with no neighbour introspection available, treat as reachable
+  // (fall back to the slow silence timer rather than risk splitting a live root).
+  _isReachableId(hex) {
+    if (typeof this.dht.neighbors !== 'function') return true;
+    let want; try { want = idBig(hex); } catch { return true; }
+    for (const n of (this.dht.neighbors() || [])) {
+      let nb; try { nb = idBig(n); } catch { continue; }
+      if (nb === want) return true;
+    }
+    return false;
+  }
+
+  // True iff this node has NO non-bridge neighbours — it can't route to anyone,
+  // so any "terminal at self" verdict is an artifact of isolation, not of
+  // closeness. Used by the alone-in-the-dark guard in _onSub. When the
+  // transport doesn't expose neighbours, assume meshed (never block).
+  _meshBare() {
+    if (typeof this.dht.neighbors !== 'function') return false;
+    let bridge = null;
+    try { const b = (typeof this.dht.bridgeId === 'function') ? this.dht.bridgeId() : null; bridge = (b != null) ? idBig(b) : null; } catch { /* */ }
+    for (const n of (this.dht.neighbors() || [])) {
+      let nb; try { nb = idBig(n); } catch { continue; }
+      if (bridge === null || nb !== bridge) return false;   // any routable non-bridge neighbour → meshed
+    }
+    return true;
+  }
+
   _selfClosestReachable(tBig) {
     const bridge = (typeof this.dht.bridgeId === 'function') ? this.dht.bridgeId() : null;
     let bestD = this.nodeId ^ tBig;
@@ -1337,9 +1627,26 @@ export class AxonaManager {
     let pmsgId = null; try { pmsgId = JSON.parse(json)?.msgId ?? null; } catch { /* opaque body */ }
     if (pmsgId) this._pendingPub.set(pmsgId, { topicBig: topicId, json, at: this._now(), tries: 0 });
     this._send(T.PUB, { topicId: idHex(topicId), via: hint ? [hint] : [], json });
-    // Cold-publish burst: if we're not yet integrated, front-load a few fast re-sends
+    // Cold-publish burst: if we're not yet integrated, front-load a wave of re-sends
     // (see COLD_BURST_* above) — idempotent, and each send also integrates us.
-    if (pmsgId && this._isColdPublisher()) this._coldPublishBurst(topicId, pmsgId);
+    const cold = this._isColdPublisher();
+    if (pmsgId && cold) this._coldPublishBurst(topicId, pmsgId);
+    // First publish to a topic, even when WARM: re-send once after a short beat so a
+    // just-formed tree still catches it. Cold publishers already re-send via the
+    // burst, so this only covers the warm first-publish. Tracked per topic —
+    // subsequent publishes to the same topic go back to a single send.
+    if (pmsgId && !cold && !this._publishedTopics.has(topicId)) {
+      const h = setTimeout(() => {
+        this._burstTimers.delete(h);
+        const p = this._pendingPub?.get(pmsgId);
+        if (!p) return;                                 // already confirmed/expired
+        const hint2 = this._rootHint_(topicId);
+        this._send(T.PUB, { topicId: idHex(topicId), via: hint2 ? [hint2] : [], json: p.json });
+      }, FIRST_PUBLISH_RESEND_MS);
+      if (typeof h.unref === 'function') h.unref();
+      this._burstTimers.add(h);
+    }
+    if (pmsgId) this._publishedTopics.add(topicId);
     return meta.postHash || '';
   }
 
@@ -1357,16 +1664,22 @@ export class AxonaManager {
   // stops early the moment the publish is confirmed/expired (_pendingPub no longer
   // holds this msgId). Idempotent end-to-end: the root dedups by msgId.
   _coldPublishBurst(topicBig, msgId) {
+    const total = COLD_BURST_TRIES + COLD_BURST_SLOW_TRIES;
     let i = 0;
     const schedule = () => {
+      // Two phases: a fast wave (COLD_BURST_TRIES × 200ms ≈ 1s) front-loads re-sends
+      // while the table warms, then a slower wave (COLD_BURST_SLOW_TRIES × 400ms ≈ 2s
+      // more) keeps re-shooting at the true root as integration continues past the
+      // first second. Idempotent throughout (the root dedups by msgId).
+      const delay = (i < COLD_BURST_TRIES) ? COLD_BURST_INTERVAL_MS : COLD_BURST_SLOW_INTERVAL_MS;
       const h = setTimeout(() => {
         this._burstTimers.delete(h);
         const p = this._pendingPub?.get(msgId);
         if (!p) return;                                 // confirmed or aged out → done
         const hint = this._rootHint_(topicBig);
         this._send(T.PUB, { topicId: idHex(topicBig), via: hint ? [hint] : [], json: p.json });
-        if (++i < COLD_BURST_TRIES) schedule();
-      }, COLD_BURST_INTERVAL_MS);
+        if (++i < total) schedule();
+      }, delay);
       if (typeof h.unref === 'function') h.unref();
       this._burstTimers.add(h);
     };
@@ -1383,6 +1696,15 @@ export class AxonaManager {
       since, lastRenewSent: this._now(), interval: this.renewFastMs,
       replayLatest: !!opts.replayLatest,
     });
+    // If this node already HOLDS the topic's cache (it is the root, or a
+    // cache-bearing relay), no wire replay can serve it: the outgoing SUB
+    // carries since=high-water (§6 — a holder never re-pulls history it already
+    // stores), and a root's own SUB self-loops without seating. Replay the local
+    // cache straight to the app against the app-level floor — without this, a
+    // since:'all' subscriber that happens to be the topic's root receives zero
+    // of the history it is itself storing. Idempotent (exactly-once app dedup).
+    const role = this.axonRoles.get(topicId);
+    if (role) this._replayLocal(role, since, !!opts.replayLatest);
     this._sendSubscribe(topicId);
   }
 
@@ -1442,6 +1764,12 @@ export class AxonaManager {
     if (d === 'reroute') { this._reroute(T.METRICSON, payload); return 'consumed'; }
     if (d === 'reject') return 'consumed';   // out-of-region terminus: no in-region root to arm a metrics lease on
     if (d === 'handle') {
+      // Root-beacon last-mile correction (METRICSON): a metrics lease must arm
+      // the TRUE root, not mint a competing one at a near-miss node.
+      if (!this.axonRoles.has(topicBig)) {
+        const closer = this._liveCloserRoot(topicBig);
+        if (closer) { this._deferToRoot(topicBig, T.METRICSON, payload, closer); return 'consumed'; }
+      }
       const role = this.axonRoles.get(topicBig) || this._becomeRoot(topicBig);
       this._maybePromoteRoot(role, payload, meta);
       role.metricsOn = now + METRICS_LEASE_MS;                 // arm/renew the publish lease
@@ -1527,8 +1855,6 @@ export class AxonaManager {
       this._send(T.PULL, { topicId: idHex(topicId), via: hint ? [hint] : [], corrId, postHash: postHash || null, requesterId: idHex(this.nodeId) });
     });
   }
-  requestMetrics() { return Promise.resolve({ accumulated: [] }); }   // TODO(Phase 4)
-
   // Enumerate the topics THIS node currently roots, each with a locally-computed
   // metric snapshot. The producer side of the derived-metric-topic convention: an
   // infrastructure root walks this on a timer and republishes each to metricTopic(T).
@@ -1562,12 +1888,12 @@ export class AxonaManager {
 
   onPubsubDelivery(cb) { this._deliveryCallback = cb; }
   setLogSink(fn) { this._logSink = (typeof fn === 'function') ? fn : null; }
-  invalidateKClosestCache() { /* no K-closest cache in the routed model — no-op */ }
 
   resetState() {
     this.axonRoles.clear();
     this.mySubscriptions.clear();
     this._hostedTopics.clear();
+    this._backupTopics.clear();
     this._lastSeenTsByTopic.clear();
     this._upstream.clear();
     this._rootHint.clear();
@@ -1589,6 +1915,13 @@ export class AxonaManager {
     if (d === 'reject') return 'consumed';   // out-of-region terminus: topic's region has no node → don't root/seat/store here
     if (d === 'reroute') { this._reroute(T.KILL, payload); return 'consumed'; }
     const topicBig = idBig(payload.topicId);
+    // Root-beacon last-mile correction (KILL) — same one-shot semantics as PUB:
+    // a kill landing on a near-miss node must reach the true root, not mint a
+    // competing root that the rest of the tree never consults.
+    if (!this.axonRoles.has(topicBig)) {
+      const closer = this._liveCloserRoot(topicBig, { requireReachable: false });
+      if (closer) { this._deferToRoot(topicBig, T.KILL, payload, closer); return 'consumed'; }
+    }
     const role = this.axonRoles.get(topicBig) || this._becomeRoot(topicBig);
     const kill = payload.kill;
     const target = kill?.msgId;
@@ -1740,32 +2073,33 @@ export class AxonaManager {
       // stranded below an empty root (lost on the original root's departure).
       this._sendSubscribe(t);
     }
-    // 1b. Cache-bearing-root re-announce (history-recovery durability) — A/B GATED OFF.
-    // Generalising the hosted re-announce to ANY cache-bearing root measured BELOW
-    // the deploy gate (Howard 25/30, regressing the kill/since:'all' recovery —
-    // hypothesis: multiple cache-bearing roots dueling per tick). Disabled pending a
-    // controlled A/B + a safer design (transient-non-host roots only, or rate-limited).
-    if (this._reannounceCacheRoots) {
-      for (const [t, role] of this.axonRoles) {
-        if (!role.isRoot || role.cache.length === 0) continue;     // only roots holding history
-        if (this._hostedTopics.has(t) || this.mySubscriptions.has(t)) continue;  // already re-announced above
-        this._sendSubscribe(t);
-      }
-    }
-    // 1b-rep. Singleton-root replication (warm backup roots) + backup promotion.
+    // 1b-rep. Singleton-root replication (warm backup roots) — push each root's full
+    //         cache to its ROOT_REPLICAS nearest neighbours so a successor is always
+    //         warm.
     this._replicateRoots();
-    for (const [t, role] of this.axonRoles) {
-      if (!role.backupOf) continue;
-      if (now - role.lastReplicaAt <= REPLICA_STALE_MS) continue;   // root still replicating → stay a passive standby
-      // Root stopped replicating ⇒ presumed gone. Stop being a passive backup; if we
-      // are the closest reachable node, promote NOW with our full cache (gap-free
-      // takeover). Otherwise drop the backup marker (a closer node should hold it).
-      role.backupOf = null;
-      if (this._regionOk(t) && this._selfClosestReachable(t)) {   // in-region only when region lock on — never root a foreign region
-        role.isRoot = true;
-        this._announceRoot(t);
-        this._log('info', 'backup-promoted-root', { topic: idHex(t).slice(0, 12) });
+    // 1b-bak. Backups are subscribing CHILD RELAYS. Renew each backup's subscribe
+    //         every tick so root election runs through the SAME probe-protected path
+    //         as any subscriber/host (_rootHint_'s iterative lookup → one globally-
+    //         closest terminus), instead of the old bespoke local-only _selfClosest
+    //         promotion that split when two backups couldn't see each other. While the
+    //         root lives the SUB routes to it (we sit as a warm child); when it churns
+    //         the closest backup self-roots via the _onSub terminal and the rest
+    //         re-home under it — a single root, gap-free from the prefetched cache.
+    for (const t of this._backupTopics) {
+      const role = this.axonRoles.get(t);
+      if (!role) { this._backupTopics.delete(t); continue; }
+      if (role.isRoot) continue;                       // won the election — a root doesn't subscribe to itself
+      // Cleanup ONLY when we're a redundant spare — never when we might need to promote:
+      // we've re-homed as a child under a LIVE root (upstream set to a reachable node
+      // that isn't us) and the root stopped replicating to us for a while. A backup
+      // whose root vanished and hasn't re-homed stays subscribed so it can win the
+      // election (that path must never be pruned, or a split-brain topic gets NO root).
+      const up = this._upstream.get(t);
+      const rehomed = Array.isArray(up) && up.length > 0 && up[0] !== lc(idHex(this.nodeId)) && this._isReachableId(up[0]);
+      if (rehomed && role.subscribers.size === 0 && (now - (role.lastReplicaAt || 0)) > BACKUP_EVICT_MS) {
+        this._backupTopics.delete(t); role.backupOf = null; continue;
       }
+      this._sendSubscribe(t);
     }
 
     // 1c. Persistent publish/kill retry (reliability under packet loss). A routed
@@ -1836,7 +2170,7 @@ export class AxonaManager {
       // even with zero subscribers/cache — the lease self-expires (soft state), and
       // the role then tears down on a later tick like any other.
       const metricsLeased = role.isRoot && role.metricsOn > now;
-      if (role.subscribers.size === 0 && !holdsHistory && !keyspacePinned && !role.backupOf && !metricsLeased && !this.mySubscriptions.has(t) && !this._hostedTopics.has(t)) {
+      if (role.subscribers.size === 0 && !holdsHistory && !keyspacePinned && !role.backupOf && !this._backupTopics.has(t) && !metricsLeased && !this.mySubscriptions.has(t) && !this._hostedTopics.has(t)) {
         this.axonRoles.delete(t);
         this._upstream.delete(t);
       }
@@ -1846,6 +2180,7 @@ export class AxonaManager {
     //    neighbors (last-mile convergence aid). Throttled to BEACON_MS; expire the
     //    inbound pointer + flood-dedup caches by their TTLs.
     if (now - this._lastBeaconAt >= BEACON_MS) { this._lastBeaconAt = now; this._emitRootBeacons(); }
+    this._verifyRoots(now);   // root self-verification (non-blocking lookups; batched)
     for (const [t, b] of this._rootBeacons) if (b.exp <= now) this._rootBeacons.delete(t);
     for (const [id, exp] of this._beaconSeen) if (exp <= now) this._beaconSeen.delete(id);
   }

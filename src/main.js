@@ -2104,11 +2104,19 @@ function createDHT(params) {
       //   · test/smoke_kernel_integration.mjs  (18 assertions)
       //   · test/smoke_kernel_regression.mjs   (30 + N×3 at scale)
       //   · axona-protocol/test/smoke_standalone_lookup.mjs (17)
+      // Sim-configurable keyspace: drive the kernel hash width from the idBits
+      // control. idBits ≥ 264 → full production 264-bit (hash 256, no shrink);
+      // idBits < 264 → shrink to region(8) ‖ hash(idBits-8) so the browser runs
+      // small IDs (e.g. idBits 72 → 64-bit hash) — less memory, and lets 50k-node
+      // Axona meshes build fast alongside the sub-quadratic routing-table builder.
+      // The engine sets the kernel keyspace deterministically at construction
+      // (264 resets a prior shrink), so re-initialising at 264 restores prod width.
       return new TransportAxonaEngine({
         k:       params.k,
         alpha:   params.alpha,
         bits:    params.bits,
         geoBits: params.geoBits,
+        hashBits: (() => { const idb = Number.isFinite(params.bits) ? params.bits : 264; return idb >= 264 ? 256 : Math.max(8, idb - 8); })(),
       });
     case 'kademlia':
     default:

@@ -23,6 +23,7 @@ import {
   INGEST_SLICE_MS, MESH_REWARM_MIN, MESH_REWARM_TICKS, MESH_REWARM_COOLDOWN_MS,
 } from './constants.js';
 import { idHex, idBig, lc, isHexId } from './ids.js';
+import { makeRole } from './rootClaim.js';
 
 export const repairPlaneMethods = {
   async refreshTick() {
@@ -55,9 +56,22 @@ export const repairPlaneMethods = {
           this._unattachedSince.delete(t);
         } else {
           if (!this._unattachedSince.has(t)) this._unattachedSince.set(t, now);
-          if (now - this._unattachedSince.get(t) >= ROOT_CLAIM_MS && this._regionOk(t) && this._rootClaim.selfClosestReachable(t)) {
-            this._rootClaim.claimReachable(t);
-            continue;                          // we are root now — no upstream to renew toward
+          if (now - this._unattachedSince.get(t) >= ROOT_CLAIM_MS && this._regionOk(t)) {
+            if (this._rootClaim.selfClosestReachable(t)) {
+              this._rootClaim.claimReachable(t);
+              continue;                        // we are root now — no upstream to renew toward
+            }
+            // Read-repair (#364 part 2): still unattached past the window but we
+            // are NOT the closest reachable node → the topic-closest node is
+            // reachable but not serving us (degraded / overloaded / ingest-
+            // stalled — the alive-but-black-hole class the empty-root probe can't
+            // reach, since that only fires for a node that IS a root). Routing
+            // keeps pinning every SUB to it, so waiting is futile: recover the
+            // history straight from the cohort backups into a non-root read-
+            // holder. Fire-and-forget — never await a lookup in the tick (the
+            // 4.18.1 lesson). The normal renew below still runs, so the instant
+            // the primary recovers we re-home to it and the holder quiesces.
+            this._readRepair(t).catch(() => {});
           }
         }
         const iv = attached ? (s.interval || this.renewFastMs) : this.renewFastMs;
@@ -386,16 +400,117 @@ export const repairPlaneMethods = {
     // Re-check after the awaits: a REPLAYUP/HANDOFF may have landed meanwhile.
     const role = this.axonRoles.get(topicBig);
     if (!role || !role.isRoot || role.cache.length || !cand.size) return;
+    // Candidate hardening (#364-A2, diagnosis 2026-07-21): the probe chain
+    // itself is sound (smoke_ghost_read: ungraceful root death heals from
+    // backups) — live failures came from WHERE the probes went. Two rules:
+    //  · REACHABLE-FIRST — a candidate we hold an open channel to can
+    //    actually receive the PULLUP; an unbound id (dead slice, WAN island)
+    //    soaks up fanout for nothing.
+    //  · NO RE-PROBING NON-RESPONDERS — with 3 tries × fanout 4, hitting the
+    //    same silent top-4 every round burns the whole budget on corpses.
+    //    Rotate: exclude ids probed in earlier rounds while fresh candidates
+    //    remain (a responder would have filled the cache and ended probing).
+    if (!(role.sync.probed instanceof Set)) role.sync.probed = new Set();
+    const reach = (b) => { try { return typeof this._isReachableId === 'function' && this._isReachableId(lc(idHex(b))); } catch { return false; } };
+    const ordered = [...cand].sort((a, b) => (reach(b) ? 1 : 0) - (reach(a) ? 1 : 0));
+    const fresh = ordered.filter((b) => !role.sync.probed.has(b));
+    const targets = (fresh.length ? fresh : ordered).slice(0, EMPTY_ROOT_PROBE_FANOUT);
     let n = 0;
-    for (const b of cand) {
-      if (n >= EMPTY_ROOT_PROBE_FANOUT) break;
+    for (const b of targets) {
       try {
-        this._route(b, T.PULLUP, { topicId: idHex(topicBig), sinceHw: 0, parentId: idHex(this.nodeId) });
+        this._syncPull(b, topicBig, 'EMPTY_ROOT_PROBE', { sinceHw: 0 });
+        role.sync.probed.add(b);
         n++;
       } catch { /* best-effort */ }
     }
     if (n) this._log('info', 'empty-root-probe',
       { topic: idHex(topicBig).slice(0, 12), fanout: n, tries: role.sync.probeTries });
+  },
+
+  // ── stuck-subscriber cohort read-repair (#364 part 2) ─────────────────────
+  // The read-side mirror of the eager cohort WRITE. The empty-root probe above
+  // heals a node that IS a root but sits empty; it cannot help the OTHER read
+  // failure the 4.32 forensics named — a subscriber pinned by routing to a
+  // topic-closest node that is ALIVE-but-not-serving (degraded / overloaded /
+  // ingest-stalled). That node is still a mesh neighbour, so it isn't purged as
+  // a ghost; it's still XOR-closest, so every renewing SUB terminates AT it and
+  // dies; and it isn't us, so the reachable-root self-claim can't fire. The
+  // subscriber holds no role, so nothing recovers the history the cohort backups
+  // still hold (repro_degraded_read: 0/5 today).
+  //
+  // Fix: once genuinely stuck (subscribed, unattached past the confirmation
+  // window, and NOT the closest reachable node), pull the history DIRECTLY from
+  // the K nearest reachable cohort backups — SKIPPING the degraded primary that
+  // routing pins us to — into a NON-ROOT read-holder role. isRoot stays false:
+  // we never claim the topic, so no root split (the previously-rejected
+  // reluctant-root failure mode). The holder ingests via the standard verified
+  // REPLAYUP → union → _deliverToApp path and is protected from GC while the
+  // subscription is live (the mySubscriptions guard in the role sweep); it tears
+  // down like any subscriber role on unsubscribe. If the primary recovers, the
+  // normal SUB renewal re-homes us onto it and the holder simply stops probing.
+  // Bounded (EMPTY_ROOT_PROBE_MAX) + rate-limited (EMPTY_ROOT_PROBE_INTERVAL_MS),
+  // reusing the probe ledger; reachable-first + rotate (the 4.33 hardening).
+  async _readRepair(topicBig) {
+    if (!this.mySubscriptions.has(topicBig)) return;                 // not (any longer) subscribed
+    if ((this._upstream.get(topicBig) || []).length) return;         // attached → the live tree serves us
+    let role = this.axonRoles.get(topicBig);
+    // A real root heals via the empty-root sweep; a filled holder is done; a
+    // legit relay/backup role is never ours to repair-pull into.
+    if (role && (role.isRoot || role.cache.length || role.backupOf || this._backupTopics.has(topicBig))) return;
+    const now = this._now();
+    if (!role) { role = makeRole(topicBig, false); role.readHolder = true; this.axonRoles.set(topicBig, role); }
+    if (!role.readHolder) return;
+    if (role.sync.probeTries >= EMPTY_ROOT_PROBE_MAX) return;
+    if (now - role.sync.probeAt < EMPTY_ROOT_PROBE_INTERVAL_MS) return;
+    role.sync.probeAt = now;                                         // rate-limit BEFORE the await (races quench)
+
+    // Cohort = K-closest to the topic. Exclude self, the bridge, and the primary
+    // hint (the reachable-but-degraded closest routing already pins us to — the
+    // non-server; re-pulling the black hole wastes the budget).
+    const bridge = (typeof this.dht.bridgeId === 'function') ? this.dht.bridgeId() : null;
+    const primary = this._rootHint_(topicBig);
+    const cand = new Set();
+    if (typeof this.dht.findKClosest === 'function') {
+      try {
+        for (const id of (await this.dht.findKClosest(topicBig, EMPTY_ROOT_PROBE_FANOUT + 2)) || []) {
+          let b; try { b = idBig(id); } catch { continue; }
+          if (b === this.nodeId || (bridge != null && b === bridge)) continue;
+          if (primary && lc(idHex(b)) === primary) continue;        // skip the non-server
+          cand.add(b);
+        }
+      } catch { /* thin table — nothing to pull from this round */ }
+    }
+    // Re-check after the await: a REPLAYUP may have landed, we may have attached,
+    // or become root, or unsubscribed.
+    const r2 = this.axonRoles.get(topicBig);
+    if (!this.mySubscriptions.has(topicBig) || !r2 || r2 !== role || r2.isRoot || r2.cache.length ||
+        (this._upstream.get(topicBig) || []).length || !cand.size) return;
+    if (!(role.sync.probed instanceof Set)) role.sync.probed = new Set();
+    const reach = (b) => { try { return typeof this._isReachableId === 'function' && this._isReachableId(lc(idHex(b))); } catch { return false; } };
+    const ordered = [...cand].sort((a, b) => (reach(b) ? 1 : 0) - (reach(a) ? 1 : 0));
+    const fresh = ordered.filter((b) => !role.sync.probed.has(b));
+    const targets = (fresh.length ? fresh : ordered).slice(0, EMPTY_ROOT_PROBE_FANOUT);
+    let n = 0;
+    role.sync.probeTries++;
+    for (const b of targets) {
+      try { this._syncPull(b, topicBig, 'READ_REPAIR', { sinceHw: 0 }); role.sync.probed.add(b); n++; } catch { /* best-effort */ }
+    }
+    if (n) this._log('info', 'read-repair',
+      { topic: idHex(topicBig).slice(0, 12), fanout: n, tries: role.sync.probeTries });
+  },
+
+  // Drive read-repair for every stuck subscription. refreshTick fires _readRepair
+  // per-subscription inline (fire-and-forget); this sweep is the awaitable form
+  // used by deterministic tests to settle the probes on demand.
+  async _readRepairSweep(now = this._now()) {
+    for (const t of [...this.mySubscriptions.keys()]) {
+      if ((this._upstream.get(t) || []).length) continue;
+      const since = this._unattachedSince.get(t);
+      if (since == null || now - since < ROOT_CLAIM_MS) continue;
+      if (!this._regionOk(t)) continue;
+      if (typeof this._rootClaim?.selfClosestReachable === 'function' && this._rootClaim.selfClosestReachable(t)) continue;
+      await this._readRepair(t).catch(() => {});
+    }
   },
 
   // Replicate a root's full cache+tombstones to its K-closest COHORT — the set a
@@ -416,14 +531,25 @@ export const repairPlaneMethods = {
     let want;
     if (typeof this.dht.findKClosest === 'function') {
       let arr = [];
-      try { arr = await this.dht.findKClosest(t, this._rootReplicas + 1); } catch { arr = []; }  // +1: self is usually closest
-      const seen = new Set(); want = [];
+      // Over-fetch so region filtering has candidates to choose from.
+      try { arr = await this.dht.findKClosest(t, (this._rootReplicas + 1) * 2); } catch { arr = []; }
+      const seen = new Set(); const inRegion = []; const outRegion = [];
+      const topicRegion = lc(idHex(t)).slice(0, 2);
       for (const id of (Array.isArray(arr) ? arr : [])) {
         let b; try { b = idBig(id); } catch { continue; }
         if (b === this.nodeId || (bridge != null && b === bridge)) continue;   // never self / bridge
         const hex = lc(idHex(b)); if (seen.has(hex)) continue; seen.add(hex);
-        want.push(hex); if (want.length >= this._rootReplicas) break;
+        (hex.slice(0, 2) === topicRegion ? inRegion : outRegion).push(hex);
       }
+      // IN-REGION FIRST (#362): a replica outside the topic's region is
+      // durable but UNFINDABLE — routed reads terminate at the topic-closest
+      // in-region node, which never learns of an out-of-region copy (observed
+      // live: a burst publisher's cohort recruits all landed on foreign-region
+      // relays and every since:'all' read came back empty while the data sat
+      // safe on the wrong continent of the keyspace). Out-of-region fills
+      // remaining slots only when the region can't supply enough — a wrong-
+      // place copy still beats no copy for eventual reconciliation.
+      want = inRegion.concat(outRegion).slice(0, this._rootReplicas);
     } else {
       want = this._nearestReachable(t, this._rootReplicas, bridge);            // sim/fallback: neighbour-based
     }
@@ -454,10 +580,8 @@ export const repairPlaneMethods = {
       }
       budget.left--;
     }
-    const msgs = full ? role.cache.map(c => ({ json: c.json, publishTs: c.publishTs, msgId: c.msgId, seq: c.seq })) : [];
-    const dels = full ? this._activeDels(role) : [];
     for (const hex of want) {
-      try { this._route(idBig(hex), T.REPLICATE, { topicId: idHex(t), from: idHex(this.nodeId), msgs, dels }); } catch { /* best-effort */ }
+      try { this._syncPush(idBig(hex), t, role, 'COHORT_REPLICATE', { full }); } catch { /* best-effort */ }
       role.replicas.set(hex, { at: now });
     }
     if (full) { role.sync.sig = sig; role.sync.lastFullAt = now; }
@@ -570,6 +694,52 @@ export const repairPlaneMethods = {
   // Called from AxonaPeer.leave() while the transport is still up: for every
   // topic we ROOT and hold cache for, push the cache to the heir (next-closest
   // live node) so the history isn't lost when we go. Best-effort; never throws.
+  // Pick heir + runner-up from a candidate id list, IN-REGION FIRST (#362).
+  // An heir outside the topic's region accepts the history but routed reads
+  // never find it — subscribes terminate at the topic-closest IN-REGION node.
+  // Prefer candidates whose region byte matches the topic's; out-of-region
+  // candidates are used only when the region offers none (a wrong-place copy
+  // still beats no copy — reconciliation can migrate it later).
+  _pickHeirs(topicBig, ids) {
+    const topicRegion = lc(idHex(topicBig)).slice(0, 2);
+    const inR = [], outR = [];
+    for (const id of (Array.isArray(ids) ? ids : [])) {
+      let b; try { b = idBig(id); } catch { continue; }
+      if (b === this.nodeId) continue;
+      let hex; try { hex = lc(idHex(b)); } catch { continue; }
+      (hex.slice(0, 2) === topicRegion ? inR : outR).push(b);
+    }
+    const ordered = inR.concat(outR);
+    const heir = ordered.length > 0 ? ordered[0] : null;
+    let alt = null;
+    for (const b of ordered) { if (heir !== null && b !== heir) { alt = b; break; } }
+    return { heir, alt };
+  },
+
+  // Can this departing NON-ROOT holder prove the topic's root is alive right
+  // now? STRICT by design — the opposite default from _isReachableId (which
+  // optimistically returns true when the mesh isn't introspectable, correct
+  // for avoiding root splits but lethal here: a false "alive" drops the last
+  // copy of a message forever). Liveness = a candidate root (the principal in
+  // role.backupOf, or a fresh beacon's root) is a CURRENT direct neighbour.
+  // No neighbour introspection → cannot confirm → hand off.
+  _rootAliveForLeave(topicBig, role) {
+    if (typeof this.dht.neighbors !== 'function') return false;
+    let neigh; try { neigh = this.dht.neighbors() || []; } catch { return false; }
+    const now = this._now();
+    const candidates = new Set();
+    if (role.backupOf) { try { candidates.add(idBig(role.backupOf)); } catch { /* */ } }
+    const b = this._rootBeacons.get(topicBig);
+    if (b && b.exp > now && b.root) { try { candidates.add(idBig(b.root)); } catch { /* */ } }
+    candidates.delete(this.nodeId);
+    if (!candidates.size) return false;
+    for (const n of neigh) {
+      let nb; try { nb = idBig(n); } catch { continue; }
+      if (candidates.has(nb)) return true;
+    }
+    return false;
+  },
+
   async pubsubLeaveHandoff() {
     if (typeof this.dht.findKClosest !== 'function') return;
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -583,21 +753,45 @@ export const repairPlaneMethods = {
     // lookups in flight turns 25 sequential round-trips into ~3 rounds.
     const jobs = [];
     for (const [t, role] of this.axonRoles) {
-      if (!role.isRoot || !role.cache.length) continue;
+      if (!role.cache.length) continue;
+      // NON-ROOT holders (backup replicas, caching children) hand off too —
+      // gated on root liveness. The old `!role.isRoot` skip silently dropped
+      // a departing backup's cache; when churn had already cascaded the LAST
+      // copy of a message onto that backup, the message died with it — the
+      // alert-bot "9-13% of pubs never preserved, no replay recovers them"
+      // loss (diag: 100% of restart-loss was exactly this HANDOFF_GAP).
+      // Skip only on POSITIVE confirmation that the topic's root is alive
+      // RIGHT NOW (open mesh link): beacons/keepalives stay "fresh" for tens
+      // of seconds after a root departs, so on a mass teardown every passive
+      // signal lies. The asymmetry sets the default — a false "alive" loses
+      // the last copy forever; a false "dead" costs one redundant handoff
+      // that the heir's handoffArrived/liveCloserRoot reconciliation
+      // converges harmlessly (demote + push-up).
+      if (!role.isRoot && this._rootAliveForLeave(t, role)) continue;
       jobs.push({ t, role, heir: null, alt: null, key: lc(idHex(t)) });
     }
+    // Priority order (leave() races this whole handoff against a time bound,
+    // so what runs FIRST is what survives a cut-off departure):
+    //   1. SINGLETON roots (replicas.size === 0) — we hold the network's ONLY
+    //      copy; if the handoff dies before these send, the history is gone
+    //      forever (the alert-bot ~10% deterministic loss: a burst publisher's
+    //      300+ roles never finished inside the flat bound, and the same
+    //      topics past the cutoff died on every run).
+    //   2. Replicated roots — a backup exists, but the heir still needs the
+    //      claim transfer for prompt convergence.
+    //   3. Non-root holders — redundancy pushes; cheapest and least urgent.
+    // Within a tier, larger caches first (more messages at stake per send).
+    const tier = (j) => j.role.isRoot ? ((j.role.replicas?.size ?? 0) === 0 ? 0 : 1) : 2;
+    jobs.sort((a, b) => (tier(a) - tier(b)) || (b.role.cache.length - a.role.cache.length));
     let i = 0;
     const resolver = async () => {
       while (i < jobs.length) {
         const job = jobs[i++];
         try {
-          const arr = await this.dht.findKClosest(job.t, 4);
-          for (const id of (Array.isArray(arr) ? arr : [])) {
-            const b = idBig(id);
-            if (b === this.nodeId) continue;
-            if (job.heir === null) job.heir = b;              // closest node that isn't us
-            else if (b !== job.heir) { job.alt = b; break; }  // runner-up — the Phase C fallback target
-          }
+          // Over-fetch so the in-region preference has candidates (#362).
+          const arr = await this.dht.findKClosest(job.t, 8);
+          const picked = this._pickHeirs(job.t, arr);
+          job.heir = picked.heir; job.alt = picked.alt;
         } catch { /* fall through to the iterative probe */ }
         // findKClosest is LOCAL-only; a leaver with a thin table (fresh burst
         // publisher) can see nobody but itself even though the network is
@@ -606,8 +800,10 @@ export const repairPlaneMethods = {
         if (job.heir === null && typeof this.dht.lookup === 'function') {
           try {
             const r = await this.dht.lookup(job.t);
-            const id = (r && Array.isArray(r.path) && r.path.length) ? r.path[r.path.length - 1] : null;
-            if (id != null) { const b = idBig(id); if (b !== this.nodeId) job.heir = b; }
+            // path[] = terminus + nearby candidates; apply the same in-region
+            // preference (#362) rather than blindly taking the terminus.
+            const picked = this._pickHeirs(job.t, (r && Array.isArray(r.path)) ? r.path : []);
+            if (picked.heir !== null) { job.heir = picked.heir; if (job.alt === null) job.alt = picked.alt; }
           } catch { /* no heir resolvable → the cohort spray below still fires */ }
         }
       }
@@ -630,10 +826,54 @@ export const repairPlaneMethods = {
     const sendable = jobs.filter(j => j.heir !== null);
     const unacked = () => sendable.filter(j => !this._handoffAcked.has(j.key));
     for (let round = 0; round < HANDOFF_TRIES && unacked().length; round++) {
+      // Heir re-resolve on retry rounds (Phase 8, #340 — FLAGGED behavior
+      // change): a round-0 heir that never acks is often GONE, not slow — the
+      // total-cohort-teardown case (fleet restart: everyone leaves at once and
+      // every leaver's round-0 table names other leavers). Retrying the same
+      // corpse for every round burned the whole ack budget and the history
+      // died with the last holder. Re-resolve each unacked topic's heir from
+      // the CURRENT table before retrying, prefer a REACHABLE candidate, and
+      // remember the previous pick as the runner-up for Phase C.
+      if (round > 0) {
+        for (const j of unacked()) {
+          try {
+            const arr = await this.dht.findKClosest(j.t, 8);
+            // Region first (#362), reachability second: an out-of-region heir
+            // is unfindable by routed reads even when the transfer succeeds.
+            const topicRegion = lc(idHex(j.t)).slice(0, 2);
+            const tiers = [[], [], [], []];   // [inR+reach, inR, outR+reach, outR]
+            for (const id of (Array.isArray(arr) ? arr : [])) {
+              let b; try { b = idBig(id); } catch { continue; }
+              if (b === this.nodeId) continue;
+              let hex = null; try { hex = lc(idHex(b)); } catch { continue; }
+              const inR = hex.slice(0, 2) === topicRegion;
+              const reach = typeof this._isReachableId === 'function' && this._isReachableId(hex);
+              tiers[inR ? (reach ? 0 : 1) : (reach ? 2 : 3)].push(b);
+            }
+            const ordered = tiers.flat();
+            const pick = ordered.length > 0 ? ordered[0] : null;
+            if (pick !== null && pick !== j.heir) { j.alt = j.heir; j.heir = pick; }
+          } catch { /* keep the previous heir */ }
+        }
+      }
       for (const j of unacked()) {
-        const msgs = j.role.cache.map(c => ({ json: c.json, publishTs: c.publishTs, msgId: c.msgId, seq: c.seq }));
-        const dels = this._activeDels(j.role);
-        try { this._route(j.heir, T.HANDOFF, { topicId: idHex(j.t), msgs, dels, from: idHex(this.nodeId) }); } catch { /* best-effort */ }
+        try {
+          if (j.role.isRoot) { this._syncPush(j.heir, j.t, j.role, 'HANDOFF'); continue; }
+          // A departing NON-ROOT holder must not mint a root at the receiver.
+          // HANDOFF makes the heir ADOPT; multiple departing backups each
+          // handing off (possibly to different mid-churn heirs) minted
+          // competing roots whose subscribers starved of live fan-out (POST
+          // all-delivered 90%→60% in the paired restart harness). REPLICATE
+          // carries the same cache with the right ingest semantics — union-
+          // ingest at a root, backup nature elsewhere — so the history lands
+          // without an adoption. Fire-and-forget to the heir + runner-up (no
+          // ack exists for REPLICATE): this is a TARGETED push to the topic-
+          // closest node — which post-churn is normally the already-promoted
+          // heir — not the 4.24.0 K-closest cohort spray (Phase C note below).
+          this._syncPush(j.heir, j.t, j.role, 'REPLICATE');
+          if (j.alt !== null && j.alt !== j.heir) this._syncPush(j.alt, j.t, j.role, 'REPLICATE');
+          this._handoffAcked.add(j.key);   // fire-and-forget: exempt from retry rounds + Phase C
+        } catch { /* best-effort */ }
       }
       const deadline = Date.now() + HANDOFF_ACK_MS;
       while (Date.now() < deadline && unacked().length) await sleep(25);
@@ -664,9 +904,16 @@ export const repairPlaneMethods = {
         { topic: idHex(j.t).slice(0, 12), heir: j.heir === null ? 'none' : idHex(j.heir).slice(0, 10),
           fallback: target === null ? 'none' : idHex(target).slice(0, 10) });
       if (target === null) continue;
-      const msgs = j.role.cache.map(c => ({ json: c.json, publishTs: c.publishTs, msgId: c.msgId, seq: c.seq }));
-      const dels = this._activeDels(j.role);
-      try { this._route(target, T.HANDOFF, { topicId: idHex(j.t), msgs, dels, from: idHex(this.nodeId) }); } catch { /* best-effort */ }
+      // Region guard (#362): a HANDOFF makes the receiver ADOPT the root
+      // claim — an out-of-region adoptee is a root that routed reads can
+      // never find (worse than no root: it absorbs the claim AND the
+      // history into an unreachable corner). If the last-resort target is
+      // outside the topic's region, send the same cache as REPLICATE —
+      // durable, findable via anti-entropy/pull migration, no false claim.
+      const topicRegion = lc(idHex(j.t)).slice(0, 2);
+      let targetRegion = null; try { targetRegion = lc(idHex(target)).slice(0, 2); } catch { /* */ }
+      const policy = targetRegion === topicRegion ? 'HANDOFF' : 'REPLICATE';
+      try { this._syncPush(target, j.t, j.role, policy); } catch { /* best-effort */ }
     }
   },
 

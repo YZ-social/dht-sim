@@ -205,8 +205,32 @@ export class MeshManager {
   /** Build a fresh RTCConfiguration from STUN + the cached TURN. */
   _iceConfig() {
     const iceServers = [...STUN_SERVERS];
-    if (this._turn) iceServers.push(this._turn);
+    if (this._turn) iceServers.push(this._maybeEncodeTurn(this._turn));
     return { iceServers };
+  }
+
+  // TURN REST credentials under Node (#343). The bridge-minted username is
+  // `<expiry>:<token>` — a colon BY DESIGN (RFC-style TURN REST). Browsers
+  // pass {urls, username, credential} to the native stack intact, but
+  // node-datachannel's polyfill flattens them into a URL string
+  // `turn:USERNAME:CREDENTIAL@host:port`, and libdatachannel re-parses that
+  // by splitting on colons — the embedded colon truncates the username to
+  // the timestamp half, the HMAC (computed over the FULL username) can never
+  // match, coturn 401s, and no relay candidate is ever gathered. This is why
+  // every NAT↔NAT node-process pair was an island (three-way experiment
+  // 2026-07-21: native-struct control ✓, raw-colon polyfill ✗, pct-encoded ✓
+  // — libdatachannel DOES percent-decode userinfo). Percent-encode the
+  // credentials before they reach the flattener — but ONLY under Node: a
+  // browser's native stack sends the fields literally, and an encoded
+  // username would break its HMAC instead.
+  _maybeEncodeTurn(turn) {
+    const isBrowser = typeof window !== 'undefined' && typeof window.document !== 'undefined';
+    if (isBrowser || !turn || typeof turn.username !== 'string') return turn;
+    return {
+      ...turn,
+      username: encodeURIComponent(turn.username),
+      credential: typeof turn.credential === 'string' ? encodeURIComponent(turn.credential) : turn.credential,
+    };
   }
 
   /** Subscribe to mesh-state changes.  Returns an unsubscribe fn. */
@@ -448,6 +472,30 @@ export class MeshManager {
   }
 
   onPeerLeft(peerId) {
+    // A node drops a peer for exactly two reasons in this architecture:
+    // the peer authentically announces its OWN departure (the `peer-leaving`
+    // fast path — subject is the transport-authenticated origin, so a peer
+    // can only retire itself, never a third party), or the direct channel's
+    // own vitality reaches zero (the ping/pong reaper + pc-state machine that
+    // this transport runs per channel). A `peer-left` from the bridge is
+    // NEITHER: it is a third party (the signaling bridge) asserting that
+    // SOMEONE ELSE departed — the same third-party force-eviction the
+    // `peer-leaving` handler deliberately refuses. It only tells us that peer
+    // left the BRIDGE (a bootstrap-nursery graduation 4200, or a transient
+    // peer↔bridge blip), which says nothing about our first-party channel to
+    // it. So if that channel is live (open), we keep it and let its own
+    // vitality govern teardown — a peer that truly vanished is still reaped
+    // within seconds by the reaper/ICE machinery, with no bridge involved.
+    //
+    // Without this, graduation was self-defeating: a graduate kept its own
+    // mesh, but every witness took the bridge's word for it, slammed its
+    // healthy channel shut, and stranded the graduate (boundPeers → 0),
+    // forcing an immediate re-dial — the open→graduate→peers=0→open churn. (#374)
+    const st = this._peers.get(peerId);
+    if (st && st.state === 'open') {
+      this._log('peer-left-ignored-live', { peerId, state: st.state });
+      return;
+    }
     this._retire(peerId, 'peer-left');
     this._notify();
   }

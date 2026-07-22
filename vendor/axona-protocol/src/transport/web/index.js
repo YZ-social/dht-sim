@@ -103,6 +103,15 @@ const RECONNECT_BACKOFF_INITIAL_MS = 1000;
 const RECONNECT_BACKOFF_MAX_MS     = 16000;
 /** WebSocket close code the bridge uses for version-gate rejection. */
 const UPGRADE_CLOSE_CODE = 4426;
+/** Close code the bridge uses to GRADUATE an established peer off the bridge:
+ *  the peer is meshed and no longer needs a scarce bridge slot (bootstrap-
+ *  nursery eviction). Unlike 4426 this is NOT terminal — the client keeps its
+ *  WebRTC mesh and simply stops reconnecting *while its mesh stays healthy*;
+ *  a watchdog re-dials the bridge if bound-peer count later falls below
+ *  graduationMeshFloor (re-bootstrap). A client that wasn't actually meshed
+ *  when graduated reconnects immediately, so the bridge can graduate
+ *  optimistically and the client self-corrects. */
+const GRADUATED_CLOSE_CODE = 4200;
 /** Window of recent RTT samples kept for the average. */
 const RTT_WINDOW = 10;
 // Ceiling on concurrent in-flight relay negotiations a node will START. The
@@ -135,6 +144,12 @@ export function webTransport({
   reconnect = true,
   reconnectInitialMs = RECONNECT_BACKOFF_INITIAL_MS,
   reconnectMaxMs     = RECONNECT_BACKOFF_MAX_MS,
+  // Bridge bootstrap-nursery: minimum authenticated mesh peers a node must hold
+  // to honour a GRADUATED_CLOSE_CODE (4200) without reconnecting. Below this we
+  // treat graduation as a misjudgement and reconnect normally. A graduated node
+  // re-dials the bridge if its bound-peer count later falls below this floor.
+  graduationMeshFloor = 3,
+  graduationRecheckMs = 5000,
   // Peer-relayed signaling (bridgeless connect).  When true (the default as of
   // kernel v2.19.0, after the end-to-end verification in Peer-Relayed-Signaling
   // §8d), sendSignal prefers routing SDP/ICE through the mesh (via an AxonaPeer
@@ -242,6 +257,8 @@ export function webTransport({
     });
     socket.addEventListener('open', () => {
       socketOpen = true;
+      graduated = false;
+      stopGraduationWatch();
       log('bridge-socket-open', { bridgeUrl });
       setBridgeState('connecting');
       if (autoHandshake) {
@@ -284,6 +301,16 @@ export function webTransport({
         stopped = true;
         stopStaleChecker();
         setBridgeState('upgrade-required', (ev && ev.reason) || 'client out of date');
+      } else if (code === GRADUATED_CLOSE_CODE && meshBoundCount() >= graduationMeshFloor) {
+        // Bootstrap-nursery graduation: we're meshed, so keep the WebRTC mesh
+        // and DON'T reconnect — freeing the bridge slot for a newcomer. A
+        // watchdog re-dials if the mesh thins. (If we weren't actually meshed,
+        // this branch is skipped and we reconnect below — self-correcting.)
+        stopStaleChecker();
+        graduated = true;
+        setBridgeState('graduated', (ev && ev.reason) || 'meshed — released by bridge');
+        log('bridge-graduated', { meshPeers: meshBoundCount() });
+        armGraduationWatch();
       } else if (!stopped && reconnect && autoHandshake) {
         setBridgeState('disconnected');
         scheduleReconnect();
@@ -426,11 +453,23 @@ export function webTransport({
             return mesh.onPeerJoined(frame.peerId);
           }
           break;
-        case 'peer-left':
+        case 'peer-left': {
+          // Departure hint (#364-B): a bridge that knows the departed
+          // connection's authenticated nodeId includes it — purge the node's
+          // pub/sub ghosts via the standard peer-died path. Guarded inside
+          // reportPeerDeparted: ignored whenever we hold a live channel to
+          // the subject (see the method's comment for why that keeps the
+          // hint safe once large-network nodes drop bridge sockets while
+          // staying valid mesh members). Additive + optional: old bridges
+          // send no nodeId and this clause is a no-op.
+          if (typeof frame.nodeId === 'string' && /^[0-9a-f]{6,}$/i.test(frame.nodeId)) {
+            try { webrtc.reportPeerDeparted(BigInt('0x' + frame.nodeId)); } catch { /* malformed hint */ }
+          }
           if (typeof mesh.onPeerLeft === 'function' && typeof frame.peerId === 'string') {
             return mesh.onPeerLeft(frame.peerId);
           }
           break;
+        }
         case 'signal':
           if (typeof mesh.onSignal === 'function' && typeof frame.from === 'string') {
             return mesh.onSignal(frame.from, frame.payload);
@@ -521,6 +560,8 @@ export function webTransport({
   let reconnectTimer   = null;
   let reconnectAttempt = 0;
   let stopped          = false;  // composite.stop() sets this — suppresses reconnect
+  let graduated        = false;  // released by the bridge while meshed — no reconnect
+  let graduationTimer  = null;   // watchdog: re-dial if the mesh thins post-graduation
   const stateHandlers   = new Set();
   const welcomeHandlers = new Set();
 
@@ -581,6 +622,29 @@ export function webTransport({
   }
   function stopStaleChecker() {
     if (staleTimer != null) { clearInterval(staleTimer); staleTimer = null; }
+  }
+
+  /** Authenticated WebRTC mesh peer count — the graduation health signal. */
+  function meshBoundCount() {
+    try { return webrtc.boundPeers().length; } catch { return 0; }
+  }
+  /** After graduation, watch the mesh; re-dial the bridge if it thins below the
+   *  floor so a node never strands itself off the network. */
+  function armGraduationWatch() {
+    if (graduationTimer != null) return;
+    graduationTimer = setInterval(() => {
+      if (stopped) { stopGraduationWatch(); return; }
+      if (meshBoundCount() < graduationMeshFloor) {
+        stopGraduationWatch();
+        graduated = false;
+        log('bridge-graduation-redial', { meshPeers: meshBoundCount(), floor: graduationMeshFloor });
+        if (reconnect && autoHandshake) { setBridgeState('connecting'); openSocket(); }
+      }
+    }, graduationRecheckMs);
+    if (typeof graduationTimer?.unref === 'function') graduationTimer.unref();
+  }
+  function stopGraduationWatch() {
+    if (graduationTimer != null) { clearInterval(graduationTimer); graduationTimer = null; }
   }
 
   function scheduleReconnect() {
@@ -755,6 +819,7 @@ export function webTransport({
     stopped = true;                     // suppress any pending reconnect
     if (reconnectTimer != null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     stopStaleChecker();
+    stopGraduationWatch();
     stopBridgePingLoop();
     await origStop();
     if (socket) {
@@ -778,7 +843,12 @@ export function webTransport({
     pingTimer = setInterval(() => {
       if (!socket || !socketOpen) return;
       try {
-        socket.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+        // Piggyback the peer's mesh vitality on the heartbeat: meshBound is the
+        // count of authenticated, currently-bound mesh peers — the same value
+        // the graduation floor trusts locally. The bridge uses it to graduate
+        // the best-meshed peer first (vitality-based graduation, #374), rather
+        // than guessing from uptime. Additive field; no wire-version change.
+        socket.send(JSON.stringify({ type: 'ping', t: Date.now(), meshBound: meshBoundCount() }));
         bridge._emitPingTraffic('sent');
       } catch (err) {
         log('bridge-ping-send-failed', { err: err.message });
@@ -801,6 +871,16 @@ export function webTransport({
   composite.mesh    = mesh;
   composite.webrtc  = webrtc;
   composite.bridge  = bridge;
+
+  // Probe/observability affordance (graduation_probe.mjs, #374): close ONLY
+  // the bridge WebSocket, leaving the WebRTC mesh untouched, to observe
+  // whether the mesh survives a bridge departure. This is deliberately NOT a
+  // graceful transport.stop() — it severs the bridge link exactly as a
+  // graduation 4200 does, so the probe can watch what tears the mesh down.
+  // No production code path calls this; it is a no-op if the socket is gone.
+  composite.__probeCloseBridgeSocket = (code = 1000, reason = 'probe') => {
+    try { socket?.close(code, reason); } catch { /* already gone */ }
+  };
 
   // ── Peer-relayed signaling surface (bridgeless connect) ──────────────
   // Only meaningful when meshRelay is enabled; an AxonaPeer detects these

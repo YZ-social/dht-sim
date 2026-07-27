@@ -72,13 +72,6 @@ export function makeRole(topicId, isRoot) {
                                      // ⇒ a message was missed). Distinct from the time-floored
                                      // publishTs (which is monotonic but sparse). Recovered to the
                                      // max seen seq on replay-up/handoff so a new root continues densely.
-    publishes: 0,                    // ADVISORY throughput counter: ++ per DISTINCT message inserted
-                                     // into cache (real messages only, NOT kills). Monotonic, never
-                                     // decremented on eviction. Every cohort member counts each
-                                     // message it caches, so it converges + survives handoff; the
-                                     // metric snapshot maxes it across the cohort. Surfaced as
-                                     // metrics().publishes (v4.41.0). Distinct from seq (which counts
-                                     // kills too and is a gap-detection high-water).
     tombstones: new Map(),           // msgId -> { exp, killTs, signer, seq }  (kill; thin)
     // The per-topic CONVERGENCE LEDGER (v4.25.0, Phase 6): every guard the data
     // plane keeps about "what have I already exchanged, with whom" lives here —
@@ -88,6 +81,10 @@ export function makeRole(topicId, isRoot) {
     sync: {
       sig: '',                       // (when ROOT) state signature at the last FULL replica push (4.24.1 delta gate)
       lastFullAt: 0,                 // (when ROOT) _now() of the last FULL push (backstop re-arms at ROOT_REPLICATE_FULL_MS)
+      lastServicedAt: 0,             // _now() of the last time the refresh tick SERVICED this role (any nature).
+                                     // lastFullAt above is roots-only; this one is universal, because capacity
+                                     // is measured as "age of my least-recently-serviced role / DROP_MS" and a
+                                     // partial field would under-report a node drowning in non-root work.
       probeTries: 0,                 // empty-self-root cohort pulls fired (4.24.0; quenches at EMPTY_ROOT_PROBE_MAX)
       probeAt: 0,                    // _now() of the last cohort pull (rate-limits the refreshTick re-probe)
       pulledLw: new Map(),           // subHex -> lowest lw already PULLUP'd from that child (4.22.1:
@@ -227,6 +224,19 @@ export class RootClaim {
   // early self-verification (a fresh claim is checked at ROOT_VERIFY_FIRST_MS).
   become(topicBig, why = 'terminal') {
     const m = this.m;
+    // ADMISSION (v4.46.0) — S1: one transition site, so one gate.
+    //
+    // hasAlternative=false is DELIBERATE and load-bearing. Every caller of
+    // become() is a routing TERMINUS: routing has already decided that nobody is
+    // closer. Refusing here would leave the SUB/PUB/KILL with nowhere to go, so
+    // a SOFT reason (not-seated / saturated / paced) is FLOORED — admitted and
+    // logged 'admitted-despite'. The value at terminal sites is the honest log
+    // plus the HARD bridge fence, not refusal.
+    //
+    // Real refusal lives where the role is PUSHED and the pusher can re-pick:
+    // syncEngine HANDOFF (see there). That asymmetry is the design, not an
+    // oversight — a terminus that refuses drops data.
+    if (!m.admitRole(topicBig, false)) return null;    // HARD only (bridge)
     const role = makeRole(topicBig, true);
     role.formedAt = m._now(); role.lastVerify = 0;
     m.axonRoles.set(topicBig, role);

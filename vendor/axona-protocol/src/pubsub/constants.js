@@ -117,6 +117,64 @@ export const MESH_REWARM_COOLDOWN_MS = 60_000;  // min gap between re-warm attem
 export const CACHE_MAX       = 1024;            // messages cached per relay
 export const CACHE_BYTES     = 16 * 1024 * 1024;// byte ceiling on a relay's cache
 export const MAX_DIRECT      = 20;              // direct subscribers before a relay delegates
+
+// ── Axonic admission control (v4.46.0) ─────────────────────────────────────
+// The NEUROMORPHIC layer has had all three of these for a long time: a declared
+// degree budget (AxonaDomain.MAX_SYNAPTOME = 50), a refusal at the budget
+// (NeuronNode.addIncomingSynapse just returns), and — under a cap — a stratified
+// breadth-before-depth fill so a capped node spreads coverage instead of
+// exhausting itself on whatever it happened to see first
+// (utils/geo.js buildXorRoutingTable). The AXONIC layer had none of them: roles
+// accrued without limit, a node could never say no, and a joining node was
+// handed a bulk backlog while still mid-handshake. Prod, 2026-07-26: relays at
+// 325/431/523/720 roles on 961 MB boxes, five of nine locked out of the bridge.
+//
+// MAX_ROLES is the axonic MAX_SYNAPTOME. It is a SELF-DECLARED, SELF-LIMITING
+// ceiling: it can only ever cause a node to hold LESS, never to acquire. It is
+// NOT an address-rule exception — hosting is still decided by address; this only
+// lets an address-eligible node answer "full" instead of degrading silently.
+export const MAX_ROLES = 96;   // roles (root+backup+child) before a node declares saturated
+
+// A joining node must TRANSPORT immediately — reachability to a newcomer lives
+// in its neighbours' tables and is healed by inbound traffic, so carrying
+// traffic is what integrates it. It must NOT manage roles immediately: bulk role
+// ingest blocks the event loop, the client-hello misses the bridge's 5s deadline,
+// the node is rejected, and it accrues more roles while locked out (#332/#338).
+export const ROLE_GRACE_MS = 90_000;   // refuse root/sub MANAGEMENT this long after join
+
+// Paced role admission — the axonic analogue of Phase-1-breadth. Even past
+// grace, a node accepts at most this many NEW roles per refresh tick, so a
+// backlog is absorbed over seconds instead of in one event-loop-blocking burst.
+export const ROLE_ADMIT_PER_TICK = 4;
+
+// ── Capacity as a MEASUREMENT, not an inventory (v4.47.0) ──────────────────
+// MAX_ROLES (above) counts roles. A count is the wrong instrument: 96 idle
+// roles is nothing, 96 hot ones may be fatal, and the same count means
+// different things on different hardware. What matters is whether a node can
+// SERVICE what it holds inside the deadlines the protocol already imposes.
+//
+// Two deadlines already exist and are the honest denominators:
+//
+//   DROP_MS (180s) — a role/subscriber unserviced this long is treated as DEAD
+//     by its cohort. So (age of my least-recently-serviced role) / DROP_MS is
+//     literally "fraction of the way to silently rotting a role". At 1.0 a role
+//     HAS rotted and nobody was told.
+//
+//   HELLO_DEADLINE_MS (5s) — the bridge closes a client that fails to complete
+//     its hello in this window (the misleadingly-named state=upgrade-required).
+//     Event-loop lag / HELLO_DEADLINE_MS is "fraction of the way to being
+//     kicked off the network". This is the #332 spiral, made observable.
+//
+// Both are OBSERVED (wall-clock deltas over real state), not derived from the
+// role count. That distinction is the whole point: ceil(roles/BUDGET)*tick is
+// a linear function of the count — MAX_ROLES in different units — and would
+// have dressed arithmetic up as telemetry.
+export const HELLO_DEADLINE_MS = 5_000;   // bridge client-hello budget (mirror of the bridge's own)
+
+// Declare saturated at this fraction of a deadline. 0.6 leaves room to shed
+// pressure before anything is actually lost — a node that waits until 1.0 has
+// already dropped history.
+export const SATURATION_PRESSURE = 0.6;
 export const DELEGATE_BATCH  = 8;               // subscribers handed off when promoting a child
 export const MAX_VIA         = 8;               // ordered-waypoint list length cap (wire sanity)
 export const VIA_HOP_BUDGET  = 8;               // hops per via leg (enforced kernel-side, Phase 2+)
@@ -230,5 +288,13 @@ export const EMPTY_ROOT_PROBE_FANOUT      = 4;      // candidates contacted per 
 // CONFIRMATION failure, not a window failure). The leaver now waits briefly for
 // HANDOFFACK, retries once, and finally sprays the cache to the K-closest
 // cohort as REPLICATE (idempotent; backups store it, roots union-ingest it).
-export const HANDOFF_ACK_MS  = 700;   // per-attempt ack wait
+export const HANDOFF_ACK_MS  = 700;   // per-round ack window BASE (also the stall-exit horizon)
 export const HANDOFF_TRIES   = 2;     // sends before falling back to cohort spray
+// Review 2026-07-25 (mass-leaver scaling): the round ack window was a FLAT
+// HANDOFF_ACK_MS while heir-side ingest is O(topics received) — a mass leaver's
+// few heirs absorb dozens of simultaneous cache ingests (time-sliced), so acks
+// arrive in O(K) and "unacked" overwhelmingly meant ACKED LATE; every late
+// topic fell through to a single unconfirmed Phase C fallback (68/68 warns on
+// a ~68-root prod leaver). The window now scales with the round's batch size.
+export const HANDOFF_ACK_PER_TOPIC_MS = 25;    // per-unacked-topic margin added to the round window
+export const HANDOFF_ACK_MAX_MS       = 5000;  // per-round window cap (leave()'s outer bound already scales with role count)

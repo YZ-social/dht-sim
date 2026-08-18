@@ -22,26 +22,127 @@ import { idHex, idBig, lc, isHexId } from './ids.js';
 import { verifyEnvelope, checkFreshness } from './envelope.js';
 import { verifyKill } from './kill.js';
 import { deriveTopicIdBig } from './post.js';
+import { signAckProof, verifyAckProof, PURPOSE, OP } from './ackProof.js';
+import { shadowEnabled, registerFrame } from '../registry/index.js';
 
 export const wireHandlersMethods = {
   _registerHandlers() {
-    const on = (type, fn) => this.dht.onRoutedMessage(type, (p, m) => fn.call(this, p, m));
-    on(T.SUB,      this._onSub);
-    on(T.UNSUB,    this._onUnsub);
-    on(T.PUB,      this._onPub);
-    on(T.DELIVER,  this._onDeliver);
-    on(T.ADOPT,    this._onAdopt);
-    on(T.PULLUP,   this._onPullUp);
-    on(T.HANDOFFACK, this._onHandoffAck);
-    on(T.REPLAYUP, this._onReplayUp);
-    on(T.HANDOFF,  this._onHandoff);
-    on(T.REPLICATE, this._onReplicate);
-    on(T.KILL,     this._onKill);
-    on(T.TOUCH,    this._onTouch);   // no-op (peer.touch deprecated v4.3.0); kept for wire compat
-    on(T.PULL,     this._onPull);
-    on(T.PULLRESP, this._onPullResp);
-    on(T.ROOTBEACON, this._onRootBeacon);
-    on(T.METRICSON, this._onMetricsOn);
+    // REF-1.1 E2.1: the 19 routed pub/sub handlers register through the ONE
+    // canonical door — registerFrame — not the raw this.dht.onRoutedMessage
+    // primitive. `_frameDoor` is the always-built Boundary-1 registry (wiring +
+    // shadow wrap + registry-owned mintLive certifier, built in the AxonaManager
+    // ctor). Its wrap runs each handler verbatim unless the runtime shadow flag is
+    // on (DEFAULT-OFF), so this path is byte-identical to the pre-E2.1 raw
+    // registration; the door refuses AT REGISTRATION any wire no Boundary-1 row
+    // declares (exit criterion 4). Each handler is bound to the manager `this` so it
+    // always receives the manager and the same (p, m). The wire literal is passed
+    // DIRECTLY at each site — the [V2] wire-literal gate forbids a variable wire, so
+    // there is no on(type, fn) indirection. The registry is written as the EXPLICIT
+    // canonical reference `this._frameDoor` at every site (not a `const reg` alias),
+    // so the shared migration-aware ownership grammar recognizes each as a B1 door
+    // (E2.1 council 389be28f / eb71240a). transportKind is OMITTED: every Boundary-1
+    // row is a single-primitive bare-keyed routed wire.
+    registerFrame(this.dht, T.SUB,          this._onSub.bind(this),          { registry: this._frameDoor });
+    registerFrame(this.dht, T.UNSUB,        this._onUnsub.bind(this),        { registry: this._frameDoor });
+    registerFrame(this.dht, T.PUB,          this._onPub.bind(this),          { registry: this._frameDoor });
+    registerFrame(this.dht, T.DELIVER,      this._onDeliver.bind(this),      { registry: this._frameDoor });
+    registerFrame(this.dht, T.ADOPT,        this._onAdopt.bind(this),        { registry: this._frameDoor });
+    registerFrame(this.dht, T.PULLUP,       this._onPullUp.bind(this),       { registry: this._frameDoor });
+    registerFrame(this.dht, T.HANDOFFACK,   this._onHandoffAck.bind(this),   { registry: this._frameDoor });
+    registerFrame(this.dht, T.REPLAYUP,     this._onReplayUp.bind(this),     { registry: this._frameDoor });
+    registerFrame(this.dht, T.HANDOFF,      this._onHandoff.bind(this),      { registry: this._frameDoor });
+    registerFrame(this.dht, T.REPLICATE,    this._onReplicate.bind(this),    { registry: this._frameDoor });
+    registerFrame(this.dht, T.KILL,         this._onKill.bind(this),         { registry: this._frameDoor });
+    registerFrame(this.dht, T.INGESTACK,    this._onIngestAck.bind(this),    { registry: this._frameDoor });
+    registerFrame(this.dht, T.RECEIPTPROBE, this._onReceiptProbe.bind(this), { registry: this._frameDoor });
+    registerFrame(this.dht, T.RECEIPTNACK,  this._onReceiptNack.bind(this),  { registry: this._frameDoor });
+    registerFrame(this.dht, T.TOUCH,        this._onTouch.bind(this),        { registry: this._frameDoor });  // no-op (peer.touch deprecated v4.3.0); kept for wire compat
+    registerFrame(this.dht, T.PULL,         this._onPull.bind(this),         { registry: this._frameDoor });
+    registerFrame(this.dht, T.PULLRESP,     this._onPullResp.bind(this),     { registry: this._frameDoor });
+    registerFrame(this.dht, T.ROOTBEACON,   this._onRootBeacon.bind(this),   { registry: this._frameDoor });
+    registerFrame(this.dht, T.METRICSON,    this._onMetricsOn.bind(this),    { registry: this._frameDoor });
+  },
+
+  // REF-1.1 S2 inspector: the Boundary-1 registry's shadow state. `built` is
+  // whether the construction flag armed the registry; `rows` the table size;
+  // `traces` a copy of the bounded trace ring (empty flag-off). Read by
+  // smoke_boundary1_registry.mjs; no effect on dispatch.
+  frameRegistryShadow() {
+    return {
+      built: !!this._frameRegistry,
+      rows: this._frameRegistry ? this._frameRegistry.size() : 0,
+      traces: this._frameTraces ? this._frameTraces.slice() : [],
+    };
+  },
+
+  // REF-1.1 M1a: the single ingestion path for Boundary-1 shadow traces (the
+  // registry sink calls this). Updates the MONOTONIC lifetime counters FIRST —
+  // they survive ring eviction — then pushes into the bounded 1024-entry ring,
+  // counting any eviction as `dropped`. Keeping ingestion in one named method
+  // (vs. an inline sink closure) lets the canary regression drive it directly.
+  // No effect on dispatch.
+  _ingestFrameTrace(rec) {
+    const L = this._frameLifetime;
+    if (L) {
+      L.total++;
+      const v = rec && typeof rec.verdict === 'string' ? rec.verdict : 'unknown';
+      L.verdicts[v] = (L.verdicts[v] || 0) + 1;
+      const ty = rec && typeof rec.type === 'string' ? rec.type : 'unknown';
+      L.byType[ty] = (L.byType[ty] || 0) + 1;
+      const f = rec && Array.isArray(rec.faults) ? rec.faults : [];
+      if (f.length) {
+        for (const k of f) L.faultKinds[k] = (L.faultKinds[k] || 0) + 1;
+        // M1c coverage split (council Decision 1, Aster/Vega): 'unbranded-source' is
+        // a COVERAGE miss (the frame took the shadow no-op — no contract observed),
+        // NOT a contract fault. A trace whose ONLY fault code is 'unbranded-source'
+        // increments `unobserved`; anything else (schema/projection/variant/
+        // unregistered) increments `faults`. They are mutually exclusive by
+        // construction — _emitUnbranded emits ['unbranded-source'] alone, a certified
+        // observation never carries it. Splitting is SAFE only because the canary
+        // predicate's coverage gate (unobserved===0) keeps an all-unbranded window
+        // failing; see frameRegistryCanaryVerdict.
+        if (f.every((k) => k === 'unbranded-source')) L.unobserved++;
+        else L.faults++;
+      }
+    }
+    const b = this._frameTraces;
+    if (b) { if (b.length >= 1024) { b.shift(); if (L) L.dropped++; } b.push(rec); }
+  },
+
+  // REF-1.1 M1 canary telemetry: the shadow INVARIANT counters the telemetry-only
+  // canary reports over live traffic. These are the MONOTONIC lifetime tallies
+  // maintained at ingestion (_ingestFrameTrace) — they DO NOT reset on ring
+  // rollover, so a fault that scrolled out of the 1024-entry ring is still counted
+  // (council F1: the ring suffix alone can report a clean window over a dirty one).
+  // The invariant holds iff `faults === 0` and no verdict is 'threw' or
+  // 'trace-fault'. `dropped` = ring evictions; `ringSize` = recent-sample window.
+  // `built:false` means NOT ARMED — the canary must read it as not-ready, NEVER a
+  // clean pass. Nothing here reads or changes dispatch.
+  frameRegistrySummary() {
+    const L = this._frameLifetime;
+    if (!this._frameRegistry || !L) {
+      return { built: false, observing: false, rows: 0, total: 0, faults: 0,
+        unobserved: 0, covered: 0, dropped: 0,
+        faultKinds: {}, verdicts: {}, byType: {}, ringSize: 0 };
+    }
+    return {
+      built: true,
+      // observing = the runtime shadow gate is ON, so the wrap actually emits
+      // traces. built without observing is a BLIND window (council F1): the canary
+      // verdict requires observing===true, not merely built. See
+      // frameRegistryCanaryVerdict.
+      observing: shadowEnabled(),
+      rows: this._frameRegistry.size(),
+      total: L.total,       // lifetime — survives rollover
+      faults: L.faults,     // lifetime CONTRACT violations (M1c: excludes unbranded) — MUST be 0
+      unobserved: L.unobserved,          // M1c: frames that took the unbranded no-op (coverage miss) — MUST be 0
+      covered: L.total - L.unobserved,   // M1c: frames that reached a certified snapshot; covered===total to pass
+      dropped: L.dropped,   // ring evictions since arm (observability)
+      faultKinds: { ...L.faultKinds },
+      verdicts: { ...L.verdicts },
+      byType: { ...L.byType },
+      ringSize: this._frameTraces ? this._frameTraces.length : 0,
+    };
   },
 
   // Decide what a topic-targeted message (SUB/PUB) should do at this node.
@@ -268,7 +369,11 @@ export const wireHandlersMethods = {
     // peer can arrive here via-pinned to me — the correction must still re-home it.
     {
       const closer = this._liveCloserRoot(topicBig, { requireReachable: false });
-      if (closer) { this._deferToRoot(topicBig, T.PUB, payload, closer); return 'consumed'; }
+      // _forwardToRoot, NOT _deferToRoot (v4.59.0): the loose gate means
+      // `closer` may be a guess, and the guess is tested by the forward itself
+      // — the verdict demotes us only on confirmed consumption at that root,
+      // and a failed forward invalidates the pointer instead of our state.
+      if (closer) { this._forwardToRoot(topicBig, T.PUB, payload, closer); return 'consumed'; }
     }
     let role = this.axonRoles.get(topicBig) || this._becomeRoot(topicBig, 'pub-terminal');
     // Admission refused (bridge fence): a declined PUB must be FORWARDED, never
@@ -286,31 +391,36 @@ export const wireHandlersMethods = {
     // continue toward the topic id. Bare-topic publishes always promote above.
     if (!role.isRoot) { this._reroute(T.PUB, payload); return 'consumed'; }
 
-    await this._ingestPublish(role, payload.json);
+    const ingest = await this._ingestPublish(role, payload.json);
+    if (ingest?.ok) this._sendIngestAck(meta?.fromId, role, ingest.msgId, 'pub', payload);
     return 'consumed';
   },
 
   // Root ingress: authenticate, enforce write policy, stamp, cache, fan out.
   async _ingestPublish(role, json) {
     let env;
-    try { env = JSON.parse(json); } catch { this._log('warn', 'drop-unparseable'); return; }
+    try { env = JSON.parse(json); } catch { this._log('warn', 'drop-unparseable'); return { ok: false, reason: 'unparseable' }; }
 
     const v = await verifyEnvelope(env);                                 // B-4 sig + msgId
-    if (!v.ok) { this._log('warn', 'drop-bad-envelope', { reason: v.reason }); return; }
+    if (!v.ok) { this._log('warn', 'drop-bad-envelope', { reason: v.reason }); return { ok: false, reason: 'bad-envelope' }; }
     const fr = checkFreshness(env, { now: this._now() });                 // C-2 freshness (live ingress)
-    if (!fr.ok) { this._log('warn', 'drop-stale', { reason: fr.reason }); return; }
+    if (!fr.ok) { this._log('warn', 'drop-stale', { reason: fr.reason }); return { ok: false, reason: 'stale' }; }
 
     const desc = env.topic;
     let tid;
     try { tid = await deriveTopicIdBig({ region: desc.region, owner: desc.owner, name: desc.name, write: desc.write }); }
-    catch { this._log('warn', 'drop-bad-descriptor'); return; }
-    if (tid !== role.topicId) { this._log('warn', 'drop-topic-mismatch'); return; }
+    catch { this._log('warn', 'drop-bad-descriptor'); return { ok: false, reason: 'bad-descriptor' }; }
+    if (tid !== role.topicId) { this._log('warn', 'drop-topic-mismatch'); return { ok: false, reason: 'topic-mismatch' }; }
     if (desc.write === 'owner' && (!env.signerPubkey || lc(env.signerPubkey) !== lc(desc.owner))) {
-      this._log('warn', 'drop-write-policy', { topic: desc.name }); return;
+      this._log('warn', 'drop-write-policy', { topic: desc.name }); return { ok: false, reason: 'write-policy' };
     }
 
-    if (role.cacheIds.has(env.msgId)) return;                            // idempotent re-publish
-    if (this._tombstoned(role, env.msgId, json)) return;                 // killed (or republish-after-kill) → suppress
+    // Both of these are TERMINAL for the write and ack as SUCCESS (v0.3 §1):
+    // already-held is the idempotent-retry case, and a tombstoned republish is
+    // settled state — an ack is what stops the writer's flight from probing a
+    // root that is doing its job.
+    if (role.cacheIds.has(env.msgId)) return { ok: true, msgId: env.msgId, dup: true };
+    if (this._tombstoned(role, env.msgId, json)) return { ok: true, msgId: env.msgId, suppressed: true };
 
     // STAMP — single serialization point; strictly monotonic, floored at now.
     const ts = Math.max(role.lastTs + 1, this._now());
@@ -318,8 +428,39 @@ export const wireHandlersMethods = {
     const seq = ++role.seq;                                              // dense per-topic counter (gap detection)
     const msg = { json, publishTs: ts, msgId: env.msgId, seq };
     this._cachePush(role, { msgId: env.msgId, publishTs: ts, json, seq });
+    // Phase 3 shadow: observe the VERIFIED body (env passed verifyEnvelope above)
+    // ONLY if it survived the cache write (an immediate byte-cap eviction must not
+    // leave a stale shadow body). The observer independently re-binds the topic.
+    // No-op flag-off.
+    if (this._tombAuthority && role.cacheIds.has(env.msgId)) await this._taObserveBody(role.topicId, env, ts);
+    // The DURABILITY obligation opens at the stamp and can only be discharged
+    // by a cohort verdict below. The DELIVERY leg is _pendingPub and moves
+    // independently — that separation is the whole point (Aster, seq 123).
+    this._durability.open(env.msgId, role.topicId);
+    // rootReplicas = 0 means cohort replication is NOT configured, so the gate
+    // below never runs and nothing could ever discharge this entry. Choose the
+    // terminal state explicitly rather than leaving it pending forever.
+    if (!this._rootReplicas) this._durability.noCohortConfigured(env.msgId);
     this._fanout(role, msg, null);                                       // to subscribers
-    this._deliverToApp(role.topicId, json, env.msgId, ts, seq);          // local app (if subscribed)
+    // local app (if subscribed)
+    //
+    // KNOWN DEFECT, NOT YET FIXED — found by test/fence_q2_end_to_end.mjs.
+    // _deliverToApp CONFIRMS the pending entry (seeing your own message is the
+    // implicit ack, I-9), and it runs HERE, before the durability gate below. So
+    // a publisher subscribed to its own topic — the only way to verify a publish,
+    // since there is deliberately no publish-ack — confirms regardless of whether
+    // one byte reached the cohort. The v4.58.0 fail-closed gate is present,
+    // correct, counted, and BYPASSED on the most common path.
+    //
+    // The obvious fix (pass {confirm:false} here and let the single post-gate
+    // confirm below do it) was implemented and REVERTED: it turns every publish
+    // on a NON-REPORTING adapter into a permanent pending entry, and the tick's
+    // retry pump then re-sends the body forever — smoke_pubsub_kill caught it
+    // re-delivering a KILLED message to a late subscriber. Withholding a confirm
+    // is not free; it changes what the retry pump does. The real fix has to
+    // reconcile the durability gate with the retry pump and is design work, not
+    // a one-line change.
+    this._deliverToApp(role.topicId, json, env.msgId, ts, seq);
     // EAGER cohort distribution: push the freshly-stamped message to the K-closest the
     // instant it's stamped — a kill is just a publish with a side effect, so a publish
     // must reach the whole cohort exactly as a kill must, else a subscriber landing on a
@@ -336,7 +477,47 @@ export const wireHandlersMethods = {
     // Cohort-less nodes (rootReplicas 0 / solo network) confirm immediately.
     if (role.isRoot && this._rootReplicas) {
       const bridge = (typeof this.dht.bridgeId === 'function') ? this.dht.bridgeId() : null;
-      await this._replicateRole(role.topicId, role, bridge, this._now()).catch(() => {});
+      // Q2/C4: the outcome is READ, not discarded. `.catch(() => {})` here used to
+      // swallow the only evidence available and confirm regardless, so a publish
+      // whose every replication push exhausted still reported durable.
+      const rep = await this._replicateRole(role.topicId, role, bridge, this._now())
+        // A REJECTION FABRICATES NOTHING (Aster, on v4.58.2). I had this catch
+        // asserting dispatched:true, snapshot:true — inventing evidence flags for a
+        // call that threw, in the middle of a change whose entire purpose is that
+        // evidence must be demonstrated. An unexpected _replicateRole rejection shows
+        // no dispatch and no snapshot, so it must not burn a ledger attempt. The warn
+        // and the withheld confirm below still fire: the publish does NOT confirm, and
+        // the periodic path retries. Nothing is silently swallowed; it is simply not
+        // counted as an attempt that happened.
+        .catch((e) => ({ attempted: 1, verified: 0, failed: 1, unsupported: 0, violation: 0,
+                         dispatched: false, snapshot: false, noCohort: false,
+                         reason: String(e?.message || e) }));
+      // v4.58.0 FAIL-CLOSED. Confirm requires POSITIVE evidence: attempted > 0
+      // demands verified > 0. The previous gate also required unreported === 0,
+      // which meant a publish with no dispatch evidence at all still confirmed —
+      // it fired only when every push had EXPLICITLY failed. Absence of a failure
+      // report is not a success report. attempted === 0 is the singleton/no-cohort
+      // case and still confirms, deliberately and unchanged.
+      // THE ONLY PATH TO 'verified'. The ledger decides; this site just reports
+      // what the cohort said. verified === 0 is not final — the tick replicates
+      // again until the attempt budget runs out and the entry turns 'expired',
+      // which is an honest terminal answer rather than a silent confirm.
+      // ONE RULE, IN THE LEDGER (Aster, on v4.58.2). My previous version hand-rolled
+      // the guard here as `rep.dispatched !== false && rep.snapshot !== false`, which
+      // is not the contract: a MISSING flag passed it. That is inference by default —
+      // written by me one commit after "capability is DECLARED, never inferred", which
+      // is how deeply the habit runs. recordOne shares _classify with the periodic
+      // path, so the two callers cannot drift and neither can restate the rule wrong.
+      this._durability.recordOne(env.msgId, rep);
+      if (rep.attempted > 0 && rep.verified === 0) {
+        this._log('warn', 'pubsub:replicate-all-failed', {
+          topic: idHex(role.topicId).slice(0, 12), attempted: rep.attempted, failed: rep.failed,
+        });
+        // INGEST happened (cached, stamped, fanned) — the ack below still
+        // fires; durability is the cohort's job and the tick keeps retrying
+        // the replication independently (v0.3: the ack asserts ingestion).
+        return { ok: true, msgId: env.msgId, pendingDurability: true };
+      }
       // Honesty signal (#362): the eager replicate could recruit NOBODY — this
       // node is a SINGLETON root and the confirm below asserts only "I, one
       // process, hold it" (field case: an in-region burst publisher self-rooted
@@ -353,6 +534,97 @@ export const wireHandlersMethods = {
       }
     }
     this._confirmPending(role.topicId, env.msgId);                       // our own publish landed (we're its root) → stop retrying
+    return { ok: true, msgId: env.msgId };
+  },
+
+  // Emit the correlated INGEST-ack one hop back to the node that handed us the
+  // write (v0.3 §1). Never to the origin publisher — there is deliberately no
+  // publish-ack (location privacy); the E3 flight lives at the deferral sites.
+  _sendIngestAck(fromId, role, msgId, op, hints) {
+    // D1 (Write-Flight Ack Routing): if the forwarder stamped an `ackTo` (the
+    // flight owner's transport id) AND this node holds a transport identity,
+    // sign an INGEST-ACK PROOF and route it STRAIGHT to the owner across however
+    // many hops — the deaf-flight fix. Otherwise fall back to the 4.62.1 unsigned
+    // ack one hop back to the forwarder: correct on the 1-hop routes where it
+    // ever worked, and the path a pre-4.62.2 forwarder (no ackTo) or an
+    // identity-less node (sim/test double) still takes. Additive-optional; no
+    // wire-version bump.
+    if (hints && typeof hints.ackTo === 'string' && this._nodeIdentity) {
+      this._sendSignedIngestAck(role, msgId, op, hints);   // async, self-contained, never throws out
+      return;
+    }
+    this._sendUnsignedIngestAck(fromId, role, msgId, op);
+  },
+
+  _sendUnsignedIngestAck(fromId, role, msgId, op) {
+    if (fromId == null) return;
+    let fromBig; try { fromBig = idBig(fromId); } catch { return; }
+    if (fromBig === this.nodeId) return;
+    this._route(fromBig, T.INGESTACK, {
+      topicId: idHex(role.topicId), msgId, epoch: role.epoch ?? 0, op,
+    });
+    this._log('debug', 'ingest-ack-sent', { topic: idHex(role.topicId).slice(0, 12), op });
+  },
+
+  async _sendSignedIngestAck(role, msgId, op, hints) {
+    try {
+      let ackToBig; try { ackToBig = idBig(hints.ackTo); } catch { return; }
+      const frame = await signAckProof(
+        (bytes) => this._nodeIdentity.sign(bytes),
+        {
+          purpose:     PURPOSE.INGEST_ACK,
+          op:          op === 'kill' ? OP.kill : OP.pub,
+          topicId:     idHex(role.topicId),
+          msgId,
+          epoch:       role.epoch ?? 0,
+          attemptId:   hints.attemptId,
+          ackTo:       hints.ackTo,
+          flightNonce: hints.flightNonce,
+          rootPub:     this._nodeIdentity.pubkey,
+        },
+      );
+      this._route(ackToBig, T.INGESTACK, frame);
+      this._log('debug', 'ingest-ack-signed', { topic: idHex(role.topicId).slice(0, 12), op, to: String(hints.ackTo).slice(0, 12) });
+    } catch (e) {
+      // Malformed hint (bad attemptId/nonce width) or a signer failure: log and
+      // let the owner's flight recover via its receipt probe. Never a false
+      // completion; never an unhandled rejection.
+      this._log('warn', 'ingest-ack-sign-failed', { detail: String((e && (e.code || e.message)) || e) });
+    }
+  },
+
+  // Receive an INGEST-ack: record the correlation for the write flight (E3).
+  // Bounded store; entries are consumed by the flight or age out by insertion
+  // order. Everything is validated — a malformed ack records nothing.
+  async _onIngestAck(payload, meta) {
+    // D1 (Write-Flight Ack Routing): a SIGNED ACK PROOF (carries `sig` + a
+    // 64-hex `rootPub`) is the multi-hop-safe completion — verify the signature
+    // and bind it to the open flight by attemptId + ackTo + flightNonce + the
+    // hash-bound root authority (never the last hop). An UNSIGNED ack is the
+    // 4.62.1 one-hop path, unchanged below.
+    if (payload && typeof payload.sig === 'string') {
+      const res = await verifyAckProof(payload);
+      if (!res.ok) { this._log('info', 'ingest-ack-proof-reject', { reason: res.reason }); return 'consumed'; }
+      await this._flightCompleteSigned(res.fields);
+      return 'consumed';
+    }
+    if (!payload || typeof payload.topicId !== 'string' || typeof payload.msgId !== 'string') return 'consumed';
+    const op = payload.op === 'kill' ? 'kill' : payload.op === 'pub' ? 'pub' : null;
+    if (!op) return 'consumed';
+    const epoch = (Number.isInteger(payload.epoch) && payload.epoch >= 0) ? payload.epoch : 0;
+    if (!this._ingestAcks) this._ingestAcks = new Map();
+    const key = `${lc(payload.topicId)}|${payload.msgId}|${op}`;
+    this._ingestAcks.set(key, { epoch, at: this._now(), from: meta?.fromId != null ? String(meta.fromId) : null });
+    while (this._ingestAcks.size > 512) {
+      const oldest = this._ingestAcks.keys().next().value;
+      this._ingestAcks.delete(oldest);
+    }
+    this._log('debug', 'ingest-ack', { key: key.slice(0, 24), epoch });
+    // The ONLY terminal write success (E3) — and it must bind: sender +
+    // epoch are enforced inside (Aster seq 439), so a stray holder's ack or
+    // a stale incarnation never settles a flight against the suspect.
+    this._flightComplete(payload.topicId, payload.msgId, op, meta?.fromId, epoch);
+    return 'consumed';
   },
 
   // ── stamped-replay-up durability (§6) ────────────────────────────────
@@ -423,10 +695,26 @@ export const wireHandlersMethods = {
     try { env = JSON.parse(m.json); } catch { this._log('warn', 'drop-malformed-stamped', { msgId: String(m?.msgId).slice(0, 12) }); return 'rejected'; }
     const v = await verifyEnvelope(env);                                 // B-4 still applies
     if (!v.ok || env.msgId !== m.msgId) { this._log('warn', 'drop-bad-replayup', { reason: v.reason }); return 'rejected'; }
+    // TOPIC BINDING (Aster Phase-3 blocker a, seq 890): the stamped body's SIGNED
+    // descriptor must derive to THIS role's topic. _ingestPublish binds; the stamped
+    // paths (replay-up / handoff / replicate) did not, so a body signed for topic A
+    // could be re-stamped under role B — the V1 msgId is topic-agnostic, so B's
+    // history and any co-location basis get corrupted. In honest operation a role's
+    // topicId IS deriveTopicId(descriptor), so this rejects only the cross-topic case
+    // (claim.topicId == role.topicId already: the role is looked up by the claim).
+    // Fail closed on a malformed or mismatched descriptor.
+    let stid;
+    try { stid = await deriveTopicIdBig({ region: env.topic?.region, owner: env.topic?.owner, name: env.topic?.name, write: env.topic?.write }); }
+    catch { this._log('warn', 'drop-stamped-bad-topic', { msgId: String(m?.msgId).slice(0, 12) }); return 'rejected'; }
+    if (stid !== role.topicId) { this._log('warn', 'drop-stamped-cross-topic', { msgId: String(m?.msgId).slice(0, 12) }); return 'rejected'; }
     if (m.publishTs > this._now() + FUTURE_TOLERANCE_MS) { this._log('warn', 'drop-future-replayup'); return 'rejected'; } // §5 bad-clock
     if (role.cacheIds.has(m.msgId)) return 'held';                       // already have it
     if (this._tombstoned(role, m.msgId, m.json)) return 'held';          // killed → don't resurrect via replay-up
     this._cachePush(role, { msgId: m.msgId, publishTs: m.publishTs, json: m.json, seq: m.seq });
+    // Phase 3 shadow: observe the VERIFIED body (env passed verifyEnvelope + the
+    // topic-binding check above) if it survived the cache write. The observer
+    // independently re-binds the topic too (defense in depth). No-op flag-off.
+    if (this._tombAuthority && role.cacheIds.has(m.msgId)) await this._taObserveBody(role.topicId, env, m.publishTs);
     // Seeing our own msgId arrive via ANY stamped path (cohort replicate,
     // replay-up, handoff) is proof it landed on a durable holder — confirm the
     // pending so the retry machinery (and leave()'s evidence-based drain)
@@ -511,7 +799,7 @@ export const wireHandlersMethods = {
   },
 
   // ── DELIVER (parent → subscriber; a relay re-fans down the tree) ──────
-  _onDeliver(payload, meta) {
+  async _onDeliver(payload, meta) {
     if (meta.targetId !== this.nodeId) return;        // forward (intermediate hop)
     const topicBig = idBig(payload.topicId);
     if (payload.from) {
@@ -530,7 +818,15 @@ export const wireHandlersMethods = {
     const role = this.axonRoles.get(topicBig);        // set iff I'm a relay → re-fan
     for (const m of (Array.isArray(payload.msgs) ? payload.msgs : [])) {
       if (!m) continue;
-      if (m.del) { this._applyKill(role, topicBig, m); continue; }   // del-marker carries killTs+signer
+      if (m.del) {
+        // A propagated proof is verified + BOUND (topicId+msgId+signer) BEFORE it can
+        // be retained or re-fanned (Aster B1). A proof that fails is stripped, so
+        // _applyKill installs the tombstone WITHOUT an unverified/cross-carrier proof.
+        let mm = m;
+        if (this._tombAuthority && m.kill && !(await this._taVerifyBoundKill(topicBig, m))) { const { kill, ...rest } = m; mm = rest; }
+        this._applyKill(role, topicBig, mm);
+        continue;
+      }
       if (this._tombstoned(role, m.msgId, m.json)) continue;          // killed → suppress (don't cache/deliver/re-fan)
       if (role && !role.cacheIds.has(m.msgId)) {       // relay: cache once + re-fan once
         this._cachePush(role, { msgId: m.msgId, publishTs: m.publishTs, json: m.json, seq: m.seq });
@@ -599,7 +895,7 @@ export const wireHandlersMethods = {
     // set. Carries killTs+signer so the receiver's tombstone matches.
     const dels = [];
     for (const [tgt, tomb] of role.tombstones) {
-      if ((tomb?.exp ?? 0) > this._now()) dels.push({ del: true, msgId: tgt, killTs: tomb.killTs, signer: tomb.signer ?? null, publishTs: tomb.killTs, seq: tomb.seq });
+      if ((tomb?.exp ?? 0) > this._now()) dels.push({ del: true, msgId: tgt, killTs: tomb.killTs, signer: tomb.signer ?? null, publishTs: tomb.killTs, seq: tomb.seq, ...(this._tombAuthority && tomb.kill ? { kill: tomb.kill } : {}) });
     }
     if (dels.length) {
       sent = true;
@@ -632,17 +928,55 @@ export const wireHandlersMethods = {
   // first time we see the kill (tombstone-gated).
   _applyKill(role, topicBig, m) {
     const target = m.msgId;
+    // A retracted message has no durability obligation left. Cancel it BEFORE
+    // the tombstone/fan-out work below, so no retry can outlive the retraction
+    // (Aster: the kill must cancel atomically and preserve the tombstone).
+    this._durability?.cancel(target);
     const killTs = m.killTs ?? this._now();
     const seq = m.seq;                                 // root-assigned dense counter for this kill
     if (role && Number.isFinite(seq) && seq > role.seq) role.seq = seq;   // recover counter (kill occupied a slot)
-    if (role && !role.tombstones.has(target)) {
-      role.tombstones.set(target, { exp: this._now() + TTL_MS, killTs, signer: m.signer ?? null, seq });
+    // SIGNED-KILL PROOF (Aster Phase-3 blocker b): retain + transport a proof ONLY when
+    // it is BOUND to this carrier — the kill's target IS this tombstone's target and it
+    // binds to this topic. The SIGNATURE was already verified by the caller (_onKill's
+    // verifyKill for a direct kill; _taVerifyBoundKill on every propagation funnel, which
+    // also checks the signer and STRIPS an unverified proof before it reaches here). This
+    // is the synchronous binding gate; a mismatched proof is never retained or re-fanned.
+    let proof = null;
+    if (this._tombAuthority && m.kill && typeof m.kill.msgId === 'string' && m.kill.msgId === target) {
+      try { if (m.kill.topicId != null && idBig(m.kill.topicId) === topicBig) proof = m.kill; } catch { proof = null; }
+    }
+    // When a proof is retained, the proof's VERIFIED signer is authoritative and stamps
+    // the tombstone + every proof-bearing marker we emit, so a receiver's _taVerifyBoundKill
+    // (which now requires a present matching carrier signer) always accepts it — never an
+    // internally inconsistent carrier (Aster S1/S2). Flag-off / proof-less keeps m.signer.
+    const proofSigner = proof ? lc(proof.signerPubkey) : null;
+    const existing = role ? role.tombstones.get(target) : null;
+    if (role && existing && proof && !existing.kill) {
+      // B2 UPGRADE — a proof-less tombstone gains a verified, bound proof. Attach it and
+      // converge it downstream (re-fan now + re-replicate; the replay / replicate /
+      // handoff / pull emitters read tomb.kill). The destructive/idempotent side effects
+      // (cache drop, app kill delivery, pending confirm) already ran on first sighting,
+      // so this is a PURE proof-attach and must not repeat them.
+      existing.kill = proof;
+      existing.signer = proofSigner;   // the proof's verified signer becomes authoritative (Aster S2) — no stale/conflicting carrier
+      this._fanout(role, { del: true, msgId: target, killTs: existing.killTs, signer: existing.signer, publishTs: existing.killTs, seq: existing.seq, kill: proof }, null);
+      if (role.isRoot && this._rootReplicas) {
+        const bridge = (typeof this.dht.bridgeId === 'function') ? this.dht.bridgeId() : null;
+        this._replicateRole(topicBig, role, bridge, this._now()).catch(() => {});
+      }
+      return;
+    }
+    if (role && !existing) {
+      const tomb = { exp: this._now() + TTL_MS, killTs, signer: proof ? proofSigner : (m.signer ?? null), seq };
+      if (proof) tomb.kill = proof;                    // retain only the bound, caller-verified proof
+      role.tombstones.set(target, tomb);
       const i = role.cache.findIndex(c => c.msgId === target);
       if (i >= 0) { role.cacheBytes -= role.cache[i].bytes; role.cache.splice(i, 1); }
       role.cacheIds.delete(target);
       // fan the delete down — carries killTs + signer + seq so each receiver records
-      // an identical tombstone (consistent replay + ordering + provisional authorship).
-      this._fanout(role, { del: true, msgId: target, killTs, signer: m.signer ?? null, publishTs: killTs, seq }, null);
+      // an identical tombstone (consistent replay + ordering + provisional authorship);
+      // flag-on it also carries the BOUND signed kill + its verified signer so receivers verify it.
+      this._fanout(role, { del: true, msgId: target, killTs, signer: tomb.signer, publishTs: killTs, seq, ...(proof ? { kill: proof } : {}) }, null);
       // Replicas/cohort aren't subscribers/children — they don't see the fan-out. Push the
       // new tombstone to the cohort EAGERLY (not on the next tick) so a co-hosting root or a
       // backup that promotes mid-window can't serve the killed body it already holds (the
@@ -651,9 +985,20 @@ export const wireHandlersMethods = {
       // eager replicate dispatch, so a kill→leave() publisher holds until the tombstone left.
       if (role.isRoot && this._rootReplicas) {
         const bridge = (typeof this.dht.bridgeId === 'function') ? this.dht.bridgeId() : null;
+        // Q2/C4: same gate as the publish path — a kill is a publish plus a side
+        // effect, so a tombstone whose every replication push failed must not
+        // report durable either.
         this._replicateRole(topicBig, role, bridge, this._now())
-          .catch(() => {})
-          .then(() => this._confirmPending(topicBig, target));
+          .catch((e) => ({ attempted: 1, verified: 0, failed: 1, unsupported: 0, violation: 0, reason: String(e?.message || e) }))
+          .then((rep) => {
+            if (rep.attempted > 0 && rep.verified === 0) {
+              this._log('warn', 'pubsub:kill-replicate-all-failed', {
+                topic: idHex(topicBig).slice(0, 12), attempted: rep.attempted, failed: rep.failed,
+              });
+              return;                 // leave pending → the killer keeps retrying
+            }
+            this._confirmPending(topicBig, target);
+          });
         this._deliverKillToApp(topicBig, target, killTs, seq);
         return;
       }
@@ -674,7 +1019,11 @@ export const wireHandlersMethods = {
     // competing root that the rest of the tree never consults.
     if (!this.axonRoles.has(topicBig)) {
       const closer = this._liveCloserRoot(topicBig, { requireReachable: false });
-      if (closer) { this._deferToRoot(topicBig, T.KILL, payload, closer); return 'consumed'; }
+      // _forwardToRoot, NOT _deferToRoot (v4.59.0) — same verdict-driven
+      // transition as PUB. A tombstone fed to a corpse is the kill-leak class
+      // all over again, with the extra sting that nothing ever retries a kill
+      // the app believes it already sent.
+      if (closer) { this._forwardToRoot(topicBig, T.KILL, payload, closer); return 'consumed'; }
     }
     const role = this.axonRoles.get(topicBig) || this._becomeRoot(topicBig, 'kill-terminal');
     if (!role) {
@@ -690,6 +1039,10 @@ export const wireHandlersMethods = {
     // (1) signature self-valid (B-4 analog for kills).
     const v = await verifyKill(kill);
     if (!v.ok) { this._log('warn', 'drop-bad-kill', { reason: v.reason }); return 'consumed'; }
+    // Phase 3 shadow: the ONLY kill-observe site — the signed kill is locally
+    // verifyKill()-verified here, and _taObserveKill re-binds its topicId to this
+    // topic before the shadow authority may act on it. No-op flag-off.
+    if (this._tombAuthority) this._taObserveKill(topicBig, kill, v.signerPubkey);
     // (2) authorship: if we hold the target, enforce signer===author NOW; if we
     // don't (kill races ahead of the publish, or we're a fresh root), accept
     // PROVISIONALLY — record the kill's signer and enforce when the target arrives
@@ -707,7 +1060,14 @@ export const wireHandlersMethods = {
     const ts = Math.max(role.lastTs + 1, this._now());
     role.lastTs = ts;
     const seq = ++role.seq;
-    this._applyKill(role, topicBig, { msgId: target, killTs: ts, signer: lc(kill.signerPubkey), seq });
+    // Pass the COMPLETE signed kill so _applyKill can retain + transport the proof
+    // (blocker b). The root re-stamps ts/seq for replay ordering; the signed kill
+    // keeps the author's own ts/seq for verifyKill() at every downstream node.
+    this._applyKill(role, topicBig, { msgId: target, killTs: ts, signer: lc(kill.signerPubkey), seq, kill });
+    // KILL completes on tombstone ingest, separately from PUB (v0.3 §1).
+    // _applyKill is tombstone-gated internally; re-acking a duplicate kill is
+    // the idempotent-success case, same as a duplicate publish.
+    this._sendIngestAck(meta?.fromId, role, target, 'kill', payload);
     return 'consumed';
   },
 
@@ -760,17 +1120,62 @@ export const wireHandlersMethods = {
     if (meta.targetId !== this.nodeId && idBig(payload.requesterId) !== this.nodeId) return;
     const p = this._pending.get(payload.corrId);
     if (!p) return 'consumed';
+    // REQUESTER GATE (Aster, council d17ece0b). A read is matched by the WHOLE
+    // pair (corrId, requesterId), not corrId alone. The destination OR-guard
+    // above admits any response routed to THIS node's targetId — so a certified
+    // PULLRESP routed here carrying our corrId but a FOREIGN requesterId would
+    // otherwise resolve, and delete, another party's pending read. The requester
+    // we recorded when issuing the PULL is this node; a response whose
+    // requesterId does not fold to it is not ours — ignore it (leave the pending
+    // intact for the real answer / its timeout). A missing/malformed requesterId
+    // (idBig throws) is likewise not a match; no conforming responder omits it.
+    let respReq;
+    try { respReq = idBig(payload.requesterId); } catch { return 'consumed'; }
+    if (respReq !== p.requesterId) return 'consumed';
     clearTimeout(p.timer);
     this._pending.delete(payload.corrId);
-    let parsed = null;
-    if (payload.json) { try { parsed = JSON.parse(payload.json); } catch { parsed = null; } }
+    // Q1 TAGGED OUTCOME. These three cases were all collapsed to null:
+    //   a reply carrying an envelope   -> { kind:'response', envelope }
+    //   a reply carrying nothing       -> { kind:'response', envelope:null }
+    //   a reply that will not parse    -> { kind:'invalid-response', reason }
+    // The middle one is a RESPONDER's negative — this node says it holds nothing.
+    // That is not proof the network holds nothing, it is not a timeout, and a caller
+    // must be able to tell all three apart. (Aster, council 2026-07-31.)
+    //
+    // WHAT COUNTS AS A NO-HIT (Aster's Q1 review, and he was right — my first cut
+    // was wrong). The ONE responder is `_onPull` at :779, and it ALWAYS sets the
+    // field: `json: hit ? hit.json : null`. So a genuine responder negative is
+    // `json === null`, exactly. An OMITTED json is not a polite way of saying
+    // "nothing" — no conforming responder emits it — and neither is the STRING
+    // 'null', which would parse to null and impersonate a no-hit. Accepting either
+    // as an empty response would re-introduce the exact confusion Q1 exists to
+    // remove, one layer further in: a malformed or foreign message read as an
+    // authoritative "I do not have it".
+    let outcome;
+    if (payload.json === null) {
+      outcome = { kind: 'response', envelope: null };            // the real no-hit
+    } else if (typeof payload.json !== 'string') {
+      outcome = { kind: 'invalid-response', reason: payload.json === undefined
+        ? 'PULLRESP omitted json (a conforming responder always sets it)'
+        : `PULLRESP json was ${typeof payload.json}, expected string or null` };
+    } else {
+      let parsed, bad = null;
+      try { parsed = JSON.parse(payload.json); }
+      catch (e) { bad = String((e && e.message) || e); }
+      if (bad !== null) outcome = { kind: 'invalid-response', reason: bad };
+      else if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        // Parsed fine and is still not an envelope. 'null' lands here rather than
+        // masquerading as a no-hit; so do bare scalars and arrays.
+        outcome = { kind: 'invalid-response', reason: 'PULLRESP json did not parse to an envelope object' };
+      } else outcome = { kind: 'response', envelope: parsed };
+    }
     // Resolve the FULL envelope (msgId/ts/signer/message …) — the same shape a
     // sub() callback delivers, and what peer.pull has always documented. The
     // previous `parsed.message ?? parsed` unwrap discarded the identity at the
     // last step (task #355): publish-confirm loops comparing env.msgId could
     // never succeed, and pull-then-act (kill/reply/verify by msgId) was
     // impossible even though the wire carried everything.
-    p.resolve(parsed ?? null);
+    p.resolve(outcome);
     return 'consumed';
   },
 

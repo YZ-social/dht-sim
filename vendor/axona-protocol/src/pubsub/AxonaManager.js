@@ -48,6 +48,8 @@
 import { extractS2Prefix }   from '../utils/hexid.js';
 import { RootClaim, roleNature } from './rootClaim.js';
 import { idHex, idBig, lc, isHexId } from './ids.js';
+import { dispatchVerdict, dispatchAttributedTo } from './dispatch.js';
+import { DurabilityLedger } from './durability.js';
 import { isRegionLockEnforced as _regionLock,
          T, RENEW_MS, RENEW_FAST_MS, DROP_MS, ROOT_REPLICAS, CACHE_MAX,
          CACHE_BYTES, MAX_DIRECT, MAX_VIA, VIA_HOP_BUDGET, BEACON_MS,
@@ -57,12 +59,17 @@ import { isRegionLockEnforced as _regionLock,
          FIRST_PUBLISH_RESEND_MS, METRICS_LEASE_MS, METRICS_PUB_MS,
          METRICS_COALESCE_MS,
          MAX_ROLES, ROLE_GRACE_MS, ROLE_ADMIT_PER_TICK,
-         HELLO_DEADLINE_MS, SATURATION_PRESSURE, ROOT_REPLICATE_FULL_MS } from './constants.js';
+         HELLO_DEADLINE_MS, SATURATION_PRESSURE, ROOT_REPLICATE_FULL_MS,
+         TICK_LAG_WINDOW, OBLIGATIONS } from './constants.js';
 import { topicStoreMethods }   from './topicStore.js';
 import { rootElectionMethods } from './rootElection.js';
 import { repairPlaneMethods }  from './repairPlane.js';
 import { wireHandlersMethods }  from './wireHandlers.js';
 import { syncEngineMethods }    from './syncEngine.js';
+import { writeFlightMethods }   from './writeFlight.js';
+import { tombstoneAuthWiringMethods, makeTombstoneAuthority } from './tombstoneAuthWiring.js';
+import buildBoundary1Registry from './boundary1Registry.js';
+import { shadowEnabled } from '../registry/index.js';
 
 // Constants, wire types, and the region-lock switch live in constants.js
 // (refactor Phase 2); the caps and region-lock functions are re-exported here
@@ -100,11 +107,45 @@ export class AxonaManager {
     roleGraceMs = ROLE_GRACE_MS,   // refuse role MANAGEMENT this long after join (still transports)
     roleAdmitPerTick = ROLE_ADMIT_PER_TICK,  // paced admission: new roles per refresh tick
     neverRoot = false,             // HARD refusal: a bridge is a bridge (transport + introduction only)
+    identity = null,               // node TRANSPORT identity {pubkey, sign} — signs D1 INGEST-ACK proofs
+    tombstoneAuth = false,         // REF-1.1 S2.0c Phase 3: DEFAULT-OFF shadow wiring of the tombstone authorization core (observe-only; no behavior change)
+    frameRegistry = false,         // REF-1.1 S2: DEFAULT-OFF Boundary-1 frame-contract registry (shadow-wraps the 19 routed handlers; observe-only; byte-identical flag-off)
     ..._legacy   // accepted-and-ignored clean-break tunables (pickRelayPeer, rootSetSize, …)
   } = {}) {
     if (!dht || typeof dht.routeMessage !== 'function' || typeof dht.getSelfId !== 'function'
         || typeof dht.onRoutedMessage !== 'function') {
       throw new TypeError('AxonaManager: dht with routeMessage + getSelfId + onRoutedMessage required');
+    }
+    // CAPABILITY IS DECLARED AT CONSTRUCTION — once, loudly, or not at all.
+    //
+    // v4.58.0 first made a missing declaration a per-send 'violation'. That is
+    // fail-closed but it is NOT the contract the council approved: an adapter
+    // that never declares would emit one ERROR per message forever and still be
+    // silently uncreditable — a log storm standing in for a build error. Aster,
+    // council 2026-08-01: "not the once-loud declared-capability contract we
+    // approved." A declaration missing at build time is a build failure.
+    //
+    // Turning this on required auditing all 82 test doubles, because the whole
+    // hazard is that blanket-declaring `true` to silence a throw would convert
+    // every send from a non-reporting double into a violation and mask the very
+    // regressions those tests exist to catch — the "make the doubles pass"
+    // mistake with the sign flipped. Audited per file by what routeMessage
+    // actually RESOLVES: two report verdicts (one returns {consumed:true}, one
+    // delegates to the real AxonaPeer.routeMessage) and declare true; every
+    // other returns a push-count or undefined and declares false, which is the
+    // honest answer and costs them nothing — a non-reporting adapter simply
+    // never credits a replica and never unpins a waypoint.
+    if (typeof dht.verdictsSupported !== 'boolean') {
+      throw new TypeError(
+        'AxonaManager: dht.verdictsSupported must be declared as a boolean.\n' +
+        '  true  — routeMessage resolves a routing verdict ({consumed:boolean,…}).\n' +
+        '  false — this adapter cannot report outcomes; it will never credit a\n' +
+        '          replica and never unpin a waypoint, and that is honest.\n' +
+        'Capability is DECLARED, never inferred from what the adapter happens to\n' +
+        'return — inferring it let test doubles set a production durability\n' +
+        'semantic. Do NOT declare true to silence this: if routeMessage does not\n' +
+        'resolve a verdict, true turns every send into a contract violation.\n' +
+        'See src/pubsub/dispatch.js.');
     }
     this.dht    = dht;
     this.nodeId = dht.getSelfId();          // bigint, 264-bit
@@ -115,6 +156,11 @@ export class AxonaManager {
     this._roleGraceMs      = roleGraceMs;
     this._roleAdmitPerTick = roleAdmitPerTick;
     this._neverRoot        = !!neverRoot;
+    // Node TRANSPORT identity {pubkey, sign} — the root signs D1 INGEST-ACK
+    // proofs with it (Write-Flight Ack Routing). Absent on sim/test doubles that
+    // never carry one; every signed path degrades to the 4.62.1 unsigned one-hop
+    // ack, so the write path is correct with or without it.
+    this._nodeIdentity     = (identity && typeof identity.sign === 'function' && identity.pubkey) ? identity : null;
     this._joinedAt         = now();     // grace runs from construction
     this._admitTickAt      = 0;         // window start for paced admission
     this._admitTickCount   = 0;         // roles admitted in the current window
@@ -124,9 +170,66 @@ export class AxonaManager {
     this._tickAt      = 0;   // _now() at the START of the last refresh tick
     this._tickLagMs   = 0;   // observed: (gap between tick starts) - refreshIntervalMs, floored at 0
     this._tickDurMs   = 0;   // observed: how long the last tick body took to run
-    this._tickLagMax  = 0;   // high-water lag since start (a single stall is the #332 signature)
     this._tickStalls  = 0;   // ticks whose lag exceeded HELLO_DEADLINE_MS — i.e. long enough to be kicked
+    // ROLLING lag window (v4.49.0). _tickLagMax is the max over the last
+    // TICK_LAG_WINDOW ticks — the value helloPressure and therefore admission
+    // read. It must be able to FALL; as an all-time mark it was a ratchet that
+    // permanently saturated any node after one browser-tab suspension.
+    this._tickLagRing = new Array(TICK_LAG_WINDOW).fill(0);
+    this._tickLagIdx  = 0;
+    this._tickLagMax  = 0;   // DERIVED: max(_tickLagRing) — recomputed each tick
+    // Kept for diagnosis only, never for control: the worst lag ever observed.
+    // Losing this on the window would have thrown away the evidence that made
+    // the latch findable in the first place.
+    this._tickLagPeak = 0;
     this._logSink = (typeof emitLog === 'function') ? emitLog : null;
+
+    // DURABILITY — the second state machine (Aster, council 2026-08-01). Kept in
+    // its own module with its own vocabulary because the defect it replaces was
+    // one flag carrying two facts: _deliverToApp confirmed the pending entry, so
+    // observing DELIVERY discharged DURABILITY. Nothing on the delivery path can
+    // reach 'verified' — there is deliberately no function here for it to call.
+    this._durability = new DurabilityLedger({ now });
+
+    // REF-1.1 S2.0c Phase 3 — DEFAULT-OFF shadow wiring of the accepted tombstone
+    // authorization core (src/pubsub/tombstoneAuth.js). When the flag is set, ONE
+    // per-node TombstoneAuthority is built and the _ta* observers (mixed in below)
+    // feed it the inbound body/kill/evict stream at the existing funnels WITHOUT
+    // changing any behavior — the legacy tombstone path stays authoritative. Flag
+    // OFF (default): this is null, every observer is a guarded no-op, and the node
+    // is byte-identical to today. Enforcement (making this the source of truth) is
+    // a SEPARATE gate that also needs the signed exp from the envelope flag day.
+    this._tombAuthority = tombstoneAuth ? makeTombstoneAuthority() : null;
+
+    // REF-1.1 E2.1: the Boundary-1 registry is now the SOLE registration door for
+    // the 19 routed handlers — _registerHandlers() calls registerFrame() at each
+    // site (no raw this.dht.onRoutedMessage). The DISPATCH registry `_frameDoor` is
+    // therefore built UNCONDITIONALLY: the door needs its wiring map, its wrap, and
+    // its registry-owned mintLive certifier. OBSERVATION is still gated by the
+    // runtime shadow flag (shadowEnabled, DEFAULT-OFF): flag-off the wrap runs each
+    // handler verbatim, so the migrated path is byte-identical to the pre-E2.1 raw
+    // registration. Its sink feeds _ingestFrameTrace, a guarded no-op unless the M1
+    // canary is armed. Must be constructed BEFORE _registerHandlers().
+    this._frameDoor = buildBoundary1Registry({
+      enabled: shadowEnabled,
+      sink: (rec) => this._ingestFrameTrace(rec),
+    });
+    // REF-1.1 S2/M1 CANARY INSTRUMENTATION — unchanged, still gated by the per-
+    // manager `frameRegistry` flag (DEFAULT-OFF). `_frameRegistry` is the canary
+    // HANDLE the inspectors (frameRegistryShadow/Summary) read: the SAME registry
+    // object as the door when armed, null when not — so built===false / rows===0
+    // flag-off exactly as the accepted S2/S3/M1 smokes assert. The dispatch door is
+    // a separate always-present concern the canary surface does not report. The
+    // trace ring + MONOTONIC lifetime counters exist only when armed (a fault that
+    // scrolls out of the 1024-entry ring is still counted; `dropped` = evictions);
+    // _ingestFrameTrace guards on their absence, so a stray observation while
+    // unarmed is a safe no-op.
+    this._frameTraces = frameRegistry ? [] : null;
+    this._frameLifetime = frameRegistry
+      ? { total: 0, faults: 0, unobserved: 0, dropped: 0,
+          faultKinds: Object.create(null), verdicts: Object.create(null), byType: Object.create(null) }
+      : null;
+    this._frameRegistry = frameRegistry ? this._frameDoor : null;
 
     this.renewMs     = renewMs;          // adaptive ceiling
     this.renewFastMs = renewFastMs;      // adaptive floor
@@ -184,10 +287,41 @@ export class AxonaManager {
   _send(type, payload) {
     const via = Array.isArray(payload.via) ? payload.via : [];
     const target = via.length ? idBig(via[0]) : idBig(payload.topicId);
-    this.dht.routeMessage(target, type, payload, { fromId: idHex(this.nodeId), viaHopBudget: VIA_HOP_BUDGET });
+    // Delegates to _route rather than calling the transport directly, so it
+    // inherits the never-rejects containment documented there. This was a second,
+    // separate crash surface: _send had its own copy of the routeMessage call and
+    // so was untouched when _route was hardened. Two copies of an emission path
+    // means two places to remember, and I had already forgotten one.
+    return this._route(target, type, payload);
   }
+  // RETURNS the routeMessage result (Q2/C4), as a promise that NEVER REJECTS.
+  //
+  // Production routing reports failure by RESOLVING {consumed:false, exhausted:true}
+  // — it does not throw — so a caller that discards the promise cannot distinguish
+  // delivery from silence, and no try/catch around it ever will. That is why this
+  // returns a value at all.
+  //
+  // THE NON-REJECTING PART IS LOAD-BEARING AND WAS LEARNED THE HARD WAY. Before
+  // v4.57.0 this returned undefined, so the 13 fire-and-forget callers had nothing
+  // to drop. Making it return the promise turned EVERY ONE of them into a potential
+  // process kill, because Node >=15 terminates on an unhandled rejection. Aster
+  // spotted two of those sites; the regression he asked for (fence_syncpush_rejection)
+  // then failed with SEVEN unhandled rejections, proving the exposure was the whole
+  // call graph rather than those two.
+  //
+  // Patching 13 call sites would leave the 14th to be written next month. So the
+  // containment is here, once: a transport error becomes a FAILURE VERDICT of the
+  // same shape routing already uses, which dispatchVerdict() classifies as 'failed'.
+  // A caller that ignores the result is safe; a caller that reads it gets the truth.
   _route(targetBig, type, payload) {
-    this.dht.routeMessage(targetBig, type, payload, { fromId: idHex(this.nodeId), viaHopBudget: VIA_HOP_BUDGET });
+    const fail = (e) => ({ consumed: false, error: String((e && e.message) || e), transportError: true });
+    try {
+      return Promise.resolve(
+        this.dht.routeMessage(targetBig, type, payload, { fromId: idHex(this.nodeId), viaHopBudget: VIA_HOP_BUDGET }),
+      ).catch(fail);
+    } catch (e) {
+      return Promise.resolve(fail(e));   // synchronous throw out of routeMessage
+    }
   }
   // Pop a dead waypoint and keep routing. When the via chain empties, _send
   // falls through to the TOPIC ID — that is deliberate and load-bearing: it is
@@ -300,24 +434,107 @@ export class AxonaManager {
    */
   inspectCapacity() {
     const now = this._now();
-    let worstAgeMs = 0, overdue = 0, unserviced = 0;
+    // D0 / M4: pressure is the MAX over per-obligation (age / that obligation's
+    // OWN deadline), so 1.0 means "this obligation has failed" for every row and
+    // the rows are comparable. Previously one DROP_MS denominator served every
+    // nature, which made 1.0 meaningful for renewal and arbitrary for the rest.
+    let worstRatio = 0, worstAgeMs = 0, worstKind = null, overdue = 0, unserviced = 0;
+    let obligations = 0;                             // the DENOMINATOR: rows evaluated, not roles held
+    // `since` is the stamp when the obligation has been discharged at least once,
+    // and the role's BIRTH when it never has. A MISSING stamp (null) is innocent only while
+    // the role is younger than its own deadline: past that, it has never been
+    // serviced at all, which is the worst case rather than an exempt one. Treating
+    // "never discharged" as unconditionally not-debt was a false negative of the
+    // same shape as the bug D0 exists to fix — caught by smoke_role_admission.mjs,
+    // which builds 96 never-serviced roles and rightly expects saturation.
+    //
+    // C2: null is the SENTINEL; 0 is a REAL instant. `pubsubPeerDied` writes
+    // lastRenewSent = null to force an immediate re-emit, and that must not be
+    // readable as a time — `at || bornAt` could not tell "renew now" from
+    // "unknown", so a subscription whose first re-emit never landed stayed
+    // permanently exempt from pressure, the same false negative D0 exists to
+    // remove. Presence is asked explicitly, of each field separately, and no
+    // timestamp is tested for truthiness anywhere in this path.
+    //
+    // Zero WAS the sentinel until v4.52.0, and `t > 0` made an injected clock
+    // starting at 0 permanently unknown — production Date.now never yields 0,
+    // but `now` is a public injection point and simulations routinely start at 0,
+    // so the metric was blind under exactly the harness we use to test it.
+    // (Aster, 8fbb1a9 P2.)
+    const stamped = (t) => typeof t === 'number' && Number.isFinite(t);
+    const consider = (kind, at, deadline, bornAt = 0) => {
+      obligations++;                                 // counted even when unmeasurable — see overdueFrac
+      // Presence is a SEPARATE question from value. Collapsing them into `!since`
+      // reintroduced the same defect one layer down: a legitimate stamp of 0 read
+      // as absence, so a clock starting at 0 was exempt from pressure forever.
+      const hasAt = stamped(at), hasBorn = stamped(bornAt);
+      if (!hasAt && !hasBorn) { unserviced++; return; }   // never stamped AND no birth time — unknown
+      const since = hasAt ? at : bornAt;
+      const age = now - since;
+      const ratio = age / deadline;
+      if (!stamped(at)) unserviced++;                // still counted as never-discharged, but no longer exempt
+      if (ratio >= 1) overdue++;                     // past ITS OWN deadline, not a shared one
+      if (ratio > worstRatio) { worstRatio = ratio; worstAgeMs = age; worstKind = kind; }
+    };
     for (const role of this.axonRoles.values()) {
-      const at = role.sync?.lastServicedAt || 0;
-      if (!at) { unserviced++; continue; }          // never serviced yet (just born) — not yet debt
-      const age = now - at;
-      if (age > worstAgeMs) worstAgeMs = age;
-      if (age > ROOT_REPLICATE_FULL_MS) overdue++;  // past its own service interval
+      // A role with no sync ledger is UNMEASURABLE, not absent. Skipping it here
+      // would hide it from `unserviced` and leave the 8x MAX_ROLES backstop —
+      // which exists precisely for telemetry-dead roles — with nothing to report.
+      if (!role.sync) { unserviced++; continue; }
+      const nature = roleNature(role);               // 'root' | 'backup' | 'child' — derived, never stored
+      if (nature === 'root') {
+        // Only a root that HOLDS something owes a full push; _replicateRole returns
+        // early on an empty cache, so an empty root is not in debt for never pushing.
+        if (role.cache.length || role.tombstones.size) {
+          consider('ROOT', role.sync.lastFullAt, OBLIGATIONS.ROOT.deadline, role.createdAt);
+        }
+      } else {
+        const kind = nature === 'backup' ? 'BACKUP' : 'CHILD';
+        consider(kind, role.sync.lastRenewAt, OBLIGATIONS[kind].deadline, role.createdAt);
+      }
+      // HOLDER is an ORTHOGONAL flag, not a primary nature: a hosted root owes
+      // both. Same stamp, same deadline, so it cannot double-count into a worse
+      // ratio than the renewal row already produced.
+      if (this._hostedTopics?.has(role.topicId)) {
+        consider('HOLDER', role.sync.lastRenewAt, OBLIGATIONS.HOLDER.deadline, role.createdAt);
+      }
+    }
+    // APP_SUB — the coverage hole. mySubscriptions is a separate map, so before
+    // D0 the node's own subscriptions were unmeasurable rather than mismeasured.
+    //
+    // C9: a LOCALLY ROOTED subscription owes nothing here, and charging it was an
+    // availability regression introduced by D0 itself. refreshTick renews app
+    // subscriptions by walking mySubscriptions, but skips the topic outright at
+    // `if (role && role.isRoot) continue` (repairPlane.js) — correctly, since a
+    // root has no upstream to renew toward and serves itself from local cache.
+    // sub.lastRenewSent is therefore written once at subscribe and never again,
+    // so measuring it against DROP_MS made an ordinary node — one that subscribed
+    // to a topic and then became its root, which is topology-random and common on
+    // a small mesh — falsely saturate ~110s later and start refusing pushed roles.
+    // The topic is not unmeasured by skipping it: the ROOT row above already
+    // carries this node's real obligation for it.
+    for (const [topicBig, sub] of this.mySubscriptions) {
+      if (this.axonRoles.get(topicBig)?.isRoot) continue;
+      consider('APP_SUB', sub.lastRenewSent, OBLIGATIONS.APP_SUB.deadline, sub.createdAt);
     }
     const roles = this.axonRoles.size;
     return {
       roles,
-      overdue,                                       // roles I am demonstrably failing to keep up with
-      overdueFrac: roles ? +(overdue / roles).toFixed(3) : 0,
-      unserviced,                                    // born but not yet reached by a tick
+      subscriptions: this.mySubscriptions.size,      // now measured, not just held
+      overdue,                                       // obligations past their OWN deadline
+      obligations,                                   // rows evaluated this pass
+      // C7: the denominator is obligations EVALUATED, not roles held. Dividing by
+      // roles let a hosted root contribute two rows against one role (>1.0), and
+      // made app subscriptions on a role-less node divide by zero.
+      overdueFrac: obligations ? +(overdue / obligations).toFixed(3) : 0,
+      unserviced,                                    // born but not yet discharged once
       worstAgeMs,
-      servicePressure: +(worstAgeMs / this.dropMs).toFixed(3),
+      worstObligation: worstKind,                    // WHICH obligation is worst — the old number could not say
+      servicePressure: +worstRatio.toFixed(3),
       tickLagMs: this._tickLagMs,
-      tickLagMaxMs: this._tickLagMax,
+      tickLagMaxMs: this._tickLagMax,      // ROLLING max over the last TICK_LAG_WINDOW ticks (v4.49.0)
+      tickLagWindow: this._tickLagRing.length,
+      tickLagPeakMs: this._tickLagPeak,    // all-time worst — DIAGNOSIS ONLY, drives nothing
       tickDurMs: this._tickDurMs,
       tickStalls: this._tickStalls,
       helloPressure: +(this._tickLagMax / HELLO_DEADLINE_MS).toFixed(3),
@@ -465,9 +682,129 @@ export class AxonaManager {
   // Defer a stranded terminal message to the beaconed root: demote any spurious
   // root claim I hold (and re-home under the true root so my subtree keeps
   // receiving), then forward the payload via-pinned to it.
+  //
+  // REMAINING CALLER: the SUB path only. Its gate (_liveCloserRoot with
+  // requireReachable defaulting true) admits only channel-verified neighbours
+  // or fresh verified records, so the demote here is evidence-based at defer
+  // time. PUB and KILL moved to _forwardToRoot (v4.59.0) — their looser gate
+  // means the named root may be a guess, and a guess must not move state.
   _deferToRoot(topicBig, type, payload, rootHex) {
     this._rootClaim.demote(topicBig, rootHex, 'defer-terminal');
     this._send(type, { ...payload, via: [rootHex] });
+  }
+
+  // Forward a one-shot message (PUB/KILL) to the beaconed root and let the
+  // VERDICT drive state — the C+D unified transition (council 2026-08-02, seq
+  // 146/147, + the atNode amendment). Until v4.59.0 this path was _deferToRoot,
+  // which demoted our role and re-pinned _upstream to the named root BEFORE the
+  // send: one publish handed to a dead relay both vanished ("consumed") and
+  // converted a working read path into a starved one (fence_pub_defers_to_corpse
+  // §1/§2/§4; the 2026-08-02 prod write outage). The contract now:
+  //
+  //   consumed AND attributed to the named root → the one piece of evidence
+  //       that justifies demote + re-home (the multi-hop live root that made a
+  //       strict-reachability gate wrong). Demote does the re-home. Attribution
+  //       is decided by dispatchAttributedTo — the shared predicate, not a
+  //       call-site comparison (Aster, council seq 149): atNode arrives as a
+  //       bigint from production adapters and hex from doubles, and a padding
+  //       or type mismatch must never masquerade as "different node".
+  //   consumed at ANOTHER node / atNode absent → NO mutation. The message is
+  //       safe with whoever took it, and OUR state is coherent on its own
+  //       terms: we keep whatever role we hold and keep serving it. We do NOT
+  //       presume a DELIVER will arrive to re-home us (seq 149 — a
+  //       non-subscribing root may never receive one); if a genuinely closer
+  //       live root exists, its own beacons demote us at receipt, which is the
+  //       standing evidence-of-life path. Pinning toward a root that never
+  //       touched the message would re-create the corpse-pin this replaces.
+  //   failed → invalidate ONLY the matching beacon record (same root, same
+  //       `at` stamp — a late verdict must not erase a newer beacon). No
+  //       demote, no pin. The invalidation lands sub-second, inside the
+  //       publisher's early-resend pump window, so the SAME message's retries
+  //       arrive at a node that will now root and ingest properly. "First
+  //       lost, second saved" is the floor, not the expectation.
+  //   unsupported / violation → NO state transition (violation logs loudly).
+  //       Silence is never evidence, in either direction — the same fail-closed
+  //       rule as _unpinIfWaypointDead and the replica ledger.
+  // D0 (Write-Flight Ack Routing): pick the topic-closest ADJACENT peer that has
+  // attested `write-flight-ack-v1` capability (R13), so an API-origin publisher
+  // can delegate flight ownership to a 4.62.2-capable relay instead of owning a
+  // carried flight itself. Returns the peer's hex id, or null → the D0
+  // observation-only fallback (R14).
+  //
+  // Capability is read from the transport adapter's per-channel flag
+  // (`dht.isCapable(peerHex)`), which the transport sets ONLY from a verified
+  // CAP_ATTEST (capAttest.js). FAIL-CLOSED: an adapter with no `isCapable`
+  // (sim doubles, pre-4.62.2 transports) yields null for everyone, so nothing is
+  // treated as capable and the publisher takes the fallback — never a false
+  // delegate. A capability-attested bridge is a valid delegate: it is a
+  // known-capable ingress (R13/R14), so it is NOT excluded here.
+  pickCapableAdjacent(topicBig) {
+    if (typeof this.dht?.isCapable !== 'function' || typeof this.dht?.neighbors !== 'function') return null;
+    let best = null, bestD = null;
+    for (const n of (this.dht.neighbors() || [])) {
+      let nb; try { nb = idBig(n); } catch { continue; }
+      if (nb === this.nodeId) continue;
+      const hex = lc(idHex(nb));
+      let capable = false;
+      try { capable = !!this.dht.isCapable(hex); } catch { capable = false; }
+      if (!capable) continue;
+      const d = nb ^ topicBig;
+      if (bestD === null || d < bestD) { bestD = d; best = nb; }
+    }
+    return best === null ? null : lc(idHex(best));
+  }
+
+  _forwardToRoot(topicBig, type, payload, rootHex) {
+    const declares = this.dht?.verdictsSupported;
+    const rec = this._rootBeacons.get(topicBig);           // capture identity + at BEFORE the send
+    // E3 (v0.3): a WRITE completes only on its INGEST-ack. The flight opens at
+    // dispatch; every routing verdict below stays hop-local evidence — consumed
+    // (anywhere, including at the named root) no longer ends the write's story.
+    // D1 (Write-Flight Ack Routing): opening the flight returns its ack-routing
+    // tuple {ackTo, flightNonce, attemptId}; stamp it on the forwarded write so
+    // the root can route a SIGNED ingest proof straight back to the flight owner
+    // (ackTo) across any number of hops — the deaf-flight fix. If the payload
+    // already carries an attemptId (D2 mints it at the API boundary), it is
+    // threaded through _flightOpen so retries/promotions stay one attempt.
+    let ackRoute = null;
+    if (type === T.PUB || type === T.KILL) {
+      ackRoute = this._flightOpen(topicBig, rootHex, type, payload, payload?.attemptId ?? null);
+    }
+    const outPayload = ackRoute
+      ? { ...payload, via: [rootHex], ackTo: ackRoute.ackTo, flightNonce: ackRoute.flightNonce, attemptId: ackRoute.attemptId }
+      : { ...payload, via: [rootHex] };
+    const sent = this._send(type, outPayload);
+    Promise.resolve(sent).then((r) => {
+      const v = dispatchVerdict(r, declares);
+      if (v === 'violation') {
+        this._log('error', 'pubsub:dispatch-contract-violation', {
+          topic: idHex(topicBig).slice(0, 12), peer: String(rootHex).slice(0, 12),
+          detail: `adapter declares verdictsSupported but returned no verdict on ${type}`,
+        });
+        return;
+      }
+      if (v === 'consumed') {
+        if (!dispatchAttributedTo(r, rootHex)) return;     // consumed elsewhere / unattributed → fail closed
+        this._rootClaim.demote(topicBig, rootHex, 'defer-confirmed');
+        return;
+      }
+      if (v !== 'failed') return;                          // unsupported → no evidence → nothing moves
+      // STRICT generation guard (v4.59.2, both reviewers on fb77b70): deletion
+      // requires the CAPTURED record — same root, same `at` — with no fallback.
+      // The first draft allowed `!rec ||`, meaning a send with nothing captured
+      // could delete whatever matching-root beacon existed by verdict time —
+      // exactly the newer-generation erasure the guard exists to prevent, one
+      // conditional away. No captured record = no deletion authority: this
+      // verdict describes a probe of a pointer we never held.
+      const cur = this._rootBeacons.get(topicBig);
+      if (rec && cur && cur.root === rec.root && cur.at === rec.at) {
+        this._rootBeacons.delete(topicBig);
+        this._log('info', 'pubsub:beacon-invalidated', {
+          topic: idHex(topicBig).slice(0, 12), was: String(rootHex).slice(0, 12),
+          detail: `${type} forwarded toward the beaconed root reached nobody — pointer dropped`,
+        });
+      }
+    }).catch(() => {});   // _route cannot reject (v4.57.1); belt and braces
   }
 
   _becomeRoot(topicBig, why = 'terminal') {
@@ -515,25 +852,119 @@ export class AxonaManager {
     const pinned = this._upstream.get(topicBig) || [];
     let via = pinned;
     if (!via.length) { const hint = this._rootHint_(topicBig); via = hint ? [hint] : []; }
-    this._emitSubscribe(topicBig, via.slice(0, MAX_VIA));
+    const sent = this._emitSubscribe(topicBig, via.slice(0, MAX_VIA));
+    // Only a PINNED renewal can teach us the pin is dead. An unpinned SUB routes
+    // toward the topic id itself, and its failure says the mesh is unreachable,
+    // not that a waypoint is stale — there is nothing to drop.
+    if (pinned.length) this._unpinIfWaypointDead(topicBig, pinned[0], sent);
+  }
+
+  // A subscriber must not renew forever toward a corpse.
+  //
+  // _upstream is the pin — the relay we renew toward, written by _onDeliver from
+  // the DELIVER `from`. Until v4.58.0 exactly two things dropped it:
+  // pubsubPeerDied (fires only for a peer we hold a CHANNEL to) and role
+  // teardown. A relay reached through ROUTING can die with neither firing: no
+  // channel closes, so pubsubPeerDied is silent, and _emitSubscribe stamps the
+  // renewal obligation discharged the moment the send is on the wire. The pin
+  // then outlives its target and nothing in the process can learn otherwise —
+  // worse, `attached` stays true, so the adaptive interval BACKS OFF toward
+  // RENEW_MS while reaching nobody. Only a reload recovered it, because a fresh
+  // peer starts with an empty _upstream (David, 2026-08-01, wedged axona.chat
+  // window; fence_subscribe_unpin).
+  //
+  // The assumption this corrects is stated in pubsubPeerDied's own header: "the
+  // next renewal routed toward it is popped at the live terminal ('reroute') and
+  // re-seats at the true root". True only when the via chain REACHES a live
+  // node. When the pinned relay is simply gone the SUB exhausts in the mesh, no
+  // terminal is reached, and nobody pops anything.
+  //
+  // Recovery is deliberately IDENTICAL to pubsubPeerDied's — drop the pin, snap
+  // the interval to the floor, null the stamp — so remote death heals exactly
+  // the way local death already does, on a path that has been in production
+  // since 2026-07-13 rather than a second one invented here.
+  //
+  // This is only expressible now: _route discarded routeMessage's promise until
+  // v4.57.0 and did not classify it until v4.58.0. Before this week a failed
+  // renewal returned undefined and there was nothing to check.
+  _unpinIfWaypointDead(topicBig, deadHex, sent) {
+    const declares = this.dht?.verdictsSupported;
+    Promise.resolve(sent).then((r) => {
+      const v = dispatchVerdict(r, declares);
+      if (v === 'violation') {
+        this._log('error', 'pubsub:dispatch-contract-violation', {
+          topic: idHex(topicBig).slice(0, 12), peer: deadHex.slice(0, 12),
+          detail: 'adapter declares verdictsSupported but returned no verdict on SUB',
+        });
+      }
+      // ONLY an explicit routing verdict of failure unpins. 'unsupported' and
+      // 'violation' mean "no evidence", and unpinning on no evidence would
+      // re-home every healthy subscriber on every non-reporting adapter on its
+      // very first renewal. See dispatch.js on why that is the same fail-closed
+      // rule that makes 'consumed' the only thing which credits a replica.
+      if (v !== 'failed') return;
+      const up = this._upstream.get(topicBig);
+      if (!up || up[0] !== deadHex) return;   // a DELIVER re-homed us mid-flight
+      this._upstream.delete(topicBig);
+      const s = this.mySubscriptions.get(topicBig);
+      if (s) { s.interval = this.renewFastMs; s.lastRenewSent = null; }  // null = 'renew now', NOT a time (C2)
+      // THE ROLE STAMP TOO. _emitSubscribe stamps role.sync.lastRenewAt for every
+      // role, and OBLIGATIONS reads that stamp for CHILD, BACKUP and HOLDER — so
+      // resetting only the app subscription left every RELAY role reading
+      // DISCHARGED after a renewal that reached nobody. That is this file's own
+      // stated defect, left standing in the other half of the same funnel because
+      // I scoped it out as "keep it minimal" (Aster, council seq 110). Same
+      // sentinel, same meaning: null is 'renew now', never a time (C2).
+      const role = this.axonRoles.get(topicBig);
+      if (role?.sync) role.sync.lastRenewAt = null;
+      this._log('info', 'pubsub:upstream-unpinned', {
+        topic: idHex(topicBig).slice(0, 12), was: deadHex.slice(0, 12),
+        detail: 'renewal did not reach its pinned waypoint — re-homing unpinned',
+      });
+    }).catch(() => {});   // _route cannot reject (v4.57.1); belt and braces
   }
   _emitSubscribe(topicBig, via) {
     const role = this.axonRoles.get(topicBig);
     const sub  = this.mySubscriptions.get(topicBig);
     const latest = !!(sub && sub.replayLatest);   // since:'latest' — newest entry rides this DELIVER, regardless of age
-    this._send(T.SUB, {
+    // The dispatch outcome is RETURNED, not discarded: _sendSubscribe is the only
+    // caller that knows whether the via it handed us came from the _upstream pin,
+    // so it is the only one that can act on a failure. See _unpinIfWaypointDead.
+    const sent = this._send(T.SUB, {
       topicId: idHex(topicBig), via, subscriberId: idHex(this.nodeId),
       since: this._sinceFor(topicBig),
       hw: role ? this._highWater(role) : 0,   // a cache-bearing relay advertises its history (§6)
       lw: role ? this._lowWater(role) : 0,    // …and its OLDEST stamp, so a root missing the pre-transition half pulls it
       latest,
     });
+    // D0 / M4 COMPLETION STAMP. The renewal obligation (CHILD / BACKUP / HOLDER /
+    // APP_SUB in OBLIGATIONS) is discharged HERE — after the SUB is on the wire,
+    // not when the tick decided to try. Placed in _emitSubscribe rather than at
+    // the three refreshTick call sites because this is the single funnel they all
+    // pass through, so a future caller cannot forget to stamp.
+    const nowAt = this._now();
+    if (role) role.sync.lastRenewAt = nowAt;
+    if (sub)  sub.lastRenewSent     = nowAt;
     // One-shot: 'latest' delivers the current value once at subscribe, not on
     // every renewal — clear the flag after this first emit.
     if (latest) sub.replayLatest = false;
+    return sent;
   }
 
   // ── public API (contract surface) ────────────────────────────────────
+
+  // Outstanding durability obligations: messages this node stamped whose cohort
+  // dispatch has not yet been verified. leave() drains on THIS, never on local
+  // delivery — seeing your own message says the root has it, not that anyone
+  // else does.
+  durabilityPending() { return this._durability.pending(); }
+
+  // FINISHED and not durable: the attempt budget ran out, or there was no cohort
+  // at all (a singleton root holding the only copy). Terminal, so leave() does
+  // not wait on it — but an operator should see it, because it is the honest
+  // count of history this node alone is carrying.
+  durabilityUndurable() { return this._durability.undurable(); }
+
   // Route the UN-stamped publish toward the topic's root; root stamps it. Sent
   // SYNCHRONOUSLY and immediately: via the warm true-root hint if we have one (so
   // publisher + subscribers converge on the same root), else greedy ([]) toward the
@@ -571,6 +1002,11 @@ export class AxonaManager {
     // cache entry regardless of age (the ts-floor can't express "newest"). Sticky
     // across renewals (re-delivery is deduped); cleared by a later non-latest sub.
     this.mySubscriptions.set(topicId, {
+      // C1: createdAt is the ACTIVATION time and is never rewritten. lastRenewSent
+      // is reset to null by pubsubPeerDied to force an immediate re-emit, so it
+      // cannot double as the birth time — without this, a subscription whose first
+      // re-emit after upstream death never lands reads as pressure 0 forever.
+      createdAt: this._now(),
       since, lastRenewSent: this._now(), interval: this.renewFastMs,
       replayLatest: !!opts.replayLatest,
     });
@@ -688,9 +1124,17 @@ export class AxonaManager {
     // holds it. The hint seeds the walk at the topic-closest node it can serve. v4.10.1.
     const hint = this._rootHint_(topicId);
     return new Promise((resolve) => {
-      const timer = setTimeout(() => { this._pending.delete(corrId); resolve(null); }, timeoutMs);
+      // Q1: a read must say WHICH kind of nothing it got. Resolving null here made
+      // a timeout indistinguishable from a responder that holds nothing and from an
+      // unparseable reply — three facts, one value — and every consumer above then
+      // manufactured a confident negative from it. See test/fence_pull_outcome.mjs.
+      const timer = setTimeout(() => { this._pending.delete(corrId); resolve({ kind: 'timeout', timeoutMs }); }, timeoutMs);
       if (typeof timer.unref === 'function') timer.unref();
-      this._pending.set(corrId, { resolve, timer });
+      // Store the requester alongside corrId: the PULL/PULLRESP pair is (corrId,
+      // requesterId), not corrId alone. _onPullResp requires the response's
+      // requesterId to fold to this so a locally-routed response carrying a
+      // FOREIGN requesterId cannot settle our read (Aster, council d17ece0b).
+      this._pending.set(corrId, { resolve, timer, requesterId: this.nodeId });
       this._send(T.PULL, { topicId: idHex(topicId), via: hint ? [hint] : [], corrId, postHash: postHash || null, requesterId: idHex(this.nodeId) });
     });
   }
@@ -731,6 +1175,7 @@ export class AxonaManager {
 
   resetState() {
     this.axonRoles.clear();
+    if (this._tombAuthority) this._taReset();   // Phase 3 shadow: no role holds a body now — rebuild (no-op flag-off)
     this.mySubscriptions.clear();
     this._hostedTopics.clear();
     this._backupTopics.clear();
@@ -764,6 +1209,8 @@ Object.assign(
   repairPlaneMethods,    // the tick scheduler, retries, replication, departure
   wireHandlersMethods,   // routed handlers + axon-tree mechanics
   syncEngineMethods,     // Phase 8: the ONE repair/durability sync operation + policy table
+  writeFlightMethods,    // E3 (Dead-Root Eviction v0.3): ingest-ack write completion, receipt probe, evict + retry-promote
+  tombstoneAuthWiringMethods,  // REF-1.1 S2.0c Phase 3: DEFAULT-OFF shadow observers (no-op unless the tombstoneAuth flag is set)
 );
 
 export default AxonaManager;

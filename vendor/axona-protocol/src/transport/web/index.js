@@ -39,6 +39,18 @@ import { CompositeTransport } from './composite.js';
 import { isHexId, toHex, fromHex } from '../../utils/hexid.js';
 import { TransportError, ErrorCodes, UpgradeRequiredError } from '../../errors.js';
 import { KERNEL_VERSION, WIRE_VERSION } from '../handshake.js';
+// REF-1.1 S4a: Boundary-2 (transport hello/auth/session + CAP_ATTEST) frame-contract
+// registry, SHADOW MODE, DEFAULT-OFF. Built only under the `frameRegistry` flag;
+// observe() is a pure side-channel that never touches the notification handlers.
+import { makeBoundary2Observers, buildBoundary2Registry } from '../boundary2Registry.js';
+// REF-1.1 E2.2: the canonical registration DOOR + the runtime shadow flag. The 3
+// Boundary-2 auth sites (hello, hello-ack, cap-attest) register through registerFrame
+// instead of the raw X.onNotification primitive; observation stays default-off.
+import { registerFrame, shadowEnabled } from '../../registry/index.js';
+// REF-1.1 S4b: Boundary-3 (WebRTC signalling + mesh-auth) frame-contract registry,
+// SHADOW MODE, DEFAULT-OFF — same flag and no-op-when-off discipline as Boundary-2.
+import { makeBoundary3Observers, buildBoundary3Registry } from '../boundary3Registry.js';
+import { makeBoundary4Observers } from '../boundary4Registry.js';
 import {
   buildAuthHello, verifyAuthHello, cbvFromNonces, AUTH_PROTO,
 } from '../handshake-auth.js';
@@ -161,6 +173,19 @@ export function webTransport({
   // sink never intercepts it).  Design:
   // axona-docs/implementation/Peer-Relayed-Signaling-v0.1.md.
   meshRelay = true,
+  // TURN credential refresh timings (kernel 4.60.x). Literal defaults; the
+  // refresh code aliases these below. Overridable for tests and ops tuning.
+  turnRefreshSafetyMs         = 5 * 60 * 1000,   // fire this long before the credential's expiry
+  turnRefreshReplyMs          = 20 * 1000,       // per-attempt wait for the bridge's `turn` reply
+  turnRefreshMaxTries         = 3,               // in-band attempts before graceful deferral
+  turnRefreshSendErrBackoffMs = 5 * 1000,        // re-arm this long after a send error
+  // REF-1.1 S4a — Boundary-2 frame-contract registry, SHADOW MODE, DEFAULT-OFF.
+  // When true, the transport builds a Boundary-2 registry and OBSERVES a certified
+  // snapshot beside the bridge auth (hello/hello-ack), session (welcome), and
+  // CAP_ATTEST notification handlers — never mutating, suppressing, or reordering
+  // them. With the runtime shadow flag off (the default) observe() is a no-op, so
+  // flag-off is byte-identical. Dispatch is NOT migrated.
+  frameRegistry = false,
 } = {}) {
   if (typeof bridgeUrl !== 'string' || !/^wss?:\/\//.test(bridgeUrl)) {
     throw new TransportError(ErrorCodes.TRANSPORT_NOT_STARTED,
@@ -398,6 +423,40 @@ export function webTransport({
     log,
   });
 
+  // REF-1.1 S4a — Boundary-2 observers (SHADOW, DEFAULT-OFF). Built once, only
+  // under the `frameRegistry` flag. `b2observe(wire, connId, body)` is a pure
+  // side-channel called BEFORE each unchanged notification handler: with the
+  // runtime shadow flag off it returns immediately (byte-identical), and it never
+  // receives or alters the handler. `connId` is the ACTUAL channel/session scope
+  // at each site (the bridge connId / mesh id); observation is stateless, so the
+  // fixed BRIDGE_CONN_ID sentinel reused across reconnects carries no state.
+  // F2: bounded trace ring (Boundary-1 parity) — drop-oldest at 1024, never grows
+  // unbounded across reconnect/session traffic for the transport lifetime.
+  const B2_TRACE_CAP = 1024;
+  const b2traces = [];
+  const b2 = frameRegistry ? makeBoundary2Observers({ sink: (r) => { if (b2traces.length >= B2_TRACE_CAP) b2traces.shift(); b2traces.push(r); } }) : null;
+  const b2observe = b2 ? (wire, connId, body) => b2.observe(wire, connId, body) : () => {};
+
+  // REF-1.1 S4b increment 2 — Boundary-3 observers (SHADOW, DEFAULT-OFF), same
+  // discipline as Boundary-2: a pure side-channel called BEFORE each unchanged
+  // signalling / mesh-auth handler, never receiving or altering it. Flag-off it is a
+  // no-op (byte-identical). `scope` is the ACTUAL channel identity the observation
+  // ran under — the signalling peer `from` for a signal, the meshId for mesh auth —
+  // stamped onto each trace and, where the row projects it, certified under its
+  // declared meta key. Bounded trace ring (drop-oldest 1024, Boundary-2 parity).
+  const B3_TRACE_CAP = 1024;
+  const b3traces = [];
+  const b3 = frameRegistry ? makeBoundary3Observers({ sink: (r) => { if (b3traces.length >= B3_TRACE_CAP) b3traces.shift(); b3traces.push(r); } }) : null;
+  const b3observe = b3 ? (wire, scope, body) => b3.observe(wire, scope, body) : () => {};
+  // S4c increment 2: Boundary-4 (bridge administration). Only the THREE kernel-ingested
+  // frames are wired — version-gate / pong / turn in signaling.dispatch below (the four
+  // peer-SENT frames are ingested by the bridge server, out of kernel scope). B4 rows
+  // carry no meta leg, so scope is null (session-wide admin, no per-frame subject).
+  const B4_TRACE_CAP = 1024;
+  const b4traces = [];
+  const b4 = frameRegistry ? makeBoundary4Observers({ sink: (r) => { if (b4traces.length >= B4_TRACE_CAP) b4traces.shift(); b4traces.push(r); } }) : null;
+  const b4observe = b4 ? (wire, scope, body) => b4.observe(wire, scope, body) : () => {};
+
   // Signaling-frame dispatcher.  Bridge frames carry payloads addressed
   // to the local node's MeshManager so it can drive the WebRTC layer
   // (peer discovery + SDP/ICE relay).  The mapping from bridge frame
@@ -410,6 +469,7 @@ export function webTransport({
       const t = frame.type;
       switch (t) {
         case 'welcome':
+          b2observe('welcome', frame.connId, frame);   // S4a shadow (no-op unless flag on)
           // Bridge greeting (myConnId, server version, optional TURN
           // credentials).  composite.start has already called
           // mesh.setMyId(localNodeIdHex); here we just thread the TURN
@@ -420,6 +480,11 @@ export function webTransport({
             try { mesh.setTurnConfig(frame.turn ?? null); }
             catch (err) { log('turn-config-failed', { err: err.message }); }
           }
+          // Re-dial before this credential's TTL lapses so a long-lived or
+          // graduated node never strands itself with an expired TURN credential
+          // (2026-08-06 prod: expired creds → relay allocations refused →
+          // replicate-all-failed). No-op if the welcome carried no TURN config.
+          scheduleTurnRefresh(frame.turn ?? null);
           // Capture welcome for observability (consumers read it via
           // transport.bridgeInfo + onWelcome) — connId, the bridge's
           // package version, and its kernel version for the UI's
@@ -443,17 +508,28 @@ export function webTransport({
             turn:    !!frame.turn,
           });
           return;
+        case 'turn':
+          b4observe('turn', null, frame);   // S4c shadow (no-op unless flag on)
+          // In-band credential refresh: the bridge's reply to a turn-refresh
+          // request (see requestTurnRefreshInBand). Install the fresh credential
+          // and reschedule — no socket or mesh change. Distinct from `welcome`
+          // so it never re-runs welcome's connId/nonce/handshake bookkeeping.
+          applyTurnFrame(frame.turn ?? null);
+          return;
         case 'peer-list':
+          b3observe('peer-list', null, frame);   // S4b shadow (no-op unless flag on)
           if (typeof mesh.onPeerList === 'function') {
             return mesh.onPeerList(Array.isArray(frame.peers) ? frame.peers : []);
           }
           break;
         case 'peer-joined':
+          b3observe('peer-joined', frame.peerId, frame);   // S4b shadow
           if (typeof mesh.onPeerJoined === 'function' && typeof frame.peerId === 'string') {
             return mesh.onPeerJoined(frame.peerId);
           }
           break;
         case 'peer-left': {
+          b3observe('peer-left', frame.peerId, frame);   // S4b shadow
           // Departure hint (#364-B): a bridge that knows the departed
           // connection's authenticated nodeId includes it — purge the node's
           // pub/sub ghosts via the standard peer-died path. Guarded inside
@@ -471,16 +547,19 @@ export function webTransport({
           break;
         }
         case 'signal':
+          b3observe('signal', frame.from, frame.payload);   // S4b shadow — body is frame.payload (kind/sdp|candidate); scope = signalling peer `from`
           if (typeof mesh.onSignal === 'function' && typeof frame.from === 'string') {
             return mesh.onSignal(frame.from, frame.payload);
           }
           break;
         case 'pong':
+          b4observe('pong', null, frame);   // S4c shadow
           bridge._emitPingTraffic('recv');
           // RTT + liveness: the bridge echoes the ping's `t` timestamp.
           recordPong(frame.t);
           return;
         case 'version-gate':
+          b4observe('version-gate', null, frame);   // S4c shadow
           // Version-gate announcement — no action needed.
           return;
       }
@@ -510,6 +589,21 @@ export function webTransport({
   const composite = new CompositeTransport({ localNodeId: localNodeIdBig, log });
   composite.addSubtransport(bridge);   // bridge is the single-peer fast-path
   composite.addSubtransport(webrtc);   // WebRTC for everyone else
+
+  // REF-1.1 E2.2 — the Boundary-2 registration DOOR (transport hello / hello-ack /
+  // cap-attest). Built UNCONDITIONALLY (mirrors AxonaManager._frameDoor) so
+  // registerFrame always has its registry on the default path — gating it on the
+  // observe flag would make registerFrame throw on construct. Registration + dispatch
+  // only: OBSERVATION stays with the b2observe side-channel below (the B2 handler arg
+  // order is (connId, body), which the wrap's payload model does not fit — S4a chose
+  // observeShape for exactly that reason), and the registry carries no mintLive, so the
+  // wrap is an unbranded no-op flag-on and byte-identical dispatch flag-off.
+  composite._b2door = buildBoundary2Registry({ enabled: shadowEnabled });
+  // REF-1.1 E2.3: the Boundary-3 door for the two webrtc mesh-base-auth notifications
+  // (hello, hello-sig). Built unconditionally, same discipline as _b2door — the b3observe
+  // side-channel keeps the (wire, fromConnId) scoping the wrap can't see; flag-off the
+  // wrap is byte-identical. (mesh:signal, the routed B3 site, holds its own door on AxonaPeer.)
+  composite._b3door = buildBoundary3Registry({ enabled: shadowEnabled });
 
   // ── Bridge handshake state (auto-handshake path) ─────────────────
   //
@@ -562,6 +656,8 @@ export function webTransport({
   let stopped          = false;  // composite.stop() sets this — suppresses reconnect
   let graduated        = false;  // released by the bridge while meshed — no reconnect
   let graduationTimer  = null;   // watchdog: re-dial if the mesh thins post-graduation
+  let turnRefreshTimer = null;   // fires before the TURN credential's TTL lapses
+  let turnRefreshReplyTimer = null;  // awaits the bridge's in-band `turn` reply
   const stateHandlers   = new Set();
   const welcomeHandlers = new Set();
 
@@ -647,6 +743,134 @@ export function webTransport({
     if (graduationTimer != null) { clearInterval(graduationTimer); graduationTimer = null; }
   }
 
+  // ── TURN credential refresh ─────────────────────────────────────────
+  //
+  // The bridge mints TURN credentials with a fixed TTL (2h today) and hands
+  // them over ONLY in the welcome frame; the sole refresh path is a fresh
+  // welcome, which only follows a (re)connect. A meshed node that graduates off
+  // the bridge, or holds one socket longer than the TTL, therefore ends up
+  // carrying an EXPIRED credential: every new relay allocation it attempts —
+  // cohort replication, a fresh relayed edge — is refused by the TURN server,
+  // and nothing re-dials the bridge to refresh it, because the reconnect trigger
+  // is meshed-peer-count, not credential age. Prod 2026-08-06: coturn's log was
+  // ~100% `check_stun_auth: Cannot find credentials`, the usernames' expiry
+  // prefixes hours in the past, and roots logged pubsub:replicate-all-failed.
+  // So drive a refresh from the credential's OWN expiry, independent of mesh
+  // health.
+  //
+  // Expiry is read from the REST username's leading `<expiry-unix-seconds>:`
+  // field — what coturn actually validates against. Parsing is STRICT: the
+  // leading field must be all digits (a partial-numeric prefix like `12ab` is
+  // rejected, not silently truncated — council review, Aster). A credential
+  // with no parseable expiry is left alone (no worse than before this fix).
+  // Timings come from the constructor opts (literal defaults there); aliased to
+  // the names the refresh code below uses. Overridable for tests / ops tuning.
+  // The refresh fires SAFETY_MS before the credential lapses, so several short
+  // reply windows still have runway.
+  const TURN_REFRESH_SAFETY_MS          = turnRefreshSafetyMs;
+  const TURN_REFRESH_REPLY_MS           = turnRefreshReplyMs;
+  const TURN_REFRESH_MAX_TRIES          = turnRefreshMaxTries;
+  const TURN_REFRESH_SENDERR_BACKOFF_MS = turnRefreshSendErrBackoffMs;
+  function turnExpiryMs(turn) {
+    const user = turn && typeof turn.username === 'string' ? turn.username : null;
+    if (!user) return 0;
+    const head = user.split(':')[0];
+    if (!/^\d+$/.test(head)) return 0;              // strict: leading field must be all digits
+    const secs = Number(head);
+    return Number.isSafeInteger(secs) && secs > 0 ? secs * 1000 : 0;
+  }
+  function scheduleTurnRefresh(turn) {
+    stopTurnRefresh();
+    const expiryMs = turnExpiryMs(turn);
+    if (!expiryMs) return;                          // no parseable expiry — leave as-is
+    const fireIn = Math.max(1000, expiryMs - Date.now() - TURN_REFRESH_SAFETY_MS);
+    turnRefreshTimer = setTimeout(() => {
+      turnRefreshTimer = null;
+      if (stopped) return;
+      log('turn-cred-refresh', { graduated, socketOpen });
+      if (socketOpen) {
+        // Held open: refresh IN-BAND over the live socket. A bare close would
+        // reject in-flight bridge requests (bridge.handleConnClosed) and drop
+        // bootstrap connectivity before a new credential is secured — the
+        // single-point-of-failure the council flagged (Orion, Aster). Instead
+        // ask the bridge to re-mint; it answers with a `turn` frame that the
+        // dispatch handler applies, touching neither the socket nor the mesh.
+        requestTurnRefreshInBand();
+      } else if (reconnect && autoHandshake) {
+        // Graduated / disconnected: no live socket to preserve and no in-flight
+        // bridge work to lose, so a re-dial is the safe path (same one a
+        // mesh-thin graduation re-dial takes). This is the case that heals the
+        // backbone relays behind the prod flood.
+        graduated = false;
+        stopGraduationWatch();
+        setBridgeState('connecting');
+        openSocket();
+      }
+    }, fireIn);
+    if (typeof turnRefreshTimer?.unref === 'function') turnRefreshTimer.unref();
+  }
+  // Ask the bridge for a fresh credential without disturbing the connection.
+  // The bridge replies `{type:'turn', turn}` → applyTurnFrame(). It NEVER closes
+  // the socket: a close drops in-flight bridge RPCs (council review, Aster), so
+  // the recovery for a non-answering bridge is a bounded RETRY, then graceful
+  // deferral — not a teardown. A bridge that predates this RPC simply isn't
+  // refreshed on this path; its next natural reconnect/graduation re-welcome
+  // installs a fresh credential. `attempt` is 0-based; the timer is shared with
+  // the send-error re-arm (mutually exclusive per attempt) and cleared by
+  // applyTurnFrame on success and by stopTurnRefresh on teardown.
+  function requestTurnRefreshInBand(attempt = 0) {
+    // Send-error re-arm: a transient wedged-socket send must not silently give
+    // up (council review, Aster) — schedule another attempt with backoff.
+    try {
+      sendToBridge({ type: 'turn-refresh' });
+    } catch (err) {
+      log('turn-refresh-send-failed', { err: err.message, attempt });
+      armTurnRefreshTimer(() => requestTurnRefreshInBand(attempt + 1),
+        TURN_REFRESH_SENDERR_BACKOFF_MS, attempt);
+      return;
+    }
+    // Await the bridge's `turn` reply; on silence, retry in-band up to the cap,
+    // then defer. No socket is ever torn down for a refresh.
+    armTurnRefreshTimer(() => {
+      if (attempt + 1 < TURN_REFRESH_MAX_TRIES) {
+        log('turn-refresh-no-reply-retry', { next: attempt + 1 });
+        requestTurnRefreshInBand(attempt + 1);
+      } else {
+        log('turn-refresh-unanswered-deferred', { tries: attempt + 1 });
+      }
+    }, TURN_REFRESH_REPLY_MS, attempt);
+  }
+  // Shared timer arm for the refresh RPC: bounded by MAX_TRIES, cleared on any
+  // success/teardown. `cb` runs only if still alive and the socket is open.
+  function armTurnRefreshTimer(cb, delayMs, attempt) {
+    if (turnRefreshReplyTimer != null) clearTimeout(turnRefreshReplyTimer);
+    if (attempt + 1 >= TURN_REFRESH_MAX_TRIES && delayMs === TURN_REFRESH_SENDERR_BACKOFF_MS) {
+      log('turn-refresh-send-giveup', { tries: attempt + 1 });   // no more send retries
+      return;
+    }
+    turnRefreshReplyTimer = setTimeout(() => {
+      turnRefreshReplyTimer = null;
+      if (stopped || !socketOpen) return;
+      cb();
+    }, delayMs);
+    if (typeof turnRefreshReplyTimer?.unref === 'function') turnRefreshReplyTimer.unref();
+  }
+  // Apply an in-band `turn` frame (the bridge's reply to turn-refresh): install
+  // the fresh credential and schedule the next refresh. No socket/mesh change.
+  function applyTurnFrame(turn) {
+    if (turnRefreshReplyTimer != null) { clearTimeout(turnRefreshReplyTimer); turnRefreshReplyTimer = null; }
+    if (turn && typeof mesh.setTurnConfig === 'function') {
+      try { mesh.setTurnConfig(turn); }
+      catch (err) { log('turn-config-failed', { err: err.message }); }
+    }
+    scheduleTurnRefresh(turn ?? null);
+    log('turn-refreshed-inband', { turn: !!turn });
+  }
+  function stopTurnRefresh() {
+    if (turnRefreshTimer != null) { clearTimeout(turnRefreshTimer); turnRefreshTimer = null; }
+    if (turnRefreshReplyTimer != null) { clearTimeout(turnRefreshReplyTimer); turnRefreshReplyTimer = null; }
+  }
+
   function scheduleReconnect() {
     if (stopped || !reconnect || !autoHandshake) return;
     if (reconnectTimer != null) return;
@@ -727,8 +951,12 @@ export function webTransport({
       setBridgeState('open');
       bridgeReadyResolve(nodeIdBig);
     };
-    bridge.onNotification('hello',     (c, b) => onBridgeAuthHello(c, b, 'hello'));
-    bridge.onNotification('hello-ack', (c, b) => onBridgeAuthHello(c, b, 'hello-ack'));
+    // F3: certify the per-SESSION connId (the welcome's frame.connId, captured on
+    // bridgeInfo), NOT the fixed BRIDGE_CONN_ID sentinel that BridgeTransport hands
+    // these handlers as `c`. welcome precedes hello per connection, and a reconnect
+    // installs a fresh welcome connId, so the two sessions' auth legs never conflate.
+    registerFrame(bridge, 'hello',     (c, b) => { b2observe('hello',     bridgeInfo?.connId ?? c, b); return onBridgeAuthHello(c, b, 'hello');     }, { registry: composite._b2door });
+    registerFrame(bridge, 'hello-ack', (c, b) => { b2observe('hello-ack', bridgeInfo?.connId ?? c, b); return onBridgeAuthHello(c, b, 'hello-ack'); }, { registry: composite._b2door });
 
     socketEvents.close.add(() => {
       if (bridgeNodeIdBig === null) {
@@ -751,6 +979,9 @@ export function webTransport({
       send:         (meshId, frame)     => mesh.send(meshId, frame),
       bindPeer:     (nodeIdHex, meshId, channelKey) => webrtc.bindPeer(fromHex(nodeIdHex), meshId, channelKey),
       fingerprints: (meshId)            => mesh.fingerprintsFor(meshId),
+      // A verified CAP_ATTEST flips the peer write-flight-ack capable;
+      // log it so the capable fraction of the mesh is observable.
+      onCapable:    (nodeIdHex, meshId) => log('mesh-cap-attested', { nodeId: nodeIdHex, meshId }),
       log,
     });
 
@@ -767,8 +998,26 @@ export function webTransport({
     if (typeof mesh.onPeerLost === 'function') {
       mesh.onPeerLost((meshId) => meshAuth.onChannelLost(meshId));
     }
-    webrtc.onNotification('hello',     (fromConnId, body) => meshAuth.onHello(fromConnId, body));
-    webrtc.onNotification('hello-sig', (fromConnId, body) => meshAuth.onHelloSig(fromConnId, body));
+    registerFrame(webrtc, 'hello',     (fromConnId, body) => { b3observe('hello',     fromConnId, body); return meshAuth.onHello(fromConnId, body); },    { registry: composite._b3door });
+    registerFrame(webrtc, 'hello-sig', (fromConnId, body) => { b3observe('hello-sig', fromConnId, body); return meshAuth.onHelloSig(fromConnId, body); }, { registry: composite._b3door });
+    // CAP_ATTEST arrives POST-bind, so webrtc dispatches the sender's
+    // BigInt nodeId here — not the pre-bind meshId string the hello
+    // handlers get.  Translate back to the meshId MeshAuth keys on.
+    registerFrame(webrtc, 'cap-attest', (from, body) => {
+      const meshId = (typeof from === 'string') ? from : webrtc.meshIdFor(from);
+      b2observe('cap-attest', meshId, body);   // S4a shadow (no-op unless flag on)
+      if (meshId) meshAuth.onCapAttest(meshId, body);
+    }, { registry: composite._b2door });
+
+    // Surface per-node write-flight-ack capability up to the AxonaPeer dht
+    // adapter (dht.isCapable) so D0 delegation can pick a 4.62.2-capable
+    // adjacent peer: hex → BigInt → meshId → MeshAuth.isCapable.  An
+    // unknown/unmapped peer is fail-closed (never reported capable).
+    composite.isCapable = (nodeHex) => {
+      const big = fromHex(nodeHex);
+      const meshId = (big === null || big === undefined) ? null : webrtc.meshIdFor(big);
+      return meshId ? meshAuth.isCapable(meshId) : false;
+    };
   }
 
   // Wire start() so calling composite.start() opens the socket and
@@ -820,6 +1069,7 @@ export function webTransport({
     if (reconnectTimer != null) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     stopStaleChecker();
     stopGraduationWatch();
+    stopTurnRefresh();
     stopBridgePingLoop();
     await origStop();
     if (socket) {
@@ -899,6 +1149,12 @@ export function webTransport({
   //   `mesh:signal` reached us as its target; feed it into the SAME mesh
   //   signaling state machine the bridge path drives (offerer/responder/ICE).
   composite.deliverMeshSignal = (fromHex, payload) => {
+    // S4b increment 2 (Vega): the RELAYED (bridgeless) signalling ingress. This is the
+    // SAME mesh:signal wire as the bridge-path signaling.dispatch case, reaching us via
+    // a relayed terminal delivery instead of the bridge socket, so it observes too —
+    // otherwise the flag-on shadow is blind to bridgeless signalling. scope = the
+    // relayed sender's nodeId hex (the bridge path's `from` analogue).
+    b3observe('signal', fromHex, payload);   // S4b shadow (no-op unless flag on)
     if (typeof mesh.onSignal !== 'function') return;
     try { return mesh.onSignal(fromHex, payload); }
     catch (err) { log('mesh-signal-deliver-threw', { from: fromHex, err: err.message }); }
@@ -947,6 +1203,12 @@ export function webTransport({
       bridgeMsgFraction: (m + b) ? +(b / (m + b)).toFixed(3) : 0,
     };
   };
+  // REF-1.1 S4a/S4b — test-only introspection of the Boundary-2 and Boundary-3
+  // shadows (null unless frameRegistry:true). Mirrors AxonaManager.frameRegistryShadow();
+  // never read on the live path — a consumer inspects `traces` to assert flag-on
+  // observation and flag-off zero-trace identity. Boundary-2 keeps the top-level shape;
+  // Boundary-3 (S4b increment 2) is nested under `.b3`.
+  composite.frameRegistryShadow = () => (b2 ? { registry: b2.reg, traces: b2traces, b3: b3 ? { registry: b3.reg, traces: b3traces } : null, b4: b4 ? { registry: b4.reg, traces: b4traces } : null } : null);
   Object.defineProperty(composite, 'socket',          { get() { return socket; } });
   Object.defineProperty(composite, 'bridgeReady',     { get() { return bridgeReady; } });
   // Display surface: hex (derived from BigInt).  External UI / log
@@ -989,6 +1251,14 @@ export function webTransport({
     try { sendToBridge({ type: 'peer-list-request' }); return true; }
     catch { return false; }
   };
+  /**
+   * Count of LIVE authenticated WebRTC mesh channels (the bridge WebSocket is
+   * NOT counted — it is signaling, not a mesh peer). This is the honest mesh-
+   * reachability signal: unlike node.synaptome.size it holds no un-evicted stale
+   * entries, so connect()'s zero-mesh gate (GH #46) and runtime liveness checks
+   * key on this rather than the routing table's count. 0 ⇒ bridge-only.
+   */
+  composite.meshBoundCount = () => meshBoundCount();
   /** Subscribe to bridge-state transitions.  cb(state, detail). Returns unsub. */
   composite.onBridgeState = (cb) => {
     if (typeof cb !== 'function') throw new TypeError('onBridgeState: cb must be a function');

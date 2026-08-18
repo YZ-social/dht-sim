@@ -171,10 +171,105 @@ export const ROLE_ADMIT_PER_TICK = 4;
 // have dressed arithmetic up as telemetry.
 export const HELLO_DEADLINE_MS = 5_000;   // bridge client-hello budget (mirror of the bridge's own)
 
+// ── The tick-lag observation WINDOW (v4.49.0) ──────────────────────────────
+// 4.47.0 recorded tick lag as an ALL-TIME high-water mark, which made
+// helloPressure a ratchet: it could rise and could never fall. One 60s browser
+// tab suspension — what every phone does on screen lock — put helloPressure at
+// 11.0 (18x the 0.6 threshold) and left it there. Measured: still saturated
+// after 2,050 healthy ticks (~2.8h). A saturated node refuses HANDOFF, so every
+// backgrounded browser peer silently stopped being somewhere a departing node's
+// last copy of a topic's history could land.
+//
+// The replacement is a rolling maximum over the last N ticks. A WINDOW, not a
+// decay constant, deliberately: a decay factor has no natural unit here (why
+// 0.95 and not 0.9?) and its recovery time is an emergent property you have to
+// derive. A tick count states the recovery bound directly — "a stall stops
+// counting against you N ticks after it stops happening" — which is the
+// property the fence asserts and the property an operator needs to reason about.
+//
+// 12 ticks x the 5s refresh interval = ~60s of wall clock. (The window is in
+// TICKS, so its wall-clock length follows refreshIntervalMs; every consumer in
+// the fleet uses the 5s default — verified, no overrides in kernel, relay or
+// bridge.) Long enough that a genuinely struggling node stays
+// saturated across its bad patch; short enough that a recovered one is trusted
+// again within a minute. The window only advances when a tick RUNS: a frozen
+// node writes no samples and keeps its old reading, which is correct — we have
+// no evidence of health from a node that isn't running.
+export const TICK_LAG_WINDOW = 12;        // ticks retained for the rolling lag maximum
+
 // Declare saturated at this fraction of a deadline. 0.6 leaves room to shed
 // pressure before anything is actually lost — a node that waits until 1.0 has
 // already dropped history.
 export const SATURATION_PRESSURE = 0.6;
+
+// ── SERVICE OBLIGATIONS (D0 / M4, 2026-07-30) ───────────────────────────
+// What the refresh tick OWES each role, where that debt is discharged, and by
+// when. Normative and machine-readable so it can be fenced the way SYNC_POLICIES
+// is — a rule that is not a test drifts.
+//
+// WHY THIS TABLE EXISTS. Before D0, capacity was measured from a single
+// `lastServicedAt` stamped on EVERY role at the TOP of refreshTick, before any
+// work. The stamp therefore meant "a tick began while this role existed", not
+// "this role's obligation was discharged", and servicePressure was measured
+// against one denominator (DROP_MS) for every nature. Three consequences, all
+// measured (test/d0_probe.mjs, commit 89c0798):
+//   1. DOMINATED — reaching SATURATION_PRESSURE needed a 108s tick gap while
+//      helloPressure needed 8s, so servicePressure could never be the deciding
+//      signal in the only scenario it could detect.
+//   2. FALSE NEGATIVE under the exact cause its own docstring named. 640 roles /
+//      40 ticks: worst un-refreshed full push 95_000ms against its own 60_000ms
+//      deadline, while servicePressure read 0, overdue read 0, saturated() was
+//      false and admitPushedRole() still returned true.
+//   3. COVERAGE — mySubscriptions was outside the walk entirely, so the node's
+//      own app subscriptions were unmeasurable rather than mismeasured.
+//
+// THE FIX IS THE COMPLETION POINT, NOT THE FIELD. Each obligation is stamped
+// where the work actually finishes. Two of these were already in the right place
+// and simply were not being read: `sync.lastFullAt` is written inside the
+// `if (full)` branch of _replicateRole, AFTER the pushes.
+//
+// DEADLINES ARE PER-OBLIGATION, and that is the second half of the fix. One
+// DROP_MS denominator made 1.0 mean "failed" for renewal and something arbitrary
+// for everything else. Now age/deadline == 1.0 means THIS obligation has failed,
+// for every row, so the max across rows is comparable.
+//
+// ROOT carries replication only, deliberately. Beacons (BEACON_MS) and root
+// self-verify are both throttled/batched, and a missed one costs convergence
+// LATENCY; a missed replication costs DURABILITY. Measuring latency work as debt
+// would re-introduce the false-positive risk this table exists to remove. That is
+// a judgement, not a measurement — flagged as such to the council 2026-07-30.
+export const OBLIGATIONS = Object.freeze({
+  ROOT: Object.freeze({
+    what:     'replicate full state to the K-closest cohort',
+    stamp:    'lastFullAt',              // role.sync.lastFullAt
+    deadline: ROOT_REPLICATE_FULL_MS,    // 60s — the root's own re-arm interval
+    why:      'a missed full push costs DURABILITY: the cohort holds a stale copy',
+  }),
+  CHILD: Object.freeze({
+    what:     'renew the subscribe toward our upstream',
+    stamp:    'lastRenewAt',             // role.sync.lastRenewAt
+    deadline: DROP_MS,                   // 180s — when the upstream evicts us
+    why:      'past DROP_MS the upstream has dropped us and delivery stops',
+  }),
+  BACKUP: Object.freeze({
+    what:     'renew the subscribe that keeps us election-eligible',
+    stamp:    'lastRenewAt',
+    deadline: DROP_MS,
+    why:      'a lapsed backup cannot win the election its principal is relying on',
+  }),
+  HOLDER: Object.freeze({
+    what:     're-announce the hosted topic and advertise our high-water',
+    stamp:    'lastRenewAt',
+    deadline: DROP_MS,
+    why:      'a silent holder is invisible to a freshly promoted root, so its cache strands',
+  }),
+  APP_SUB: Object.freeze({
+    what:     'renew the local application subscription',
+    stamp:    'lastRenewSent',           // mySubscriptions entry, NOT a role
+    deadline: DROP_MS,
+    why:      'the node stops receiving its own subscriptions; invisible before D0',
+  }),
+});
 export const DELEGATE_BATCH  = 8;               // subscribers handed off when promoting a child
 export const MAX_VIA         = 8;               // ordered-waypoint list length cap (wire sanity)
 export const VIA_HOP_BUDGET  = 8;               // hops per via leg (enforced kernel-side, Phase 2+)
@@ -256,6 +351,18 @@ export const T = {
   REPLAYUP: 'pubsub:replayup',  // a relay's stamped cache delta, routed UP to a behind parent
   HANDOFF:  'pubsub:handoff',   // graceful-leave: a departing root pushes its cache to its heir
   KILL:     'pubsub:kill',      // retract a message (thin; TODO Phase 4)
+  RECEIPTPROBE: 'pubsub:receiptprobe', // flight -> suspect root: prove the correlated receipt for
+                                //   {topicId, msgId, op} or state the inability. Reachability is not
+                                //   an answer (Aster seq 427) — only INGESTACK or RECEIPTNACK is.
+  RECEIPTNACK: 'pubsub:receiptnack', // root -> flight: explicit not-held. Honest once (earns one direct
+                                //   retry of the write); a nack after the retry convicts.
+  INGESTACK: 'pubsub:ingestack', // root -> forwarder: correlated proof of INGEST (Dead-Root Eviction v0.3).
+                                //   {topicId, msgId, epoch, op:'pub'|'kill'} emitted AFTER topic-store
+                                //   ingest, never at routing. One hop back to meta.fromId — the
+                                //   FORWARDER, deliberately not the origin publisher (no publish-ack:
+                                //   acking the publisher would disclose its location). The E3 write
+                                //   flight treats this as the ONLY terminal success; a routing
+                                //   'consumed' verdict is hop-local evidence and never completes a write.
   UNPUB:    'pubsub:unpub',     // RESERVED — removed v4.3.0 (no handler/sender); wire string kept so legacy frames are ignored, not misrouted
   TOUCH:    'pubsub:touch',     // extend TTL (thin; TODO Phase 4)
   PULL:     'pubsub:pull',      // on-demand fetch request — routed toward topic id

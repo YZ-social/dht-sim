@@ -31,8 +31,12 @@ export N=${N:-300} SUBS=${SUBS:-200} PUBS=1 CHURN_PCT=${CHURN_PCT:-20} CHURN_STE
 SEEDS="${SEEDS:-1 2 3 4 5 6 7 8}"
 REPS="${REPS:-5}"
 
+RUN_TIMEOUT="${RUN_TIMEOUT:-600}"   # per-run wall-clock ceiling (s). A healthy
+                                    # N=300 run is ~60s; a wedge (e.g. laptop
+                                    # sleep mid-run) is killed and recorded as
+                                    # CENSORED (exit 137) rather than hanging.
 cd "$SIM" || exit 1
-mkdir -p "$OUTDIR"
+mkdir -p "$OUTDIR" "$OUTDIR/transcripts"
 : > "$SUMMARY"
 restore(){ git -C "$KERN" checkout HEAD -- $FILES 2>/dev/null; }
 trap restore EXIT
@@ -48,11 +52,19 @@ echo "toggled files:              $FILES"
 echo "params: N=$N SUBS=$SUBS CHURN=$CHURN_PCT%/$CHURN_STEP% ROUNDS=$ROUNDS K=$K  REPS=$REPS  seeds=$SEEDS"
 echo
 
-# one arm/rep; echoes TSV: "<exit>\t<planFp>\t<execFp>\t<warm>\t<cold>\t<rec>"
+# one arm/rep; echoes TSV: "<exit>\t<planFp>\t<execFp>\t<warm>\t<cold>\t<rec>".
+# Runs under a wall-clock watchdog: a run exceeding RUN_TIMEOUT is SIGKILLed and
+# reported with exit 137 (CENSORED), so an interruption is recorded, never
+# silently absent. Full stdout is teed to a per-run transcript for audit.
 one(){
-  local seed="$1" label="$2" out
-  out="$(SEED="$seed" LABEL="$label" OUT="$OUTDIR/seed$seed-$label.jsonl" node harness/pubsub-churn-ab.mjs 2>&1)"
-  local ec=$?
+  local seed="$1" label="$2" rep="${3:-0}" tlog
+  tlog="$OUTDIR/transcripts/seed${seed}-${label}-rep${rep}.log"
+  SEED="$seed" LABEL="$label" OUT="$OUTDIR/seed$seed-$label.jsonl" node harness/pubsub-churn-ab.mjs >"$tlog" 2>&1 &
+  local pid=$!
+  ( sleep "$RUN_TIMEOUT"; kill -9 "$pid" 2>/dev/null ) & local wd=$!
+  wait "$pid" 2>/dev/null; local ec=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  local out; out="$(cat "$tlog")"
   local fp warm
   fp="$(printf '%s\n' "$out" | grep -m1 '^FINGERPRINT')"
   warm="$(printf '%s\n' "$out" | grep -m1 '^SUMMARY')"
@@ -68,9 +80,9 @@ one(){
 for s in $SEEDS; do
   for rep in $(seq 1 "$REPS"); do
     restore
-    row="$(one "$s" off)"; printf "%s\t%s\toff\t%s\n" "$s" "$rep" "$row" >> "$SUMMARY"
+    row="$(one "$s" off "$rep")"; printf "%s\t%s\toff\t%s\n" "$s" "$rep" "$row" >> "$SUMMARY"
     git -C "$KERN" checkout "$ON_REF" -- $FILES
-    row="$(one "$s" on)";  printf "%s\t%s\ton\t%s\n"  "$s" "$rep" "$row" >> "$SUMMARY"
+    row="$(one "$s" on "$rep")";  printf "%s\t%s\ton\t%s\n"  "$s" "$rep" "$row" >> "$SUMMARY"
     restore
     echo "  seed $s rep $rep done"
   done
@@ -97,6 +109,7 @@ for(const s of seeds){
   const rs=rows.filter(r=>r.seed===s);
   const fps=new Set(rs.map(r=>r.planFp)), efps=new Set(rs.map(r=>r.execFp));
   const badExit=rs.some(r=>r.exit!==0);
+  const censored=rs.filter(r=>r.exit===137).length;   // SIGKILL by the watchdog
   const paired = fps.size===1 && efps.size===1 && !badExit && !!([...fps][0]) && [...fps][0]!=="" && !!([...efps][0]) && [...efps][0]!=="";
   const offR=rs.filter(r=>r.arm==="off").sort((a,b)=>a.rep-b.rep);
   const onR =rs.filter(r=>r.arm==="on").sort((a,b)=>a.rep-b.rep);
@@ -106,7 +119,7 @@ for(const s of seeds){
   const fp=`${[...fps][0]}/${[...efps][0]}`;
   const pc=paired?"OK":"FAIL";
   console.log(`${s} | ${fp} | ${nrep} | ${mean(wOff).toFixed(2)} / ${mean(wOn).toFixed(2)} / ${mean(wD).toFixed(2)}±${sd(wD).toFixed(2)} | ${mean(rOff).toFixed(2)} / ${mean(rOn).toFixed(2)} / ${mean(rD).toFixed(2)}±${sd(rD).toFixed(2)} | ${pc}`);
-  if(!paired){console.log(`  !! seed ${s} EXCLUDED: planFp{${[...fps]}} execFp{${[...efps]}} badExit=${badExit}`); continue;}
+  if(!paired){console.log(`  !! seed ${s} EXCLUDED: planFp{${[...fps]}} execFp{${[...efps]}} badExit=${badExit} censored(exit137)=${censored}`); continue;}
   allWarmDeltas.push(...wD); allRecDeltas.push(...rD);
   perSeedWarmMean.push(mean(wD)); perSeedRecMean.push(mean(rD));
 }

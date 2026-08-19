@@ -18,6 +18,7 @@ import {
   configureKeyspace, getKeyspace,
 } from '@axona/protocol';
 import { buildXorRoutingTable } from '@axona/protocol/utils/geo.js';
+import { withSeededCrypto } from './seeded-scenario.mjs';
 
 export { KERNEL_VERSION, createAuthorIdentity, deriveTopicId };
 export const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -30,16 +31,24 @@ export function shrinkKeyspace(hashBits) {
 
 // Spread nodes across the globe so topic-id region bytes vary (realistic root
 // election). Deterministic-ish per call is fine; we only need dispersion.
-function randLatLng(spread) {
+function randLatLng(spread, rng) {
   if (!spread) return { lat: 38.0, lng: -77.0 };
-  return { lat: Math.random() * 140 - 70, lng: Math.random() * 360 - 180 };
+  const rand = rng || Math.random;
+  return { lat: rand() * 140 - 70, lng: rand() * 360 - 180 };
 }
 
 // ── peer lifecycle ─────────────────────────────────────────────────────
+// opts.rng (optional): a deterministic PRNG. When present, node PLACEMENT
+// (geo + the fast identity's random bytes → nodeId) is drawn from it instead of
+// Math.random / the OS CSPRNG, making topology reproducible from a seed. The
+// crypto shim is scoped to the identity mint only — kernel publish/auth
+// randomness is never seeded (see seeded-scenario.mjs).
 export async function makePeer(network, domain, opts) {
-  const { K, refresh, renew, spread, role = 'node' } = opts;
-  const { lat, lng } = randLatLng(spread);
-  const identity = await createNodeIdentity({ lat, lng, fast: true });   // no keygen
+  const { K, refresh, renew, spread, role = 'node', rng = null } = opts;
+  const { lat, lng } = randLatLng(spread, rng);
+  const identity = rng
+    ? await withSeededCrypto(rng, () => createNodeIdentity({ lat, lng, fast: true }))
+    : await createNodeIdentity({ lat, lng, fast: true });   // no keygen
   const transport = simTransport({ network, identity, heartbeatMs: 0 });
   await transport.start(identity.id);
   const node = new NeuronNode({ id: BigInt('0x' + identity.id), lat, lng });
@@ -94,17 +103,19 @@ export async function wireInto(p, sorted, byBig, K) {
 }
 
 // Build an N-node mesh, fully wired. Returns the mesh state object.
-export async function buildMesh({ N, K, refresh, renew, spread }) {
+export async function buildMesh({ N, K, refresh, renew, spread, rng = null }) {
   const network = new SimNetwork();
   const domain  = new AxonaDomain();
   const byBig   = new Map();
   for (let i = 0; i < N; i++) {
-    const p = await makePeer(network, domain, { K, refresh, renew, spread });
+    const p = await makePeer(network, domain, { K, refresh, renew, spread, rng });
     byBig.set(p.big, p);
   }
   const sorted = sortedNodes(byBig);
   for (const p of byBig.values()) await wireInto(p, sorted, byBig, K);
-  const state = { network, domain, byBig, K, refresh, renew, spread, _warmSeed: 0 };
+  // rng stashed on state so churn replacements draw from the SAME deterministic
+  // stream — placement stays reproducible across the whole run, not just build.
+  const state = { network, domain, byBig, K, refresh, renew, spread, rng, _warmSeed: 0 };
   // Optional initial training: WARMUP_LOOKUPS random lookups (LTP / long-range
   // highway learning) so the mesh is globally navigable.
   await trainLookups(state, +(process.env.WARMUP_LOOKUPS || 0));
@@ -158,7 +169,7 @@ export async function maintain(state, affected) {
 // Returns { killed, added:[newPeers] }. Survivors that lost a synapse to a
 // victim + all new joiners are re-wired (targeted maintenance).
 export async function replaceChurn(state, victims) {
-  const { network, domain, byBig, K, refresh, renew, spread } = state;
+  const { network, domain, byBig, K, refresh, renew, spread, rng = null } = state;
   const victimBig = new Set(victims.map(v => v.big));
   for (const v of victims) { try { await v.peer.stop?.(); } catch { /* */ } }
   // survivors who pointed at a victim need a re-wire
@@ -173,7 +184,7 @@ export async function replaceChurn(state, victims) {
   // mint replacements
   const added = [];
   for (let i = 0; i < victims.length; i++) {
-    const p = await makePeer(network, domain, { K, refresh, renew, spread });
+    const p = await makePeer(network, domain, { K, refresh, renew, spread, rng });
     byBig.set(p.big, p);
     added.push(p);
   }

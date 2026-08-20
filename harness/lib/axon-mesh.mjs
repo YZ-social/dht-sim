@@ -44,7 +44,7 @@ function randLatLng(spread, rng) {
 // crypto shim is scoped to the identity mint only — kernel publish/auth
 // randomness is never seeded (see seeded-scenario.mjs).
 export async function makePeer(network, domain, opts) {
-  const { K, refresh, renew, spread, role = 'node', rng = null } = opts;
+  const { K, refresh, renew, spread, role = 'node', rng = null, synaptomeMaintain = null } = opts;
   const { lat, lng } = randLatLng(spread, rng);
   const identity = rng
     ? await withSeededCrypto(rng, () => createNodeIdentity({ lat, lng, fast: true }))
@@ -53,7 +53,8 @@ export async function makePeer(network, domain, opts) {
   await transport.start(identity.id);
   const node = new NeuronNode({ id: BigInt('0x' + identity.id), lat, lng });
   node.transport = transport;
-  const peer = new AxonaPeer({ domain, node, nodeIdentity: identity, transport });
+  const peer = new AxonaPeer({ domain, node, nodeIdentity: identity, transport,
+    ...(synaptomeMaintain ? { synaptomeMaintain } : {}) });
   await peer.start();
   const am = peer._requireAxonaManager?.('churn-init');
   if (am) {
@@ -103,12 +104,12 @@ export async function wireInto(p, sorted, byBig, K) {
 }
 
 // Build an N-node mesh, fully wired. Returns the mesh state object.
-export async function buildMesh({ N, K, refresh, renew, spread, rng = null }) {
+export async function buildMesh({ N, K, refresh, renew, spread, rng = null, synaptomeMaintain = null }) {
   const network = new SimNetwork();
   const domain  = new AxonaDomain();
   const byBig   = new Map();
   for (let i = 0; i < N; i++) {
-    const p = await makePeer(network, domain, { K, refresh, renew, spread, rng });
+    const p = await makePeer(network, domain, { K, refresh, renew, spread, rng, synaptomeMaintain });
     byBig.set(p.big, p);
   }
   const sorted = sortedNodes(byBig);

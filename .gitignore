@@ -50,3 +50,7 @@ documents/paper/*.blg
 documents/paper/*.bbl
 documents/paper/*.out
 documents/paper/*.toc
+
+# via-AB immutable audit artifacts must commit despite the *.log / results rules above
+!harness/via-ab/artifacts/
+!harness/via-ab/artifacts/**

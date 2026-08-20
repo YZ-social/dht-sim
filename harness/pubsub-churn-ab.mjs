@@ -71,6 +71,7 @@ const COLD_MS    = +(process.env.COLD_MS || 1200);
 const WARM_SERIES= +(process.env.WARM_SERIES || 3);
 const WARM_GAP   = +(process.env.WARM_GAP || 2500);
 const LABEL      = process.env.LABEL || '';
+const REP        = process.env.REP != null && process.env.REP !== '' ? +process.env.REP : null;   // rep index, stamped for a bijective audit trail
 const OUT        = process.env.OUT || `results/churn-ab/${SEED}.jsonl`;
 
 const CONFIG = { N, SUBS, PUBS, K, HASH_BITS, CHURN_MODE: 'global', CHURN_PCT, CHURN_STEP,
@@ -231,7 +232,8 @@ console.log(`FINGERPRINT seed=${SEED} label=${LABEL}  planFp=${planFp}  execFp=$
 // Publish the plan rows (per-step victim/replacement mint-index sequences) beside
 // the hashes so the comparison is auditable, not just asserted.
 appendFileSync(OUT, JSON.stringify({
-  ts: new Date().toISOString(), kernelVersion: KERNEL_VERSION, label: LABEL, seed: SEED,
+  ts: new Date().toISOString(), kernelVersion: KERNEL_VERSION,
+  seed: SEED, rep: REP, arm: LABEL, label: LABEL,   // identity: (seed,rep,arm) maps 1:1 to a summary.tsv row
   planFp, execFp, config: CONFIG, summary, rows,
   planRows: {
     publisherIdx: plan.publisherIdx, cohortIdx: plan.cohortIdx,

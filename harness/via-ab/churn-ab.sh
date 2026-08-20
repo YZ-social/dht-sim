@@ -36,7 +36,7 @@ RUN_TIMEOUT="${RUN_TIMEOUT:-600}"   # per-run wall-clock ceiling (s). A healthy
                                     # sleep mid-run) is killed and recorded as
                                     # CENSORED (exit 137) rather than hanging.
 cd "$SIM" || exit 1
-mkdir -p "$OUTDIR" "$OUTDIR/transcripts"
+mkdir -p "$OUTDIR" "$OUTDIR/transcripts" "$OUTDIR/jsonl"
 : > "$SUMMARY"
 restore(){ git -C "$KERN" checkout HEAD -- $FILES 2>/dev/null; }
 trap restore EXIT
@@ -59,7 +59,9 @@ echo
 one(){
   local seed="$1" label="$2" rep="${3:-0}" tlog
   tlog="$OUTDIR/transcripts/seed${seed}-${label}-rep${rep}.log"
-  SEED="$seed" LABEL="$label" OUT="$OUTDIR/seed$seed-$label.jsonl" node harness/pubsub-churn-ab.mjs >"$tlog" 2>&1 &
+  # One NON-appending jsonl file per run → one record ↔ one summary.tsv row,
+  # keyed (seed,rep,arm). verify-artifacts.mjs asserts the bijection.
+  SEED="$seed" LABEL="$label" REP="$rep" OUT="$OUTDIR/jsonl/seed$seed-$label-rep$rep.jsonl" node harness/pubsub-churn-ab.mjs >"$tlog" 2>&1 &
   local pid=$!
   ( sleep "$RUN_TIMEOUT"; kill -9 "$pid" 2>/dev/null ) & local wd=$!
   wait "$pid" 2>/dev/null; local ec=$?

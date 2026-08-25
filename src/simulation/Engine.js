@@ -1005,6 +1005,14 @@ export class SimulationEngine {
               getEntry(group.relay).adapter.publish(domainFor(group), gKey, {});
               if (++i % 20 === 0) await this._yield();
             }
+            // Async-delivery engines (kernel/transport path) deliver via
+            // routed messages AFTER publish returns; without this settle
+            // every callback lands past its tick's count and is wiped by
+            // the next tick's reset — 0% forever. Legacy engines deliver
+            // in-tick; their measurement semantics are unchanged.
+            if (dht.asyncPubsubDelivery === true) {
+              await new Promise((r) => setTimeout(r, 500));
+            }
           };
           for (let t = 0; t < warmupTicks; t++) { if (!this.running) break; await runOneTick(); }
 
@@ -1028,7 +1036,6 @@ export class SimulationEngine {
               }
             }
             perTickDeliveredPct.push(expected === 0 ? 100 : (delivered / expected) * 100);
-
             // Inspect the network's axon roles for each topic.
             let totalRoles = 0, maxChildren = 0, maxDepth = 1;
             // Legacy engines keep managers in _axonsByNode; the transport
@@ -2333,6 +2340,12 @@ export class SimulationEngine {
         if (!arr) { arr = []; publishedByGroup.set(group.id, arr); }
         arr.push(publishId);
       }
+    }
+
+    // Async-delivery engines: callbacks land after publish returns — settle
+    // before counting or every delivery reads as a miss (see runOneTick).
+    if (dht.asyncPubsubDelivery === true) {
+      await new Promise((r) => setTimeout(r, 500));
     }
 
     // Step 5 — measure delivery.

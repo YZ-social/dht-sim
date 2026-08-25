@@ -809,6 +809,13 @@ export class TransportAxonaEngine extends DHT {
   // deterministic and identical across every peer, so all peers resolve the
   // same kernel topic and converge. Publishes are signed with one durable
   // author per peer (key-separation: the node key never signs).
+  /** Pub/sub delivery on this engine is ASYNC (routed over simTransport —
+   *  callbacks land milliseconds-to-seconds after publish). Measurement
+   *  loops that publish-then-count synchronously (correct for the legacy
+   *  engines' in-tick delivery) must await a settle when this is true, or
+   *  every delivery lands after its tick's count and reads as 0%. */
+  get asyncPubsubDelivery() { return true; }
+
   axonFor(node) {
     if (!this._axonShims) this._axonShims = new Map();
     const id = node.id;

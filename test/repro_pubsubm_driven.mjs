@@ -14,7 +14,8 @@ const N = +(process.env.N || 200), GROUPS = 2, GSIZE = 29;
 const eng = new TransportAxonaEngine({ k: 20, geoBits: 8,
   ...(process.env.HASH_BITS ? { hashBits: +process.env.HASH_BITS } : {}) });
 for (let i = 0; i < N; i++) await eng.addNode(38 + Math.random() * 2, -77 + Math.random() * 2);
-await eng.buildRoutingTables({ bidirectional: true });
+await eng.buildRoutingTables({ bidirectional: true,
+  ...(process.env.MAXCONN ? { maxConnections: +process.env.MAXCONN } : {}) });
 
 const nodes = [...eng.nodeMap.values()];
 const groups = [];

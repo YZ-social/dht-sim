@@ -1094,7 +1094,9 @@ export class SimulationEngine {
             entry.total++;
             if (isDivergent) entry.divergent++;
           };
-          for (const group of groups) {
+          // Rule attribution needs god's-eye findKClosest + tagged synapses —
+          // legacy engines only; the transport engine ('axona') skips it.
+          if (typeof dht.findKClosest === 'function') for (const group of groups) {
             const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
             const pubK = dht.findKClosest(group.relay, topicId, overlapK).map(n => n.id);
             const pubSet = new Set(pubK);
@@ -1299,6 +1301,10 @@ export class SimulationEngine {
           // of whether the protocol actually stores at all K of them.
           const overlapK = anyAxon?.rootSetSize || 5;
           const measureOverlap = () => {
+            // The transport engine ('axona') exposes no god's-eye
+            // findKClosest — overlap is a legacy-engine diagnostic (same
+            // precedent as the guarded block in runMembershipPubSubTick).
+            if (typeof dht.findKClosest !== 'function') return { overlapPct: null, convergePct: null, samples: 0 };
             let totalOverlap = 0, totalSamples = 0, fullConverge = 0;
             for (const group of groups) {
               if (!group.relay.alive) continue;
@@ -1339,7 +1345,11 @@ export class SimulationEngine {
           // at publisher's then-K) a higher chance of still matching.
           const snapshotKSets = () => {
             // groupId → { pub: Set<id>, subs: Map<subNodeId, Set<id>> }
+            // No god's-eye findKClosest on the transport engine — an empty
+            // snapshot also short-circuits measureStability (rec lookup
+            // fails per group before any findKClosest call).
             const snap = new Map();
+            if (typeof dht.findKClosest !== 'function') return snap;
             for (const group of groups) {
               if (!group.relay.alive) continue;
               const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);

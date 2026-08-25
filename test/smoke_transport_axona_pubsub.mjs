@@ -20,7 +20,7 @@ const check = (l, c) => { if (c) { console.log(`  ✓ ${l}`); passed++; } else {
 const N = +(process.env.N || 40), SUBS = +(process.env.SUBS || 30);
 console.log(`\n── axona pub/sub via axonFor — N=${N} SUBS=${SUBS} ──`);
 
-const eng = new TransportAxonaEngine({ k: 20, geoBits: 8 });
+const eng = new TransportAxonaEngine({ k: 20, geoBits: 8, ...(process.env.HASH_BITS ? { hashBits: +process.env.HASH_BITS } : {}) });
 for (let i = 0; i < N; i++) await eng.addNode(38 + Math.random() * 2, -77 + Math.random() * 2); // us-east cluster
 await eng.buildRoutingTables({ bidirectional: true });
 
@@ -50,7 +50,7 @@ check('resetAllAxons clears the shims', eng._axonShims.size === 0);
 
 // ── visualization data path: buildAxonTree → axonTreeEdges (what the globe draws) ──
 console.log('\n── buildAxonTree + axonTreeEdges (the green-tree viz data) ──');
-const veng = new TransportAxonaEngine({ k: 20, geoBits: 8 });
+const veng = new TransportAxonaEngine({ k: 20, geoBits: 8, ...(process.env.HASH_BITS ? { hashBits: +process.env.HASH_BITS } : {}) });
 for (let i = 0; i < 60; i++) await veng.addNode(38 + Math.random() * 2, -77 + Math.random() * 2);
 await veng.buildRoutingTables({ bidirectional: true });
 const { topicBig, subscribed } = await veng.buildAxonTree({ subscribers: 45, settleMs: 3000 });
@@ -78,7 +78,7 @@ check('every backbone child is a sub-axon', bb.edges.every(([, c]) => subaxonSet
 
 // ── localized subscribers: regional topic enrolls + forms a tree ──
 console.log('\n── buildAxonTree localize (regional subscriber set) ──');
-const leng = new TransportAxonaEngine({ k: 20, geoBits: 8 });
+const leng = new TransportAxonaEngine({ k: 20, geoBits: 8, ...(process.env.HASH_BITS ? { hashBits: +process.env.HASH_BITS } : {}) });
 for (let i = 0; i < 120; i++) await leng.addNode(-55 + Math.random() * 110, -175 + Math.random() * 350); // GLOBAL spread
 await leng.buildRoutingTables({ bidirectional: true });
 const lt = await leng.buildAxonTree({ subscribers: 40, localize: { lat: 38, lng: -77 }, settleMs: 3000 });

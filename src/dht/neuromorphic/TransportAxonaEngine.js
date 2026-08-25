@@ -162,6 +162,15 @@ export class TransportAxonaEngine extends DHT {
       transport,
     });
     await peer.start();              // installs lookup_step handler
+    // EAGER MANAGER (2026-08-25). The kernel builds AxonaManager lazily on
+    // first pub/sub, and a routed subscribe-k that terminates at a
+    // manager-less node is SILENTLY DROPPED. At N ≫ subscriber-count nearly
+    // every locally-chosen root is such a node, so every subscriber
+    // self-rooted (0% delivery at N=500; roles=subscribers, children=0).
+    // The harness forces the manager per peer at construction
+    // ('harness-init') and delivers 100% at the same N on the same kernel;
+    // with this line the repro goes 0/58 → 58/58 (tree roles 58→8).
+    peer._requireAxonaManager?.('sim-init');
     this._peers.set(id, peer);
 
     this.domain._emit({
@@ -230,12 +239,33 @@ export class TransportAxonaEngine extends DHT {
     // synaptome exists.  Adding it inline (as before) let popular nodes
     // accrue unbounded in-degree — far more routing reach than a real,
     // connection-capped peer, which inflated measured hop/latency.
+    // NAVIGABLE XOR BASELINE (2026-08-25, David's directive). The previous
+    // loop walked buildXorRoutingTable's stratified list and DROPPED any
+    // candidate the bilateral gate refused — no alternate from the same
+    // stratum. Under contention (shuffled order, popular candidates filling
+    // early) nodes lost their few long-range strata entirely, greedy
+    // subscribe-k walks stranded before the topic-closest node, and every
+    // subscriber self-rooted (0% pub/sub delivery at N≥500; the harness on
+    // the same kernel, whose seed keeps its strata, delivers 100% — capped
+    // or not). Fix: per-stratum ALTERNATES, caps fully enforced.
+    //   Skeleton pass — one edge per occupied stratum, trying each of the
+    //     bucket's k candidates until one admits (≈log N edges/node).
+    //   Depth pass — remaining budget highest-stratum-first, as before.
     const reverseEdges = [];
     for (const node of order) {
       const nodeBootstrapCap = node.maxConnections ?? maxConnections;
-      const candidates = buildXorRoutingTable(node.id, sorted, k, nodeBootstrapCap);
-      for (const peer of candidates) {
-        if (!node.tryConnect(peer)) continue;
+      const all = buildXorRoutingTable(node.id, sorted, k, Infinity);
+      const byStratum = new Map();
+      for (const cand of all) {
+        const b = clz264(node.id ^ cand.id);
+        let arr = byStratum.get(b);
+        if (!arr) { arr = []; byStratum.set(b, arr); }
+        arr.push(cand);
+      }
+      const strata = [...byStratum.keys()].sort((x, y) => x - y);
+      const seat = (peer) => {
+        if (node.synaptome.has(peer.id)) return false;
+        if (!node.tryConnect(peer)) return false;
         const latMs   = roundTripLatency(node, peer);
         const stratum = clz264(node.id ^ peer.id);
         const syn = new Synapse({ peerId: peer.id, latencyMs: latMs, stratum });
@@ -243,6 +273,24 @@ export class TransportAxonaEngine extends DHT {
         syn._addedBy  = 'bootstrap';
         node.addSynapse(syn);
         if (bidirectional) reverseEdges.push({ peer, fromId: node.id, latMs, stratum });
+        return true;
+      };
+      let budget = Math.min(
+        isFinite(nodeBootstrapCap) ? nodeBootstrapCap : Infinity,
+        node._maxSynaptome ?? Infinity);
+      // Skeleton: one edge per occupied stratum, alternates on refusal.
+      for (const b of strata) {
+        if (budget <= 0) break;
+        for (const cand of byStratum.get(b)) {
+          if (seat(cand)) { budget--; break; }
+        }
+      }
+      // Depth: highest strata first (global reach), remaining budget.
+      for (let i = strata.length - 1; i >= 0 && budget > 0; i--) {
+        for (const cand of byStratum.get(strata[i])) {
+          if (budget <= 0) break;
+          if (seat(cand)) budget--;
+        }
       }
     }
 
@@ -270,14 +318,23 @@ export class TransportAxonaEngine extends DHT {
     // We do this AFTER synapse fill so we only open the channels
     // we'll actually use — N synaptome × N peers worth, not full
     // N×N which would dominate setup time at >1K nodes.
+    // Count open failures LOUDLY (harness parity): the kernel's default
+    // manager routes via reachable-only findKClosest, so silently-failed
+    // opens shrink every peer's reachable view — at scale that starves
+    // subscribe-k of candidates and subscribers self-root. A failure here
+    // is a mesh defect, not noise.
+    let openOk = 0, openFail = 0;
     return Promise.all(
       [...this.nodeMap.values()].map(async (node) => {
         for (const syn of node.synaptome.values()) {
-          try { await node.transport.openConnection(syn.peerId); }
-          catch { /* peer transport not up yet, retry on next pass */ }
+          try { await node.transport.openConnection(syn.peerId); openOk++; }
+          catch { openFail++; }
         }
       }),
-    );
+    ).then((r) => {
+      console.log(`[Axona MESH] openConnection ok=${openOk} fail=${openFail}`);
+      return r;
+    });
   }
 
   /**
@@ -759,6 +816,9 @@ export class TransportAxonaEngine extends DHT {
     if (cached) return cached;
     const peer = this._peers.get(id);
     if (!peer) return null;
+    // Belt-and-braces: any node handed to pub/sub must be able to RECEIVE
+    // routed subscribe-k, not just send (see addNode's eager-manager note).
+    try { peer._requireAxonaManager?.('axonFor'); } catch { /* engine-mode peers without transport */ }
 
     const TOPIC = (tid) => ({ region: 'useast', name: 'sim:' + tid });
     const subs  = new Map();   // topicId(hex) → Subscription (or `true` while subscribing)

@@ -36,6 +36,19 @@ for (const g of groups) {
 }
 await wait(300);  // let the immediate subscribes' async sub() calls land
 
+// EAGER MANAGERS (hypothesis: routed subscribe-k must terminate at a
+// handler-installed node, and the kernel builds AxonaManager lazily on
+// first pub/sub — so a chosen root without one silently drops the SUB).
+if (process.env.EAGER === '1') {
+  let forced = 0;
+  for (const n of nodes) {
+    const p = eng._peers.get(n.id);
+    try { if (p && !p._axonaManager) { p._requireAxonaManager('warm'); forced++; } } catch { /* */ }
+  }
+  console.log(`eager managers forced on ${forced} nodes`);
+  await wait(300);
+}
+
 const publishAndCount = async (label) => {
   for (const s of delivered.keys()) delivered.set(s, 0);
   for (const g of groups) A(g.relay).publish('bench', 'g' + g.id, { t: label });

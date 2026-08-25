@@ -1031,9 +1031,15 @@ export class SimulationEngine {
 
             // Inspect the network's axon roles for each topic.
             let totalRoles = 0, maxChildren = 0, maxDepth = 1;
+            // Legacy engines keep managers in _axonsByNode; the transport
+            // engine ('axona') keeps kernel managers on its peers. Collect
+            // whichever exists so the tree metrics stay meaningful on both.
+            const axonList = dht._axonsByNode
+              ? [...dht._axonsByNode.values()]
+              : [...(dht._peers?.values?.() ?? [])].map(p => p._axonaManager).filter(Boolean);
             for (const group of groups) {
               const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
-              for (const axon of dht._axonsByNode.values()) {
+              for (const axon of axonList) {
                 const role = axon.axonRoles.get(topicId);
                 if (!role) continue;
                 totalRoles++;
@@ -1054,7 +1060,11 @@ export class SimulationEngine {
           // delivery misses seen in pubsubmchurn — measuring it separately
           // helps explain churn behaviour.
           const SAMPLE_PER_GROUP = 5;
-          const anyAxon = [...dht._axonsByNode.values()][0];
+          // _axonsByNode is the LEGACY AxonaEngine's manager map; the
+          // transport engine (protocol 'axona') extends DHT directly and
+          // never defines it — unguarded, this killed the whole benchmark
+          // promise on the axona pass (2026-08-25).
+          const anyAxon = dht._axonsByNode ? [...dht._axonsByNode.values()][0] : null;
           // Use `||` (not `??`) so rootSetSize=0 — which signals routed
           // mode with no K-replication — still falls through to K=5 for
           // the diagnostic computation. Overlap / stability stay
@@ -1275,7 +1285,11 @@ export class SimulationEngine {
           // of K and the fraction of samples achieving full convergence
           // (all K match exactly).
           const SAMPLE_PER_GROUP = 5;
-          const anyAxon = [...dht._axonsByNode.values()][0];
+          // _axonsByNode is the LEGACY AxonaEngine's manager map; the
+          // transport engine (protocol 'axona') extends DHT directly and
+          // never defines it — unguarded, this killed the whole benchmark
+          // promise on the axona pass (2026-08-25).
+          const anyAxon = dht._axonsByNode ? [...dht._axonsByNode.values()][0] : null;
           // Use `||` (not `??`) so rootSetSize=0 — which signals routed
           // mode with no K-replication — still falls through to K=5 for
           // the diagnostic computation. Overlap / stability stay
@@ -1429,6 +1443,11 @@ export class SimulationEngine {
           if (dht._axonsByNode instanceof Map) {
             for (const axon of dht._axonsByNode.values()) {
               axon.invalidateKClosestCache?.();
+            }
+          } else {
+            // Transport engine: the kernel managers hang off the peers.
+            for (const p of dht._peers?.values?.() ?? []) {
+              p._axonaManager?.invalidateKClosestCache?.();
             }
           }
           onStart(`${tag} · Pub/Sub+Churn · killed ${numKilled} of ${aliveNodes.length}…`);
@@ -2321,12 +2340,18 @@ export class SimulationEngine {
     const { topicIdForPrefixed: tIdFor } = await import('../pubsub/PubSubAdapter.js');
     let totalRoles = 0, maxFanout = 0, maxDepth = 1;
     const usePrefix = dht.usesPublisherPrefix === true;
+    // Legacy engines: _axonsByNode. Transport engine ('axona'): kernel
+    // managers live on the peers. Unguarded, this killed the benchmark
+    // promise on the axona pass (2026-08-25).
+    const axonList = dht._axonsByNode
+      ? [...dht._axonsByNode.values()]
+      : [...(dht._peers?.values?.() ?? [])].map(p => p._axonaManager).filter(Boolean);
     const domainOf = (group) => usePrefix
       ? `@${Number((group.relay.id >> 56n) & 0xffn).toString(16).padStart(2, '0')}/bench`
       : 'bench';
     for (const group of groups) {
       const topicId = tIdFor(domainOf(group), 'g' + group.id);
-      for (const axon of dht._axonsByNode.values()) {
+      for (const axon of axonList) {
         const role = axon.axonRoles.get(topicId);
         if (!role) continue;
         totalRoles++;
@@ -2339,7 +2364,7 @@ export class SimulationEngine {
     let overlapPct = null;
     let convergePct = null;
     if (measureOverlap && typeof dht.findKClosest === 'function') {
-      const anyAxon = [...dht._axonsByNode.values()][0];
+      const anyAxon = axonList[0];   // legacy or transport managers (built above)
       const K = anyAxon?.rootSetSize || 5;
       const SAMPLE_PER_GROUP = 3;
       let total = 0, samples = 0, full = 0;

@@ -797,6 +797,15 @@ export class TransportAxonaEngine extends DHT {
       async pubsubPublish(topicId, json) {
         await peer.pub(TOPIC(topicId), json, { signWith: await author() });
       },
+      // Engine.js drives deterministic convergence via
+      // `dht.axonFor(node).refreshTick()` (the legacy engines' managers
+      // expose it directly). Delegate to the kernel manager — which owns
+      // refreshTick via the repairPlane module — so those paths work on
+      // the transport engine too. A peer with no manager yet is a no-op.
+      async refreshTick() {
+        const am = peer._axonaManager;
+        if (am?.refreshTick) await am.refreshTick();
+      },
       _stop() {
         for (const s of subs.values()) if (s && s !== true) { try { s.stop(); } catch { /* */ } }
         subs.clear();

@@ -215,6 +215,12 @@ export class AxonaEngine extends DHT {
    */
   get usesPublisherPrefix() { return true; }
 
+  /** NH-1/NX-17 pub/sub runs the KERNEL AxonaManager whose frames route
+   *  over the delayed simulated transport — delivery is ASYNC. Measurement
+   *  loops must settle before counting (same contract as the transport
+   *  engine; without this the membership cells read 0% structurally). */
+  get asyncPubsubDelivery() { return true; }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Node Lifecycle
   // ═══════════════════════════════════════════════════════════════════════════

@@ -160,6 +160,16 @@ export class TransportAxonaEngine extends DHT {
       node,
       nodeIdentity: identity,
       transport,
+      // HOLD-OR-IMPROVE ADMISSION GATE, ARMED (David, 2026-08-26). The
+      // ungated kernel's _seedSynaptomeWithSponsor inserts every channel-open
+      // sponsor straight past the synaptome budget (measured: 51–73 vs the
+      // 50 shared cap on ALL nodes at 30k sim opens — test/audit_caps.mjs).
+      // Armed, the gate is the sole decider at that site: below cap
+      // hold-all, at cap compare-and-swap by the council-ratified quality
+      // order, refuse-and-close otherwise. Constants = the armed-canary
+      // proposal table (axona-docs Axona-Armed-Canary-Proposal-v0.4).
+      admissionGate: { kNear: 5, sparseFloor: 2, kJoin: 2,
+                       laneCooldownMs: 5000, laneWindowMs: 300000 },
     });
     await peer.start();              // installs lookup_step handler
     // EAGER MANAGER (2026-08-25). The kernel builds AxonaManager lazily on

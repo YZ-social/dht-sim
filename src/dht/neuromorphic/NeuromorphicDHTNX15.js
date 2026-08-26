@@ -185,6 +185,13 @@ export class NeuromorphicDHTNX15 extends NeuromorphicDHTNX10 {
   _nodeShim(node) {
     const self = this;
     return {
+      // CAPABILITY DECLARATION (kernel v4.58.0 contract): NX-15 stays on
+      // the legacy god's-eye routing path whose return shapes are not
+      // audited against the {consumed:boolean} verdict contract — declared
+      // FALSE, the honest no-verdicts mode (credits nothing, breaches
+      // nothing). Audit and flip to true if NX-15 pub/sub is ever
+      // benchmarked again.
+      verdictsSupported: false,
       get nodeId()   { return nodeIdToHex(node.id); },
       getSelfId()    { return nodeIdToHex(node.id); },
       getAlivePeer(peerId) {

@@ -1358,6 +1358,12 @@ export class AxonaEngine extends DHT {
   _nodeShim(node) {
     const self = this;
     return {
+      // CAPABILITY DECLARATION (kernel v4.58.0 contract, enforced by the
+      // 4.67.1 vendor at AxonaManager construction): routeMessage below
+      // delegates to the kernel AxonaPeer.routeMessage, which resolves
+      // {consumed:true|false} and never throws to signal routing failure —
+      // verdicts ARE supported. Undeclared is a construction error.
+      verdictsSupported: true,
       get nodeId()   { return nodeIdToHex(node.id); },
       getSelfId()    { return nodeIdToHex(node.id); },
       // v0.70.20 (refactor commit 14) — `getAlivePeer` retired.

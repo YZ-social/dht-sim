@@ -1268,6 +1268,12 @@ export class SimulationEngine {
               getEntry(group.relay).adapter.publish(domainFor(group), gKey, {});
               if (++i % 20 === 0) await this._yield();
             }
+            // Async-delivery engines: settle before the phase's count reads
+            // the bits (same defect + fix as the plain-membership runOneTick;
+            // without this every pubsubm+churn phase reads 0% structurally).
+            if (dht.asyncPubsubDelivery === true) {
+              await new Promise((r) => setTimeout(r, 500));
+            }
           };
           const measureDeliveredPct = () => {
             let delivered = 0, expected = 0;

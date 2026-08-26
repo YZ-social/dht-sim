@@ -75,6 +75,7 @@ export class TransportAxonaEngine extends DHT {
     // Set the keyspace DETERMINISTICALLY on every construction (256 = production
     // default; resets a prior engine's shrink so re-initialising at full width
     // actually restores 264-bit). configureKeyspace is global/process-wide.
+    this._armFull = opts.armFull === true;   // gate+maintain+guard A/B (see addNode)
     const reqHashBits = opts.hashBits ?? 256;
     configureKeyspace({ hashBits: reqHashBits });
     this._keyspace = getKeyspace();   // { idBits, authorIdBits, hexChars, ... }
@@ -170,6 +171,17 @@ export class TransportAxonaEngine extends DHT {
       // proposal table (axona-docs Axona-Armed-Canary-Proposal-v0.4).
       admissionGate: { kNear: 5, sparseFloor: 2, kJoin: 2,
                        laneCooldownMs: 5000, laneWindowMs: 300000 },
+      // OPTIONAL full hold-or-improve arming (A/B for the gated-lookup
+      // success question): the ratified system pairs the gate with
+      // MAINTENANCE (deficit refill toward the kNear quota) and the attempt
+      // GUARD. Gate-only leaves refusal holes unfilled. Timings here are
+      // SIM-ACCELERATED (prod: 15000/30000ms) so refills land within a
+      // test's wall-clock — labeled, not production constants.
+      ...(this._armFull ? {
+        synaptomeMaintain: { kNear: 5, intervalMs: 2000, maxPerTick: 3 },
+        attemptGuard: { maxAttempts: 4, baseMs: 1000, factor: 2,
+                        refillWindowMs: 2000, deficitBaseMs: 1000, deficitFactor: 2 },
+      } : {}),
     });
     await peer.start();              // installs lookup_step handler
     // EAGER MANAGER (2026-08-25). The kernel builds AxonaManager lazily on

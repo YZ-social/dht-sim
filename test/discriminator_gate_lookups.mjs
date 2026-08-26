@@ -29,7 +29,7 @@ function makeLcg(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1
 const N = +(process.env.N || 1000);
 const L = +(process.env.LOOKUPS || 1000);
 
-async function buildArm(label, { gate, trim, sync }) {
+async function buildArm(label, { gate, trim, sync, noClose }) {
   Math.random = makeLcg(SEED);           // same stream per arm
   const eng = new TransportAxonaEngine({ k: 20, alpha: 3, bits: 64, geoBits: 8, hashBits: 56,
     ...(gate ? {} : { noGate: true }) });
@@ -39,10 +39,17 @@ async function buildArm(label, { gate, trim, sync }) {
   if (!gate) for (const p of eng._peers.values()) { p._gateCfg = null; }
 
   // Refusal/swap instrumentation (arms with gate): count decisions.
-  let refusals = 0, admits = 0;
+  let refusals = 0, admits = 0, closesStubbed = 0;
   if (gate) for (const p of eng._peers.values()) {
     const orig = p._admitOrImprove?.bind(p);
     if (orig) p._admitOrImprove = (s) => { const r = orig(s); if (r) admits++; else refusals++; return r; };
+    // ARM D (Aster ASTER-20260826-1134-DISCRIMINATOR-02): the gate's exact
+    // quality ordering and retained-edge policy, with refusal-time channel
+    // closes made INERT (counted no-op). Identical selection stream to a
+    // gated arm; only the close side effect differs.
+    if (noClose && p._node?.transport) {
+      p._node.transport.closeConnection = async () => { closesStubbed++; };
+    }
   }
 
   await eng.buildRoutingTables({ bidirectional: true, maxConnections: 100 });
@@ -94,10 +101,19 @@ async function buildArm(label, { gate, trim, sync }) {
   }
   eng.dispose?.();
   const fmt = (o) => Object.entries(o).map(([k, v]) => `${k}=${v}`).join(' ');
-  console.log(`[${label}] syn min/med/max=${sizes[0]}/${sizes[sizes.length >> 1]}/${sizes[sizes.length - 1]}  lookups ${ok}/${L}  fails: ${fmt(failKinds)}  gateDecisions: admits=${admits} refusals=${refusals}  diagSuppressed=${diagSuppressed}`);
+  console.log(`[${label}] syn min/med/max=${sizes[0]}/${sizes[sizes.length >> 1]}/${sizes[sizes.length - 1]}  lookups ${ok}/${L}  fails: ${fmt(failKinds)}  gateDecisions: admits=${admits} refusals=${refusals} closesStubbed=${closesStubbed}  diagSuppressed=${diagSuppressed}  quiescence=1500ms-drain`);
 }
 
-await buildArm('A gate     ', { gate: true,  trim: false, sync: false });
-await buildArm('B trim     ', { gate: false, trim: true,  sync: false });
-await buildArm('C gate+sync', { gate: true,  trim: false, sync: true  });
+if (process.env.ARM_D === '1') {
+  // Paired A vs D run (Aster's fourth arm). Retained-edge equivalence is
+  // reported as size-distribution + decision-count equivalence — exact edge
+  // sets cannot match across arms because node identities are real keygen
+  // (disclosed limitation).
+  await buildArm('A gate     ', { gate: true,  trim: false, sync: false });
+  await buildArm('D gate-noCl', { gate: true,  trim: false, sync: false, noClose: true });
+} else {
+  await buildArm('A gate     ', { gate: true,  trim: false, sync: false });
+  await buildArm('B trim     ', { gate: false, trim: true,  sync: false });
+  await buildArm('C gate+sync', { gate: true,  trim: false, sync: true  });
+}
 process.exit(0);

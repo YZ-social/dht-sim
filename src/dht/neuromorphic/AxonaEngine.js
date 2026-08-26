@@ -39,6 +39,12 @@ import {
 } from '@axona/protocol';
 // `buildXorRoutingTable` is reachable via the deep sub-path import.
 import { buildXorRoutingTable } from '@axona/protocol/utils/geo.js';
+// E3 seal opt-in: the hand-rolled _nodeShim is a frame RECEIVER for the
+// kernel AxonaManager's routed pubsub wires; production receivers deposit a
+// dispatch capability at construction, and registerFrame refuses undeposited
+// receivers (kernel 4.67.1). The shim deposits a routed capability that
+// delegates to its own onRoutedMessage — same dispatch tables as before.
+import { depositDispatchCapability } from '@axona/protocol/registry/index.js';
 
 // ── Local 64-bit shims ──────────────────────────────────────────────
 // @axona/protocol v1.0 dropped randomU64 and clz64 in favour of the
@@ -1357,7 +1363,7 @@ export class AxonaEngine extends DHT {
    */
   _nodeShim(node) {
     const self = this;
-    return {
+    const shim = {
       // CAPABILITY DECLARATION (kernel v4.58.0 contract, enforced by the
       // 4.67.1 vendor at AxonaManager construction): routeMessage below
       // delegates to the kernel AxonaPeer.routeMessage, which resolves
@@ -1388,6 +1394,10 @@ export class AxonaEngine extends DHT {
         return peerIds.map(nodeIdToHex);
       },
     };
+    // E3 seal (see import note): every pubsub wire registers on this shim as
+    // a single-primitive routed frame — deposit the routed capability.
+    depositDispatchCapability(shim, { routed: (type, h) => shim.onRoutedMessage(type, h) });
+    return shim;
   }
 
   _resolveNode(nodeOrId) {
@@ -1412,7 +1422,11 @@ export class AxonaEngine extends DHT {
   // v0.71.3 (Phase 3 of per-node refactor) — body moved to
   // AxonaPeer.onRoutedMessage.
   onRoutedMessage(node, type, handler) {
-    return this._peerFor(node).onRoutedMessage(type, handler);
+    // Kernel 4.67.1 SEALED the public AxonaPeer.onRoutedMessage (E3b.2c:
+    // registerFrame is the one door). The peer's own deposited capability
+    // writes `_routedHandlers` (AxonaPeer ctor), and _deliverRouted reads
+    // it — write the same table the sealed door writes.
+    this._peerFor(node)._routedHandlers.set(type, handler);
   }
 
   /**

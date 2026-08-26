@@ -1103,7 +1103,7 @@ export class SimulationEngine {
           };
           // Rule attribution needs god's-eye findKClosest + tagged synapses —
           // legacy engines only; the transport engine ('axona') skips it.
-          if (typeof dht.findKClosest === 'function') for (const group of groups) {
+          try { if (typeof dht.findKClosest === 'function') for (const group of groups) {
             const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
             const pubK = dht.findKClosest(group.relay, topicId, overlapK).map(n => n.id);
             const pubSet = new Set(pubK);
@@ -1128,7 +1128,7 @@ export class SimulationEngine {
                 recordRule(rule, !pubSet.has(id));
               }
             }
-          }
+          } } catch { /* diagnostics fail soft — see measureOverlap note */ }
           const overlap = totalSamples === 0
             ? { overlapPct: null, convergePct: null, samples: 0 }
             : {
@@ -1311,29 +1311,36 @@ export class SimulationEngine {
             // The transport engine ('axona') exposes no god's-eye
             // findKClosest — overlap is a legacy-engine diagnostic (same
             // precedent as the guarded block in runMembershipPubSubTick).
-            if (typeof dht.findKClosest !== 'function') return { overlapPct: null, convergePct: null, samples: 0 };
-            let totalOverlap = 0, totalSamples = 0, fullConverge = 0;
-            for (const group of groups) {
-              if (!group.relay.alive) continue;
-              const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
-              const pubK = dht.findKClosest(group.relay, topicId, overlapK).map(n => n.id);
-              const pubSet = new Set(pubK);
-              const liveSubs = group.participants.filter(p => p.alive);
-              const sample = liveSubs.slice(0, SAMPLE_PER_GROUP);
-              for (const sub of sample) {
-                const subK = dht.findKClosest(sub, topicId, overlapK).map(n => n.id);
-                const ov = subK.filter(id => pubSet.has(id)).length;
-                totalOverlap += ov;
-                totalSamples++;
-                if (ov === overlapK) fullConverge++;
+            // Diagnostics FAIL SOFT (2026-08-26): since v0.70.16 the legacy
+            // engines' findKClosest is async + kernel-backed (bigint-strict
+            // targetIds) — the sync hex-string calls below throw on them, and
+            // an uncaught throw here killed the whole benchmark promise.
+            // A diagnostic may return nulls; it may never take the run down.
+            try {
+              if (typeof dht.findKClosest !== 'function') return { overlapPct: null, convergePct: null, samples: 0 };
+              let totalOverlap = 0, totalSamples = 0, fullConverge = 0;
+              for (const group of groups) {
+                if (!group.relay.alive) continue;
+                const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
+                const pubK = dht.findKClosest(group.relay, topicId, overlapK).map(n => n.id);
+                const pubSet = new Set(pubK);
+                const liveSubs = group.participants.filter(p => p.alive);
+                const sample = liveSubs.slice(0, SAMPLE_PER_GROUP);
+                for (const sub of sample) {
+                  const subK = dht.findKClosest(sub, topicId, overlapK).map(n => n.id);
+                  const ov = subK.filter(id => pubSet.has(id)).length;
+                  totalOverlap += ov;
+                  totalSamples++;
+                  if (ov === overlapK) fullConverge++;
+                }
               }
-            }
-            if (totalSamples === 0) return { overlapPct: null, convergePct: null, samples: 0 };
-            return {
-              overlapPct:  (totalOverlap / (totalSamples * overlapK)) * 100,
-              convergePct: (fullConverge / totalSamples) * 100,
-              samples:     totalSamples,
-            };
+              if (totalSamples === 0) return { overlapPct: null, convergePct: null, samples: 0 };
+              return {
+                overlapPct:  (totalOverlap / (totalSamples * overlapK)) * 100,
+                convergePct: (fullConverge / totalSamples) * 100,
+                samples:     totalSamples,
+              };
+            } catch { return { overlapPct: null, convergePct: null, samples: 0 }; }
           };
 
           // ── K-set stability diagnostic ─────────────────────────────────
@@ -1357,6 +1364,7 @@ export class SimulationEngine {
             // fails per group before any findKClosest call).
             const snap = new Map();
             if (typeof dht.findKClosest !== 'function') return snap;
+            try {
             for (const group of groups) {
               if (!group.relay.alive) continue;
               const topicId = topicIdForPrefixed(domainFor(group), 'g' + group.id);
@@ -1369,6 +1377,7 @@ export class SimulationEngine {
               }
               snap.set(group.id, { pub, subs });
             }
+            } catch { /* diagnostics fail soft — see measureOverlap note */ }
             return snap;
           };
 
@@ -1378,6 +1387,7 @@ export class SimulationEngine {
           // top-K because findKClosest filters dead), so stability is capped
           // by survival rate.
           const measureStability = (snap) => {
+            try {
             let pubTotal = 0, pubCount = 0;
             let subTotal = 0, subCount = 0;
             for (const group of groups) {
@@ -1404,6 +1414,7 @@ export class SimulationEngine {
               pubSamples: pubCount,
               subSamples: subCount,
             };
+            } catch { return { pubStabilityPct: null, subStabilityPct: null, pubSamples: 0, subSamples: 0 }; }
           };
 
           // ── Per-phase timing instrumentation ─────────────────────────────
@@ -2390,6 +2401,7 @@ export class SimulationEngine {
       const anyAxon = axonList[0];   // legacy or transport managers (built above)
       const K = anyAxon?.rootSetSize || 5;
       const SAMPLE_PER_GROUP = 3;
+      try {
       let total = 0, samples = 0, full = 0;
       for (const group of groups) {
         if (!group.relay.alive) continue;
@@ -2409,6 +2421,7 @@ export class SimulationEngine {
         overlapPct  = (total / (samples * K)) * 100;
         convergePct = (full / samples) * 100;
       }
+      } catch { /* diagnostics fail soft — async/bigint-strict findKClosest on modern engines */ }
     }
 
     // Cumulative delivery metric — for each alive subscriber, count how

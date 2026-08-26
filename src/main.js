@@ -1858,6 +1858,15 @@ async function onBenchmark() {
       }
       // Bilateral-cap invariant check post-bootstrap. No-op when web limit off.
       benchDHT.verifyConnectionCap?.(`${tag} post-bootstrap`);
+      // Bootstrap-fidelity settle era (v0.113.0): engines with a deferred
+      // refusal-close (kernel 4.68.0 closeGraceMs) declare bootstrapSettleMs;
+      // lookups before it elapses measure a mesh whose grace timers haven't
+      // fired and whose maintenance hasn't refilled. Skipped by every engine
+      // that doesn't declare it.
+      if (Number.isFinite(benchDHT.bootstrapSettleMs) && benchDHT.bootstrapSettleMs > 0) {
+        controls.setStatus(`${tag} — settle era ${benchDHT.bootstrapSettleMs}ms (grace closes + refill)…`, 'bench');
+        await new Promise((r) => setTimeout(r, benchDHT.bootstrapSettleMs));
+      }
       completedSteps++;
       controls.setProgress(stepFrac(completedSteps));
       await yieldUI();

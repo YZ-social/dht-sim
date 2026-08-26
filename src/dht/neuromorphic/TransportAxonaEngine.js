@@ -76,6 +76,12 @@ export class TransportAxonaEngine extends DHT {
     // default; resets a prior engine's shrink so re-initialising at full width
     // actually restores 264-bit). configureKeyspace is global/process-wide.
     this._armFull = opts.armFull === true;   // gate+maintain+guard A/B (see addNode)
+    // Bootstrap-fidelity settle era (v0.113.0): wall-clock the benchmark
+    // must wait after buildRoutingTables before the first lookup, so the
+    // closeGraceMs deferred closes (5000ms, see addNode) fire and rescues/
+    // refills land. graceMs + 1500ms margin. Engines without a grace
+    // window leave this undefined and the runner skips the wait.
+    this.bootstrapSettleMs = 6500;
     const reqHashBits = opts.hashBits ?? 256;
     configureKeyspace({ hashBits: reqHashBits });
     this._keyspace = getKeyspace();   // { idBits, authorIdBits, hexChars, ... }
@@ -169,8 +175,18 @@ export class TransportAxonaEngine extends DHT {
       // hold-all, at cap compare-and-swap by the council-ratified quality
       // order, refuse-and-close otherwise. Constants = the armed-canary
       // proposal table (axona-docs Axona-Armed-Canary-Proposal-v0.4).
+      // closeGraceMs (kernel 4.68.0, David's a→b→c directive step b): the
+      // deferred refusal-close. The four-arm discriminator pinned the gated
+      // 92.8–97% lookup success to the gate's IMMEDIATE refusal-time close
+      // during the compressed sim bootstrap (arm A fails, arms B/D/E don't);
+      // a 5s defer restored 1000/1000 ×3 seeds. 5000ms = the validated arm-E
+      // window. Rescue is bilateral by construction here — every sim peer
+      // runs the same kernel. Pairs with bootstrapSettleMs below: lookups
+      // must not start until the deferred closes have fired and maintenance
+      // has refilled, or the settle-free numbers measure a half-open mesh.
       admissionGate: { kNear: 5, sparseFloor: 2, kJoin: 2,
-                       laneCooldownMs: 5000, laneWindowMs: 300000 },
+                       laneCooldownMs: 5000, laneWindowMs: 300000,
+                       closeGraceMs: 5000, graceMaxPending: 64 },
       // OPTIONAL full hold-or-improve arming (A/B for the gated-lookup
       // success question): the ratified system pairs the gate with
       // MAINTENANCE (deficit refill toward the kNear quota) and the attempt

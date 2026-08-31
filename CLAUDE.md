@@ -23,6 +23,43 @@ npm run pubsub:scale   # size sweep → table + results/pubsub-scale_<ts>.csv
 npm run test:kernel    # the 4 kernel-integration smokes (60 checks)
 ```
 
+### Smoke-faithful churn test — `harness/pubsub-churn-smoke.mjs` (kernel v4.68.2, 2026-08-31)
+
+`pubsub-real-kernel.mjs` measures a QUIESCENT network: the mesh is static under
+the publish, and its `CHURN_PCT` variant heals FIRST and only THEN publishes. It
+reports ~100% because nothing is moving during delivery. The live fleet soak
+reports 60-69% (watch-only, per-(message,reader), 2×renewal deadline), and the
+two disagreed. `pubsub-churn-smoke.mjs` closes that gap: readers stay up the
+whole run, the non-reader "relay" pool rolls continuously (kill one, add one
+fresh — census flat, like relay-roll), the publisher publishes on a steady
+cadence THROUGHOUT, and each (message, reader) is scored watch-only against a
+sweep of deadline cutoffs (1×/2×/4×/∞ renewal). Env: N, SUBS, K, REFRESH
+(renewal), DURATION_MS, PUB_EVERY_MS, CHURN_EVERY_MS (0=control), ROOT_KILL=1
+(target the topic-closest node → force a root migration each tick), DEADLINE_MS.
+
+**Finding — the live 60-69% reproduces in-sim, and ONLY under root migration:**
+
+| arm (SUBS / churn) | delivery @2×renewal deadline | eventual (∞) | p95 lat |
+|---|---|---|---|
+| 60 / none (control) | 100% | 100% | 24 ms |
+| 60 / gentle random roll | 100% | 100% | 42 ms |
+| 10 / random roll (7 kills, misses roots) | 100% | 100% | 24 ms |
+| **10 / ROOT_KILL (4 forced migrations)** | **60.7%** | **~100%** (96% @4×) | **4922 ms** |
+
+Same reader count and churn RATE; the only difference is whether the killed node
+is a root. Random relay deaths that miss the ~5 roots leave delivery at 100%.
+Killing a root drops it to 60.7% at the 2×renewal deadline — in the live band.
+**Nothing is lost** — eventual delivery is ~100% (96% by 4 renewals). The deadline
+misses are messages that arrive 3-9 renewals late (p95 4.9 s, p99 8.9 s): after a
+root dies, the orphaned subtree takes several renewals to reattach and replay.
+
+So the deadline gap is a KERNEL recovery-latency effect (reproducible in the fast
+harness), not a live-transport artifact, and not message loss. It also explains
+the live kNear A/B tie: kNear enlarges the root target (helps routing FIND the new
+root) but does not shorten the subscriber's reattach+fanout-rebuild+replay, which
+is where the 2-renewal deadline is lost. The lever is post-migration reattach
+latency (eager reattach on detected root change / faster replay), not kNear.
+
 **GOTCHA:** AxonaManager is built **lazily on first pub/sub** — the AxonaPeer
 constructor leaves `_axonaManager` null. Force it (`peer._requireAxonaManager(…)`)
 right after `peer.start()` before configuring/instrumenting, or an `if (am)`

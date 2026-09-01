@@ -214,30 +214,41 @@ for (const msg of published) {
     }
   }
 }
-const within = trials - missing - Math.max(0, /* delivered-after-deadline */ lat.filter(a => a > DEADLINE_MS).length);
 const deliveredWithinDeadline = lat.filter(a => a <= DEADLINE_MS).length;
 lat.sort((a,b)=>a-b);
 const pct = (x) => trials ? (100*x/trials).toFixed(1) : '0.0';
 const pl = (p) => lat.length ? lat[Math.min(lat.length-1, Math.floor(p/100*lat.length))] : 0;
+// T_end is the observation horizon: window + one deadline + the 5s drain tail. It
+// is NOT quiescence, so completeness@T_end is a CENSORED metric, not eventual
+// delivery (Aster 814e2b8c). Run RUN_TO_QUIESCENCE=1 for a longer horizon.
+const T_END_S = Math.round((DURATION_MS + DEADLINE_MS + 5000) / 1000);
+// amplification / cost (Aster 814e2b8c): total callback firings vs unique delivered,
+// renewals per published message, and — for the targeted mode — replayed messages
+// per gap actually recovered by gap-fill.
+let totalCb = 0; for (const s of subscribers) for (const e of recv.get(s.hex).values()) totalCb += e.count;
+const netAmp = eventual ? (totalCb / eventual) : 0;                    // delivery events per unique delivered
+const renewalsPerMsg = published.length ? gfRequests / published.length : 0;
+const replayPerRecovery = cGap ? gfReplayMsgs / cGap : 0;              // precise: msgs replayed per useful recovery
 
 console.log('\n============ GAP-FILL PROTOTYPE (v1, live cadence) ============');
 console.log(`mesh synaptome med ${synMed}/${SYN_CAP}; push drop ${dropped}/${pushes} (${(100*dropped/Math.max(1,pushes)).toFixed(1)}%)`);
 console.log(`config: LOSS=${(LOSS*100)|0}%  GAPFILL_MS=${GAPFILL_MS||'OFF(control)'}  mode=${GAPFILL_MODE}  renew=${RENEW_MS}ms  deadline=${DEADLINE_MS}ms`);
 console.log(`trials ${trials} (${published.length} msgs x ${SUBS} readers)`);
-console.log(`completeness @120s deadline : ${pct(deliveredWithinDeadline)}%`);
-console.log(`eventual completeness       : ${pct(eventual)}%`);
+console.log(`completeness @${DEADLINE_MS/1000|0}s deadline : ${pct(deliveredWithinDeadline)}%`);
+console.log(`completeness @T_end (T_end=${T_END_S}s, CENSORED not eventual) : ${pct(eventual)}%   unresolved@T_end ${pct(missing)}%`);
 console.log(`first-receipt class  live/gapfill/renewal/missing : ${pct(cLive)}% / ${pct(cGap)}% / ${pct(cRenew)}% / ${pct(missing)}%`);
 console.log(`publish->callback p50/p95/p99 : ${pl(50)} / ${pl(95)} / ${pl(99)} ms`);
-console.log(`duplicate trials (delivered >1x) : ${pct(dupTrials)}%`);
-console.log(`gap-fill renewals ${gfRequests}${GAPFILL_MODE==='precise'?`, replayed msgs ${gfReplayMsgs}`:''} over ${holes} hole-observations`);
+console.log(`duplicate trials (delivered >1x) : ${pct(dupTrials)}%   net amplification ${netAmp.toFixed(2)} callbacks/delivered`);
+console.log(`gap-fill renewals ${gfRequests} (${renewalsPerMsg.toFixed(2)}/msg)${GAPFILL_MODE==='precise'?`, replayed msgs ${gfReplayMsgs} (${replayPerRecovery.toFixed(2)}/useful recovery)`:''}; useful gap-recoveries ${cGap}`);
 console.log('===============================================================\n');
 console.log('RESULT_JSON ' + JSON.stringify({
-  N, SUBS, SYN_CAP, RENEW_MS, DEADLINE_MS, LOSS, GAPFILL_MS, GAPFILL_MODE, synMed,
+  N, SUBS, SYN_CAP, RENEW_MS, DEADLINE_MS, LOSS, GAPFILL_MS, GAPFILL_MODE, synMed, T_END_S,
   pushes, dropped, dropPct: +(100*dropped/Math.max(1,pushes)).toFixed(1),
   trials, messages: published.length,
-  deadlinePct: +pct(deliveredWithinDeadline), eventualPct: +pct(eventual),
+  deadlinePct: +pct(deliveredWithinDeadline), completenessAtTendPct: +pct(eventual), unresolvedAtTendPct: +pct(missing),
   livePct: +pct(cLive), gapfillPct: +pct(cGap), renewalPct: +pct(cRenew), missingPct: +pct(missing),
   p50: pl(50), p95: pl(95), p99: pl(99), dupPct: +pct(dupTrials),
+  netAmp: +netAmp.toFixed(2), renewalsPerMsg: +renewalsPerMsg.toFixed(2), replayPerRecovery: +replayPerRecovery.toFixed(2),
   gfRequests, gfReplayMsgs, holes,
 }));
 process.exit(0);

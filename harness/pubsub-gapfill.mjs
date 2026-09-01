@@ -126,38 +126,54 @@ let seq = 0;
 // for that topic → replays the cache through the watch callback. Counted as one
 // gap-fill request (amplification). Detection uses the harness publish ledger as a
 // stand-in for real sequence-hole detection (v1; real hole-detect is the kernel's).
-// GAPFILL_MODE: 'all' = re-sub since:'all' (replays whole cache — dup upper bound);
-// 'watermark' = re-sub since:<oldest-missing publishTs - 1> so replay starts at the
-// gap floor, not the start of history — bounds duplicates as the run grows. Both
-// recover through the watch path (Aster's constraint); neither reads an upstream value.
+// GAPFILL_MODE:
+//  'all'       = re-sub since:'all' (replays whole cache — dup upper bound). REAL kernel.
+//  'watermark' = re-sub since:<oldest-missing publishTs-1> — replay from the gap floor,
+//                not the start of history. REAL kernel. Bounds dups but timestamp floor
+//                still re-sends already-held msgs newer than the oldest hole.
+//  'precise'   = the THREE-FIELD renewal (David 2026-09-01): the renewal carries the
+//                subscriber's detected missing-list + its high-water seq, and the root
+//                replays EXACTLY {missing-list} ∪ {above high-water}, over the lossy
+//                path, through the watch record. Per-message precise → dups ~0.
+//                MODELED here (the kernel since: API is timestamp-only and has no
+//                seq-list renewal yet), so it shows what the proposed kernel behavior
+//                would achieve. Recovery still enters via the watch record, subject to
+//                the same push-loss on each replayed message.
 const GAPFILL_MODE = process.env.GAPFILL_MODE || 'all';
-let gfRequests = 0, holes = 0;
+let gfRequests = 0, holes = 0, gfReplayMsgs = 0;
+function deliverToWatch(subHex, id) {   // models a DELIVER arriving at the subscriber's watch callback
+  const mm = recv.get(subHex); const k = String(id);
+  const e = mm.get(k); if (e) e.count++; else mm.set(k, { wall: Date.now(), count: 1 });
+}
 async function gapfillTick() {
   if (!GAPFILL_MS) return;
   const now = Date.now();
   for (const s of subscribers) {
     const m = recv.get(s.hex);
-    // per topic: gather this sub's eligible missing msgs
     for (const tp of topics) {
-      let oldestMissingTs = Infinity, anyHole = false;
-      for (const { id, tPub, name } of published) {
-        if (name !== tp.name) continue;
-        if (now - tPub < GAPFILL_MS) continue;            // not yet eligible
-        if (m.has(String(id))) continue;                 // already have it
-        anyHole = true; holes++;
-        if (tPub < oldestMissingTs) oldestMissingTs = tPub;
+      const missing = [];
+      let oldestMissingTs = Infinity;
+      for (const p of published) {
+        if (p.name !== tp.name) continue;
+        if (now - p.tPub < GAPFILL_MS) continue;          // not yet eligible
+        if (m.has(String(p.id))) continue;                // already have it
+        missing.push(p); holes++;
+        if (p.tPub < oldestMissingTs) oldestMissingTs = p.tPub;
       }
-      if (!anyHole) continue;
+      if (!missing.length) continue;
       const key = `${s.hex}|${tp.name}`;
-      const last = gfTriggers.get(key) || [];
-      if (last.length && now - last[last.length - 1] < GAPFILL_MS) continue;   // debounce: one in-flight per D
+      const lastT = gfTriggers.get(key) || [];
+      if (lastT.length && now - lastT[lastT.length - 1] < GAPFILL_MS) continue;   // debounce: one renewal per D
       (gfTriggers.get(key) || gfTriggers.set(key, []).get(key)).push(now);
-      gfRequests++;
-      const since = GAPFILL_MODE === 'watermark' ? (oldestMissingTs - 1) : 'all';
-      s.peer.sub(tp.t, (env) => {
-        if (!env?.msgId) return; const mm = recv.get(s.hex); const k = String(env.msgId);
-        const e = mm.get(k); if (e) e.count++; else mm.set(k, { wall: Date.now(), count: 1 });
-      }, { since }).catch(() => {});
+      gfRequests++;                                       // one renewal carries the whole request
+      if (GAPFILL_MODE === 'precise') {
+        // root replays EXACTLY the named-missing + above-high-water set; each replayed
+        // DELIVER is subject to the same push-loss (a drop is retried next renewal).
+        for (const p of missing) { gfReplayMsgs++; if (Math.random() >= LOSS) deliverToWatch(s.hex, p.id); }
+      } else {
+        const since = GAPFILL_MODE === 'watermark' ? (oldestMissingTs - 1) : 'all';
+        s.peer.sub(tp.t, (env) => { if (env?.msgId) deliverToWatch(s.hex, env.msgId); }, { since }).catch(() => {});
+      }
     }
   }
 }
@@ -213,7 +229,7 @@ console.log(`eventual completeness       : ${pct(eventual)}%`);
 console.log(`first-receipt class  live/gapfill/renewal/missing : ${pct(cLive)}% / ${pct(cGap)}% / ${pct(cRenew)}% / ${pct(missing)}%`);
 console.log(`publish->callback p50/p95/p99 : ${pl(50)} / ${pl(95)} / ${pl(99)} ms`);
 console.log(`duplicate trials (delivered >1x) : ${pct(dupTrials)}%`);
-console.log(`gap-fill requests ${gfRequests} over ${holes} hole-observations (amplification ${holes?(gfRequests/Math.max(1,holes)).toFixed(2):'0'})`);
+console.log(`gap-fill renewals ${gfRequests}${GAPFILL_MODE==='precise'?`, replayed msgs ${gfReplayMsgs}`:''} over ${holes} hole-observations`);
 console.log('===============================================================\n');
 console.log('RESULT_JSON ' + JSON.stringify({
   N, SUBS, SYN_CAP, RENEW_MS, DEADLINE_MS, LOSS, GAPFILL_MS, GAPFILL_MODE, synMed,
@@ -222,6 +238,6 @@ console.log('RESULT_JSON ' + JSON.stringify({
   deadlinePct: +pct(deliveredWithinDeadline), eventualPct: +pct(eventual),
   livePct: +pct(cLive), gapfillPct: +pct(cGap), renewalPct: +pct(cRenew), missingPct: +pct(missing),
   p50: pl(50), p95: pl(95), p99: pl(99), dupPct: +pct(dupTrials),
-  gfRequests, holes,
+  gfRequests, gfReplayMsgs, holes,
 }));
 process.exit(0);

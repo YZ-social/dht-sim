@@ -126,27 +126,38 @@ let seq = 0;
 // for that topic → replays the cache through the watch callback. Counted as one
 // gap-fill request (amplification). Detection uses the harness publish ledger as a
 // stand-in for real sequence-hole detection (v1; real hole-detect is the kernel's).
+// GAPFILL_MODE: 'all' = re-sub since:'all' (replays whole cache — dup upper bound);
+// 'watermark' = re-sub since:<oldest-missing publishTs - 1> so replay starts at the
+// gap floor, not the start of history — bounds duplicates as the run grows. Both
+// recover through the watch path (Aster's constraint); neither reads an upstream value.
+const GAPFILL_MODE = process.env.GAPFILL_MODE || 'all';
 let gfRequests = 0, holes = 0;
 async function gapfillTick() {
   if (!GAPFILL_MS) return;
   const now = Date.now();
   for (const s of subscribers) {
     const m = recv.get(s.hex);
-    for (const { id, tPub, name, t } of published) {
-      if (now - tPub < GAPFILL_MS) continue;              // not yet eligible
-      if (m.has(String(id))) continue;                    // already have it
-      holes++;
-      // one re-sub per (sub,topic) per tick recovers all that topic's holes
-      const key = `${s.hex}|${name}`;
-      const last = (gfTriggers.get(key) || []);
-      if (last.length && now - last[last.length - 1] < GAPFILL_MS) continue;  // debounce: one in-flight per D
+    // per topic: gather this sub's eligible missing msgs
+    for (const tp of topics) {
+      let oldestMissingTs = Infinity, anyHole = false;
+      for (const { id, tPub, name } of published) {
+        if (name !== tp.name) continue;
+        if (now - tPub < GAPFILL_MS) continue;            // not yet eligible
+        if (m.has(String(id))) continue;                 // already have it
+        anyHole = true; holes++;
+        if (tPub < oldestMissingTs) oldestMissingTs = tPub;
+      }
+      if (!anyHole) continue;
+      const key = `${s.hex}|${tp.name}`;
+      const last = gfTriggers.get(key) || [];
+      if (last.length && now - last[last.length - 1] < GAPFILL_MS) continue;   // debounce: one in-flight per D
       (gfTriggers.get(key) || gfTriggers.set(key, []).get(key)).push(now);
       gfRequests++;
-      // early renewal-replay through the watch path
-      s.peer.sub(t, (env) => {
+      const since = GAPFILL_MODE === 'watermark' ? (oldestMissingTs - 1) : 'all';
+      s.peer.sub(tp.t, (env) => {
         if (!env?.msgId) return; const mm = recv.get(s.hex); const k = String(env.msgId);
         const e = mm.get(k); if (e) e.count++; else mm.set(k, { wall: Date.now(), count: 1 });
-      }, { since: 'all' }).catch(() => {});
+      }, { since }).catch(() => {});
     }
   }
 }
@@ -195,7 +206,7 @@ const pl = (p) => lat.length ? lat[Math.min(lat.length-1, Math.floor(p/100*lat.l
 
 console.log('\n============ GAP-FILL PROTOTYPE (v1, live cadence) ============');
 console.log(`mesh synaptome med ${synMed}/${SYN_CAP}; push drop ${dropped}/${pushes} (${(100*dropped/Math.max(1,pushes)).toFixed(1)}%)`);
-console.log(`config: LOSS=${(LOSS*100)|0}%  GAPFILL_MS=${GAPFILL_MS||'OFF(control)'}  renew=${RENEW_MS}ms  deadline=${DEADLINE_MS}ms`);
+console.log(`config: LOSS=${(LOSS*100)|0}%  GAPFILL_MS=${GAPFILL_MS||'OFF(control)'}  mode=${GAPFILL_MODE}  renew=${RENEW_MS}ms  deadline=${DEADLINE_MS}ms`);
 console.log(`trials ${trials} (${published.length} msgs x ${SUBS} readers)`);
 console.log(`completeness @120s deadline : ${pct(deliveredWithinDeadline)}%`);
 console.log(`eventual completeness       : ${pct(eventual)}%`);
@@ -205,7 +216,7 @@ console.log(`duplicate trials (delivered >1x) : ${pct(dupTrials)}%`);
 console.log(`gap-fill requests ${gfRequests} over ${holes} hole-observations (amplification ${holes?(gfRequests/Math.max(1,holes)).toFixed(2):'0'})`);
 console.log('===============================================================\n');
 console.log('RESULT_JSON ' + JSON.stringify({
-  N, SUBS, SYN_CAP, RENEW_MS, DEADLINE_MS, LOSS, GAPFILL_MS, synMed,
+  N, SUBS, SYN_CAP, RENEW_MS, DEADLINE_MS, LOSS, GAPFILL_MS, GAPFILL_MODE, synMed,
   pushes, dropped, dropPct: +(100*dropped/Math.max(1,pushes)).toFixed(1),
   trials, messages: published.length,
   deadlinePct: +pct(deliveredWithinDeadline), eventualPct: +pct(eventual),
